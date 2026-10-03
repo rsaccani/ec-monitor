@@ -36,15 +36,44 @@ In short, the service measures:
 
 ## Data and privacy
 
-Positions come from the OGN APRS feed (`aprs.glidernet.org:14580`). Devices whose owners set
-`TRACKED=N` in the OGN device database are dropped as soon as they are read, and devices with
-`IDENTIFIED=N` are shown without model or registration, as the OGN data usage terms require. The
-database holds counts and sums per month, day, cell or source, plus the list of device addresses seen
-in the current and the previous month, which is what the device counts are made of; it stores no
-position and no track. Older months are kept as counts only: every six hours the service reduces
-them to `monthly_devices_summary` and `monthly_sources_summary` and deletes their addresses. The
-previous month is kept whole so that the return of device ids from one month to the next can be measured. Only the live map
-shows positions, and only for the last 15 minutes (60 for ADS-L).
+Positions come from the OGN APRS feed (`aprs.glidernet.org:14580`), which carries what volunteer ground
+receivers hear and what apps and platforms forward. Everything the service publishes is either a live
+position of the last few minutes or a count; what it keeps, and for how long, is below. The rules are
+in [METHOD.md](METHOD.md), sections 1 and 9.
+
+**Owners' choices.** The OGN device database records, for each device, whether its owner allows it to
+be tracked and identified, and the OGN data usage terms require every service to follow those
+choices. A device with `TRACKED=N` is dropped as soon as its packet is read: it appears nowhere, on the
+map, in the counts or in the measures. A device with `IDENTIFIED=N` is shown and counted without its
+aircraft model or registration. Devices are matched by their 24-bit address, whatever prefix the feed
+gives them.
+
+**What is shown live.** The map shows the positions of the last 15 minutes (60 for ADS-L), with the
+last ten positions of each ADS-L device.
+
+**What is stored, and for how long.**
+
+| What | Kept |
+|---|---|
+| Positions and tracks | never written to the database; held in memory only while the device is on the live map or being measured |
+| Device addresses (`monthly_devices`, `monthly_sources`), with the first and last time each was heard in the month | the current and the previous month; then reduced to counts and deleted |
+| Counts of devices per month, address type, category, source and channel (`*_summary`) | indefinitely |
+| Totals of the measures per day, month, source, category, height band and 0.25-degree cell | indefinitely |
+
+A device address is personal data in the sense of the GDPR, since it can be traced to an aircraft and
+its pilot. That is why addresses are kept only as long as the counts need them: every six hours the
+service reduces each month older than the previous one to `monthly_devices_summary` and
+`monthly_sources_summary`, in one transaction per table, and deletes its addresses. The previous month
+is kept whole to measure how many devices are heard again from one month to the next. No address and
+no position is published by the statistics endpoints, which return counts and sums only.
+
+**Data licence and terms.** The OGN data are under the
+[Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/1-0/), and what the endpoints
+serve is a database derived from them, offered under the same licence. The
+[OGN data usage terms](https://www.glidernet.org/ogn-data-usage/) also say that OGN data older than 24
+hours must not be redistributed. The live map stays within that. The published figures are counts
+and sums over longer periods, which contain no position of any identifiable aircraft; whether the
+rule also covers aggregates of this kind is not settled in the terms.
 
 ## How it runs
 
@@ -192,12 +221,7 @@ not covered and are applied by hand, a schema change before the code that needs 
 ## License
 
 The code is MIT, see [LICENSE](LICENSE). The data come from the
-[Open Glider Network](https://www.glidernet.org/) and are under the
-[Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/1-0/); what the endpoints serve
-is a database derived from them and is offered under the same licence. The
-[OGN data usage terms](https://www.glidernet.org/ogn-data-usage/) also require following the privacy
-choices in the OGN device database (see Data and privacy) and not redistributing OGN data older than
-24 hours.
+[Open Glider Network](https://www.glidernet.org/) under the ODbL; see Data and privacy.
 
 ## Acknowledgements
 
