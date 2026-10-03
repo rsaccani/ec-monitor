@@ -39,12 +39,13 @@ In short, the service measures:
 Positions come from the OGN APRS feed (`aprs.glidernet.org:14580`). Devices whose owners set
 `TRACKED=N` in the OGN device database are dropped as soon as they are read, and devices with
 `IDENTIFIED=N` are shown without model or registration, as the OGN data usage terms require. The
-database holds counts and sums per month, day, cell or source; it stores no track. Only the live map
+database holds counts and sums per month, day, cell or source, plus the list of device addresses seen
+each month, which is what the device counts are made of; it stores no position and no track. Only the live map
 shows positions, and only for the last 15 minutes (60 for ADS-L).
 
 ## How it runs
 
-One gunicorn worker runs a listener thread on the OGN feed (about 1,200 lines a second across Europe)
+One gunicorn worker runs a listener thread on the OGN feed (the whole feed, about 1,200 lines a second at a busy hour)
 and the Flask endpoints that the page reads. `sources.py` keeps the totals in memory and writes them to
 MariaDB every 15 minutes, counted from the worker's start, so a restart loses what accumulated since
 the last write. Height above ground comes from a terrain model, a raw int16 grid cut from ETOPO 2022 at
@@ -92,7 +93,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/visibility/detail`
 **Method:** GET
-**Description:** Monthly visibility totals per source, channel, aircraft category, height band above sea (`msl_band`, 0 = below 1,000 m … 4 = above 4,000 m) and above ground (`agl_band`, 0 = below 300 m, 1 = 300–600, 2 = 600–1,200, 3 = 1,200–2,000, 4 = above 2,000; null when outside the terrain model), with a third estimator that ignores the turn rate (`p2_*`) and the same figures restricted to segments that carried a turn rate (`rot_*`) or showed circling (`circ_*`), and the airborne seconds during which the last position was no older than 3, 6, 15 and 30 s (`age_le*`) with the segments no longer than 3 and 6 s (`seg_le*`), and `vanish_2`, `vanish_5`, `vanish_20`, devices silent for more than 2, 5 or 20 minutes after being last seen airborne in that band, and `int_le2` … `int_le64`, airborne segments no longer than 2 … 64 s (the real interval between received packets). See METHOD.md.
+**Description:** Monthly visibility totals per source, channel, aircraft category, height band above sea (`msl_band`, 0 = below 1,000 m … 4 = above 4,000 m, 255 when the packet carries no altitude) and above ground (`agl_band`, 0 = below 300 m, 1 = 300–600, 2 = 600–1,200, 3 = 1,200–2,000, 4 = above 2,000; 255 when outside the terrain model or with no altitude), with a third estimator that ignores the turn rate (`p2_*`) and the same figures restricted to segments that carried a turn rate (`rot_*`) or showed circling (`circ_*`), and the airborne seconds during which the last position was no older than 3, 6, 15 and 30 s (`age_le*`) with the segments no longer than 3 and 6 s (`seg_le*`), and `vanish_2`, `vanish_5`, `vanish_20`, devices silent for more than 2, 5 or 20 minutes after being last seen airborne in that band, and `int_le2` … `int_le64`, airborne segments no longer than 2 … 64 s (the real interval between received packets). See METHOD.md.
 
 ### `/conspicuity-monitor/api/visibility/grid`
 **Method:** GET
@@ -116,122 +117,30 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ## Running it
 
-Python 3.12 or later, and MariaDB or MySQL.
+The service needs Python 3.11 or later and MariaDB 10.5 or later (or MySQL 8). Production runs on Debian 12
+with the distribution's packages (`python3-flask`, `python3-pymysql`, `python3-dotenv`,
+`python3-requests`, `gunicorn`) and MariaDB 10.11. Anywhere else a virtual environment does the same:
 
 ```bash
-python -m venv venv
+python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
 
-The database credentials go in a `.env` file beside `app.py`, readable only by the service user:
+Create the database and its tables from [schema.sql](schema.sql), which is taken from the production
+tables:
 
+```bash
+mysql < schema.sql
 ```
-DB_USER=database_user
-DB_PASSWORD=database_password
-```
 
-Without a database, set `SKIP_STATS_DATABASE = True` at the top of `app.py`: the live map still works
-and every statistics endpoint answers empty.
-
-The schema:
+Then the service user. It needs exactly these grants and nothing more. `monthly_devices` and
+`monthly_sources` are updated one column at a time, while `monthly_visibility_detail`,
+`monthly_visibility_grid`, `monthly_reception_pattern` and `monthly_prediction` are updated in place
+with `INSERT … ON DUPLICATE KEY UPDATE`, which needs `UPDATE` on every column of the table.
+`daily_visibility` is append-only.
 
 ```sql
-CREATE TABLE `monthly_devices` (
-  `month` char(7) NOT NULL,
-  `device_id` varchar(16) NOT NULL,
-  `device_type` enum('ADSL','ADSB','FLARM','OTHER') NOT NULL,
-  `category` tinyint unsigned DEFAULT NULL,
-  `first_seen` datetime NOT NULL,
-  PRIMARY KEY (`month`,`device_id`),
-  KEY `idx_month_type` (`month`,`device_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-```
-
-```sql
-CREATE TABLE `monthly_sources` (
-  `month` char(7) NOT NULL,
-  `source` varchar(9) NOT NULL,
-  `via` enum('radio','net') NOT NULL,
-  `device_id` varchar(16) NOT NULL,
-  `category` tinyint unsigned DEFAULT NULL,
-  `first_seen` datetime NOT NULL,
-  `last_seen` datetime NOT NULL,
-  PRIMARY KEY (`month`,`source`,`via`,`device_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-```
-
-```sql
-CREATE TABLE `daily_visibility` (
-  `day` date NOT NULL,
-  `source` varchar(9) NOT NULL,
-  `via` enum('radio','net') NOT NULL,
-  `category` tinyint unsigned NOT NULL,
-  `flushed_at` datetime NOT NULL,
-  `packets` int unsigned NOT NULL,
-  `rot_packets` int unsigned NOT NULL,
-  `segments` int unsigned NOT NULL,
-  `sessions` int unsigned NOT NULL,
-  `implausible` int unsigned NOT NULL,
-  `air_seconds` double NOT NULL,
-  `p0_300` double NOT NULL, `p0_1000` double NOT NULL, `p0_3000` double NOT NULL,
-  `p1_300` double NOT NULL, `p1_1000` double NOT NULL, `p1_3000` double NOT NULL,
-  PRIMARY KEY (`day`,`source`,`via`,`category`,`flushed_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-```
-
-```sql
-CREATE TABLE `monthly_visibility_detail` (
-  `month` char(7) NOT NULL, `source` varchar(9) NOT NULL, `via` enum('radio','net') NOT NULL,
-  `category` tinyint unsigned NOT NULL, `msl_band` tinyint unsigned NOT NULL, `agl_band` tinyint unsigned NOT NULL,
-  `segments` double NOT NULL DEFAULT 0, `rot_segments` double NOT NULL DEFAULT 0, `circling_segments` double NOT NULL DEFAULT 0,
-  `air_seconds` double NOT NULL DEFAULT 0,
-  `p0_300` double NOT NULL DEFAULT 0, `p0_1000` double NOT NULL DEFAULT 0, `p0_3000` double NOT NULL DEFAULT 0,
-  `p1_300` double NOT NULL DEFAULT 0, `p1_1000` double NOT NULL DEFAULT 0, `p1_3000` double NOT NULL DEFAULT 0,
-  `p2_300` double NOT NULL DEFAULT 0, `p2_1000` double NOT NULL DEFAULT 0, `p2_3000` double NOT NULL DEFAULT 0,
-  `rot_air` double NOT NULL DEFAULT 0, `rot_p1_300` double NOT NULL DEFAULT 0, `rot_p1_1000` double NOT NULL DEFAULT 0,
-  `rot_p2_300` double NOT NULL DEFAULT 0, `rot_p2_1000` double NOT NULL DEFAULT 0,
-  `circ_air` double NOT NULL DEFAULT 0, `circ_p1_300` double NOT NULL DEFAULT 0, `circ_p1_1000` double NOT NULL DEFAULT 0,
-  `circ_p2_300` double NOT NULL DEFAULT 0, `circ_p2_1000` double NOT NULL DEFAULT 0,
-  `age_le3` double NOT NULL DEFAULT 0, `age_le6` double NOT NULL DEFAULT 0, `age_le15` double NOT NULL DEFAULT 0,
-  `age_le30` double NOT NULL DEFAULT 0, `seg_le3` double NOT NULL DEFAULT 0, `seg_le6` double NOT NULL DEFAULT 0,
-  `vanish_2` double NOT NULL DEFAULT 0, `vanish_5` double NOT NULL DEFAULT 0, `vanish_20` double NOT NULL DEFAULT 0,
-  `int_le2` double NOT NULL DEFAULT 0, `int_le4` double NOT NULL DEFAULT 0, `int_le8` double NOT NULL DEFAULT 0,
-  `int_le16` double NOT NULL DEFAULT 0, `int_le32` double NOT NULL DEFAULT 0, `int_le64` double NOT NULL DEFAULT 0,
-  PRIMARY KEY (`month`,`source`,`via`,`category`,`msl_band`,`agl_band`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
-CREATE TABLE `monthly_visibility_grid` (
-  `month` char(7) NOT NULL, `lat_idx` smallint NOT NULL, `lon_idx` smallint NOT NULL,
-  `grp` varchar(8) NOT NULL, `via` enum('radio','net') NOT NULL,
-  `segments` double NOT NULL DEFAULT 0, `air_seconds` double NOT NULL DEFAULT 0,
-  `p0_300` double NOT NULL DEFAULT 0, `p1_300` double NOT NULL DEFAULT 0, `p1_1000` double NOT NULL DEFAULT 0,
-  `p0_1000` double NOT NULL DEFAULT 0,
-  PRIMARY KEY (`month`,`lat_idx`,`lon_idx`,`grp`,`via`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
-CREATE TABLE `monthly_reception_pattern` (
-  `month` char(7) NOT NULL, `source` varchar(9) NOT NULL, `category` tinyint unsigned NOT NULL,
-  `dist_band` tinyint unsigned NOT NULL, `sector` tinyint unsigned NOT NULL,
-  `packets` double NOT NULL DEFAULT 0, `snr_sum` double NOT NULL DEFAULT 0, `snr_n` double NOT NULL DEFAULT 0,
-  PRIMARY KEY (`month`,`source`,`category`,`dist_band`,`sector`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
-CREATE TABLE `monthly_prediction` (
-  `month` char(7) NOT NULL, `source` varchar(9) NOT NULL, `category` tinyint unsigned NOT NULL,
-  `horizon` tinyint unsigned NOT NULL, `circling` tinyint unsigned NOT NULL, `predictor` varchar(20) NOT NULL,
-  `b0` double NOT NULL DEFAULT 0, ... `b13` double NOT NULL DEFAULT 0,
-  `n` double NOT NULL DEFAULT 0, `error_sum` double NOT NULL DEFAULT 0,
-  PRIMARY KEY (`month`,`source`,`category`,`horizon`,`circling`,`predictor`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-```
-
-`daily_visibility` is append-only: every 15 minutes the service inserts the totals accumulated since the
-last write, and readers sum them. Category 255 means unknown. The four `monthly_visibility_*`,
-`monthly_reception_pattern` and `monthly_prediction` tables are updated in place with
-`INSERT … ON DUPLICATE KEY UPDATE`. `monthly_devices` and `monthly_sources` are updated with a plain
-`UPDATE` of a single column, so the service user needs exactly these grants:
-
-```sql
+CREATE USER 'ads_user'@'localhost' IDENTIFIED BY 'choose-a-password';
 GRANT SELECT, INSERT ON ads_l.* TO 'ads_user'@'localhost';
 GRANT UPDATE (category) ON ads_l.monthly_devices TO 'ads_user'@'localhost';
 GRANT UPDATE (last_seen) ON ads_l.monthly_sources TO 'ads_user'@'localhost';
@@ -241,14 +150,28 @@ GRANT UPDATE ON ads_l.monthly_reception_pattern TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_prediction TO 'ads_user'@'localhost';
 ```
 
-For a local test:
+The service connects to `localhost` over TCP, port 3306, and reads the user and password from a `.env`
+file beside `app.py`, which should be readable only by the user the service runs as:
 
-```bash
-venv/bin/gunicorn -w 1 --threads 2 -k gthread --timeout 0 -b 127.0.0.1:5000 --log-level debug app:app
+```
+DB_USER=ads_user
+DB_PASSWORD=choose-a-password
 ```
 
-In production it runs under systemd with the same command, behind nginx, which proxies `/conspicuity-monitor/api/` to it.
-It must stay a single worker: the listener and the totals live in that process.
+Without a database, set `SKIP_STATS_DATABASE = True` at the top of `app.py`. The live map still works,
+and every statistics endpoint answers empty.
+
+To start it:
+
+```bash
+gunicorn -w 1 --threads 2 -k gthread --timeout 0 -b 127.0.0.1:5000 app:app
+```
+
+(`venv/bin/gunicorn` with a virtual environment). It must stay a single worker, because the listener and
+the totals live in that process. Within a few seconds the log shows the connection to the OGN feed, and
+`http://127.0.0.1:5000/conspicuity-monitor/api/live?layers=flarm,fanet` starts listing aircraft; the first totals reach the
+database 15 minutes after the start. In production the same command runs as a systemd service
+(`Restart=always`), behind nginx, which proxies `/conspicuity-monitor/api/` to it.
 
 ## Deploying updates
 

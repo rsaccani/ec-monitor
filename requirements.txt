@@ -1,9 +1,5 @@
 flask
 gunicorn
 requests
-flask-cors
-datetime
-logging
 pymysql
-requests
 python-dotenv
