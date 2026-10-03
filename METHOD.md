@@ -31,7 +31,8 @@ OGN data usage terms require every service to respect them: a device whose
 owner asked not to be tracked is dropped on arrival and appears nowhere, in
 the map, the counts or the measures; one whose owner asked not to be
 identified is shown and counted without its aircraft model or registration.
-Devices are matched to the database by their 24-bit address.
+Devices are matched to the database by their 24-bit address. How long a
+device address is kept is set out in section 9.
 
 **Aircraft category** comes from the aircraft type in the packet's OGN id
 when there is one, and from the APRS symbol otherwise (`g` paraglider or hang
@@ -273,6 +274,16 @@ Monthly lists of device addresses per source and channel, for counting
 devices; daily and monthly totals per source, channel, category, height band
 and cell for the measures above; reception counts by angle; prediction errors
 by bin. No track and no position of any aircraft is stored.
+
+A device address can be traced to an aircraft and its pilot, so the lists of
+addresses are kept for the current and the previous month only. Once a month
+is older than that, its lists are reduced to the counts the published figures
+use (devices per month by address type, category, source and channel, and how
+many were heard on two different days) and the addresses are deleted. The
+previous month is kept whole so that the share of devices heard again from
+one month to the next can be measured; a source whose ids change often shows
+almost none. The service checks every six hours, so a month's addresses go
+within a few hours of the end of the following month.
 
 ## 10. Known limits
 
