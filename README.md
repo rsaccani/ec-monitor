@@ -185,7 +185,13 @@ not covered and are applied by hand, a schema change before the code that needs 
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+The code is MIT, see [LICENSE](LICENSE). The data come from the
+[Open Glider Network](https://www.glidernet.org/) and are under the
+[Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/1-0/); what the endpoints serve
+is a database derived from them and is offered under the same licence. The
+[OGN data usage terms](https://www.glidernet.org/ogn-data-usage/) also require following the privacy
+choices in the OGN device database (see Data and privacy) and not redistributing OGN data older than
+24 hours.
 
 ## Acknowledgements
 
