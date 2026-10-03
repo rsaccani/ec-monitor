@@ -645,13 +645,17 @@ def ads_l_stats():
         db.close()
 
     months = {}
+    # COUNT(*) united with SUM() comes back as DECIMAL, which jsonify would
+    # turn into strings: hence the int().
     for month, prefix, n in by_prefix:
+        n = int(n)
         m = months.setdefault(month, {"month": month, "devices": 0, "addresses": {},
                                       "categories": {}, "categorised": 0})
         kind = ADDRESS_PREFIXES.get(prefix, "other")
         m["devices"] += n
         m["addresses"][kind] = m["addresses"].get(kind, 0) + n
     for month, code, n in by_category:
+        n = int(n)
         m = months.get(month)
         if m is None:
             continue
