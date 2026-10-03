@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ADS-L Live Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <style>
+        .leaflet-div-icon {
+            background: transparent !important;
+            border: none !important;
+        }
+        .marker-icon {
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: visible !important;
+            line-height: 0 !important;
+            font-size: 0 !important;
+        }
+        .marker-icon svg {
+            transform-origin: center center;
+            display: block;
+            margin: 0;
+            padding: 0;
+            line-height: 0;
+        }
+    </style>
+</head>
+<body>
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<div id="ads-l-map" style="width: 100%; height: 800px; position: relative;">
+    <div id="aircraft-counter" style="position: absolute; top: 10px; right: 10px; background: rgba(255, 255, 255, 0.9); padding: 12px 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 1000; font-family: Arial, sans-serif; font-size: 14px; font-weight: bold; color: #333;">
+        <span id="aircraft-count">0</span> ADS-L transmitters active in last 60 min
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize map centered on Europe
+        var map = L.map('ads-l-map').setView([50, 10], 5);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        var markers = {};
+        var aircraftData = {}; // Store aircraft data separately
+        var aircraftTrails = {}; // Store trail data for each aircraft
+        var trailLayers = {}; // Store polyline layers for trails
+
+        // Function to calculate scale factor based on zoom
+        function getScaleFactor() {
+            var zoom = map.getZoom();
+            var baseZoom = 5;
+            var scaleFactor = Math.pow(1.1, zoom - baseZoom);
+            return Math.max(0.7, Math.min(1.4, scaleFactor));
+        }
+
+        // Function to create icon with current size and heading
+        function createIcon(heading) {
+            var baseSize = 32;
+            var scale = getScaleFactor();
+            var scaledSize = Math.round(baseSize * scale);
+            return L.divIcon({
+                html: `<svg fill="#000000" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style="width: ${scaledSize}px; height: ${scaledSize}px; transform: rotate(${heading}deg); display: block;"><path d="M50 5 L70 85 L50 75 L30 85 Z" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/></svg>`,
+                className: '',
+                iconSize: [scaledSize, scaledSize],
+                iconAnchor: [Math.round(scaledSize / 2), Math.round(scaledSize / 2)],
+                popupAnchor: [0, -Math.round(scaledSize / 2) - 5]
+            });
+        }
+
+        // Function to update all marker sizes on zoom
+        function updateMarkerSizes() {
+            console.log('Updating marker scale for zoom:', map.getZoom());
+
+            for (var id in markers) {
+                if (aircraftData[id]) {
+                    var marker = markers[id];
+                    var heading = aircraftData[id].heading || 0;
+
+                    // Recreate icon with new size based on current zoom
+                    marker.setIcon(createIcon(heading));
+                }
+            }
+        }
+
+        function updateMap() {
+            fetch('/ads-l/')
+                .then(res => res.json())
+                .then(data => {
+                    // Update aircraft counter
+                    var activeCount = data.filter(d => d.lat && d.lon).length;
+                    document.getElementById('aircraft-count').textContent = activeCount;
+
+                    // Remove old markers and trails
+                    for (var id in markers) {
+                        if (!data.find(d => d.device_id === id)) {
+                            map.removeLayer(markers[id]);
+                            delete markers[id];
+                            delete aircraftData[id];
+                            
+                            // Remove trail layer if it exists
+                            if (trailLayers[id]) {
+                                map.removeLayer(trailLayers[id]);
+                                delete trailLayers[id];
+                            }
+                            
+                            // Remove trail data
+                            if (aircraftTrails[id]) {
+                                delete aircraftTrails[id];
+                            }
+                        }
+                    }
+
+                    data.forEach(d => {
+                        if (d.lat && d.lon) {
+                            // Store aircraft data
+                            aircraftData[d.device_id] = d;
+
+                            // Create popup content
+                            var popupContent = `
+              <b>Aircraft:</b> ${d.aircraft_type}<br>
+              <b>Device ID:</b> ${d.device_id}<br>
+              <b>Lat/Lon:</b> ${d.lat.toFixed(6)} / ${d.lon.toFixed(6)}<br>
+              <b>Altitude:</b> ${d.altitude !== null ? d.altitude + ' ft (' + (d.altitude * 0.3048).toFixed(0) + ' m)' : '-'}<br>
+              <b>Heading/Speed:</b> ${d.heading} / ${d.speed !== null ? d.speed + ' kts (' + (d.speed * 1.852).toFixed(2) + ' km/h)' : '-'}<br>
+              <b>Vertical Speed:</b> ${d.vspeed !== null ? d.vspeed + ' fpm (' + (d.vspeed * 0.00508).toFixed(2) + ' m/s)' : '-'}<br>
+              <b>GPS fix:</b> ${d.gps_fix || '-'}<br>
+              <b>Routing info:</b> ${d.routing_info}<br>
+              <b>Station/Signal:</b> ${d.station} / ${d.signal || '-'}<br>
+              <b>Timestamp:</b> ${d.timestamp}
+              <div style="max-width:300px; white-space: pre-wrap; word-break: break-word;"><b>RAW APRS data:</b> ${d.raw || '-'}</div>
+            `;
+
+                            if (markers[d.device_id]) {
+                                // Update existing marker
+                                markers[d.device_id]
+                                    .setLatLng([d.lat, d.lon])
+                                    .setIcon(createIcon(d.heading))
+                                    .setPopupContent(popupContent);
+                            } else {
+                                // Add new marker
+                                markers[d.device_id] = L.marker([d.lat, d.lon], {icon: createIcon(d.heading)})
+                                    .addTo(map)
+                                    .bindPopup(popupContent);
+                            }
+                            
+                            // Update trail data - store last 10 positions
+                            if (!aircraftTrails[d.device_id]) {
+                                aircraftTrails[d.device_id] = [];
+                            }
+                            
+                            // Add current position to trail
+                            aircraftTrails[d.device_id].push({
+                                lat: d.lat,
+                                lon: d.lon
+                            });
+                            
+                            // Keep only the last 10 positions
+                            if (aircraftTrails[d.device_id].length > 10) {
+                                aircraftTrails[d.device_id].shift(); // Remove oldest position
+                            }
+                            
+                            // Debug: log trail information
+                            // console.log('Device ' + d.device_id + ': trail points = ' + aircraftTrails[d.device_id].length);
+                            
+                            // Update or create trail polyline (need at least 2 points to draw a line)
+                            if (aircraftTrails[d.device_id].length > 1) {
+                                // console.log('Creating/updating trail for ' + d.device_id);
+
+                                if (trailLayers[d.device_id]) {
+                                    // Update existing trail
+                                    var trailCoords = aircraftTrails[d.device_id].map(p => [p.lat, p.lon]);
+                                    trailLayers[d.device_id].setLatLngs([trailCoords]);
+                                    // console.log('Updated existing trail for ' + d.device_id);
+                                } else {
+                                    // Create new trail with black color
+                                    var trailCoords = aircraftTrails[d.device_id].map(p => [p.lat, p.lon]);
+                                    trailLayers[d.device_id] = L.polyline(trailCoords, {
+                                        color: '#000000',
+                                        weight: 2,
+                                        opacity: 0.6,
+                                        lineJoin: 'round',
+                                        lineCap: 'round'
+                                    }).addTo(map);
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(err => console.error("ADS-L fetch error:", err));
+        }
+
+        // Initial load
+        updateMap();
+        // Auto-update every 5 seconds
+        setInterval(updateMap, 5000);
+
+        // Update marker sizes on zoom - THIS MAKES IT DYNAMIC
+        map.on('zoomend', function() {
+            updateMarkerSizes();
+        });
+    });
+</script>
+
+<h3 style="font-family: Arial, sans-serif; margin-top: 30px; margin-bottom: 20px;">ADS-L Statistics</h3>
+
+<div style="max-width: 1200px; margin: 0 auto;">
+    <!-- Monthly Chart -->
+    <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 30px;">
+        <h4 style="font-family: Arial, sans-serif; margin-top: 0; color: #333;">Monthly Unique Devices (Last 12 Months)</h4>
+        <canvas id="monthlyChart" style="max-height: 400px;"></canvas>
+    </div>
+
+
+</div>
+
+<!-- Chart.js Library -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+
+<script>
+    fetch('/ads-l/stats')
+        .then(resp => resp.json())
+        .then(data => {
+            // Prepare monthly chart data (last 12 months)
+            // Reverse the data to show chronological order (oldest to newest)
+            const reversedData = [...data].reverse();
+            const monthlyLabels = reversedData.map(row => row.month);
+            const monthlyValues = reversedData.map(row => row.devices);
+
+            // Create Monthly Chart
+            const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
+            new Chart(monthlyCtx, {
+                type: 'line',
+                data: {
+                    labels: monthlyLabels,
+                    datasets: [{
+                        label: 'Unique Devices',
+                        data: monthlyValues,
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 5,
+                        pointHoverRadius: 7,
+                        pointBackgroundColor: 'rgba(75, 192, 192, 1)',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            padding: 12,
+                            titleFont: { size: 14, weight: 'bold' },
+                            bodyFont: { size: 13 },
+                            callbacks: {
+                                label: function(context) {
+                                    return 'Unique Devices: ' + context.parsed.y.toLocaleString();
+                                }
+                            }
+                        },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'top',
+                            offset: 4,
+                            color: '#333',
+                            font: {
+                                weight: 'bold',
+                                size: 11
+                            },
+                            formatter: function(value) {
+                                return value.toLocaleString();
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                font: { size: 12 },
+                                callback: function(value) {
+                                    return value.toLocaleString();
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                font: { size: 11 },
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            grid: {
+                                display: false
+                            }
+                        }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })
+        .catch(err => console.error(err));
+</script>
+
+</body>
+</html>
