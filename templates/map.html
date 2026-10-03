@@ -91,7 +91,7 @@
         }
 
         function updateMap() {
-            fetch('/ads-l/')
+            fetch('/conspicuity-monitor/api/adsl')
                 .then(res => res.json())
                 .then(data => {
                     // Update aircraft counter
@@ -226,7 +226,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
 <script>
-    fetch('/ads-l/stats')
+    fetch('/conspicuity-monitor/api/adsl/monthly')
         .then(resp => resp.json())
         .then(data => {
             // Prepare monthly chart data (last 12 months)

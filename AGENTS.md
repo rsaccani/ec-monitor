@@ -1,10 +1,10 @@
-# AGENTS.md - Guidelines for Agentic Coding in ADS-L Live Map
+# AGENTS.md - Guidelines for coding agents working on the Electronic Conspicuity Monitor
 
-This document provides guidelines for coding agents working on the ADS-L Live Map project.
+Read README.md and METHOD.md first. A change to what is measured is a change to METHOD.md, committed on its own with its reason.
 
 ## Project Overview
 
-ADS-L Live Map is a Flask application that displays real-time positions of ADS-L equipped aircraft worldwide. It connects to the Open Glider Network (OGN) APRS feed, processes telemetry data, and visualizes active devices on an interactive map.
+The backend of the Electronic Conspicuity Monitor (https://www.saccani.net/conspicuity-monitor/). A Flask application that reads the Open Glider Network (OGN) APRS feed, serves a live map of every source, and measures how well each conspicuity system keeps light aircraft visible (`sources.py`).
 
 ## Build/Lint/Test Commands
 
@@ -42,9 +42,8 @@ flask run
 There are no formal test files in the project. Testing is done manually by:
 1. Running the application in development mode
 2. Accessing the endpoints:
-   - `/ads-l-map` - Main map interface
-   - `/ads-l/` - JSON data of active devices
-   - `/ads-l/stats` - Monthly statistics
+   - `/demo` - standalone demo map
+   - `/conspicuity-monitor/api/...` - the public endpoints, listed in README.md
    - `/device-map` - Device type mapping
 3. Verifying data appears correctly on the map
 4. Checking logs for errors

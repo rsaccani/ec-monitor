@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 SERVICE=ads-l-map
-URL=http://127.0.0.1:5000/ads-l/stats
+URL=http://127.0.0.1:5000/conspicuity-monitor/api/adsl/monthly
 SETTLE=30
 
 prev=$(git rev-parse HEAD)

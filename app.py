@@ -567,11 +567,18 @@ def respond(rows, name):
 
 
 # --- ROUTES FLASK ---
+# Public paths, proxied by nginx under the monitor's page. The old /ads-l/
+# paths answer too until the pages and any saved links have moved.
+API = "/conspicuity-monitor/api"
+
+
+@app.route("/demo")
 @app.route("/ads-l-map")
 def index():
     return render_template("map.html")
 
 
+@app.route(API + "/adsl")
 @app.route("/ads-l/")
 def get_ads_l():
     out = []
@@ -588,6 +595,7 @@ ADDRESS_PREFIXES = {"ICA": "icao", "FLR": "flarm", "OGN": "ogn", "RND": "random"
                     "PAW": "pilotaware", "FNT": "fanet"}
 
 
+@app.route(API + "/adsl/monthly")
 @app.route("/ads-l/stats")
 def ads_l_stats():
     """Per-month counts, oldest month last (as before), every month on record.
@@ -647,6 +655,7 @@ def ads_l_stats():
     return respond(out, "ads-l-monthly")
 
 
+@app.route(API + "/live")
 @app.route("/ads-l/live")
 def get_live():
     """Positions from the other sources, for the map's layer selector.
@@ -668,6 +677,7 @@ def get_live():
     return jsonify(tracker.live_snapshot(layers, bbox))
 
 
+@app.route(API + "/sources")
 @app.route("/ads-l/sources")
 def get_sources():
     """Monthly distinct devices per OGN source, split by radio or network."""
@@ -684,6 +694,7 @@ def get_sources():
         return jsonify([])
 
 
+@app.route(API + "/visibility")
 @app.route("/ads-l/visibility")
 def get_visibility():
     """Daily visibility totals per source, channel and category (METHOD.md)."""
@@ -696,6 +707,7 @@ def get_visibility():
         return jsonify([])
 
 
+@app.route(API + "/visibility/detail")
 @app.route("/ads-l/visibility/detail")
 def get_visibility_detail():
     """Monthly visibility by source, channel, category and height band (METHOD.md)."""
@@ -708,6 +720,7 @@ def get_visibility_detail():
         return jsonify([])
 
 
+@app.route(API + "/visibility/grid")
 @app.route("/ads-l/visibility/grid")
 def get_visibility_grid():
     """Monthly visibility per 0.25-degree cell; ?month=YYYY-MM, default current."""
@@ -723,6 +736,7 @@ def get_visibility_grid():
         return jsonify([])
 
 
+@app.route(API + "/pattern")
 @app.route("/ads-l/pattern")
 def get_pattern():
     """Radio packets received while circling, by angle to the receiver (METHOD.md)."""
@@ -735,6 +749,7 @@ def get_pattern():
         return jsonify([])
 
 
+@app.route(API + "/prediction")
 @app.route("/ads-l/prediction")
 def get_prediction():
     """Prediction errors at 5, 10 and 20 s, with and without the turn rate (METHOD.md)."""
@@ -750,6 +765,7 @@ def get_prediction():
 _method_cache = (0, None)
 
 
+@app.route(API + "/method")
 @app.route("/ads-l/method")
 def get_method():
     """METHOD.md and its commit history, as deployed (read from this checkout).
