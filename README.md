@@ -40,7 +40,10 @@ Positions come from the OGN APRS feed (`aprs.glidernet.org:14580`). Devices whos
 `TRACKED=N` in the OGN device database are dropped as soon as they are read, and devices with
 `IDENTIFIED=N` are shown without model or registration, as the OGN data usage terms require. The
 database holds counts and sums per month, day, cell or source, plus the list of device addresses seen
-each month, which is what the device counts are made of; it stores no position and no track. Only the live map
+in the current and the previous month, which is what the device counts are made of; it stores no
+position and no track. Older months are kept as counts only: every six hours the service reduces
+them to `monthly_devices_summary` and `monthly_sources_summary` and deletes their addresses. The
+previous month is kept whole so that the return of device ids from one month to the next can be measured. Only the live map
 shows positions, and only for the last 15 minutes (60 for ADS-L).
 
 ## How it runs
@@ -137,13 +140,16 @@ Then the service user. It needs exactly these grants and nothing more. `monthly_
 `monthly_sources` are updated one column at a time, while `monthly_visibility_detail`,
 `monthly_visibility_grid`, `monthly_reception_pattern` and `monthly_prediction` are updated in place
 with `INSERT … ON DUPLICATE KEY UPDATE`, which needs `UPDATE` on every column of the table.
-`daily_visibility` is append-only.
+`daily_visibility` is append-only. `DELETE` on the two device tables is for the monthly archiving
+described under Data and privacy.
 
 ```sql
 CREATE USER 'ads_user'@'localhost' IDENTIFIED BY 'choose-a-password';
 GRANT SELECT, INSERT ON ads_l.* TO 'ads_user'@'localhost';
 GRANT UPDATE (category) ON ads_l.monthly_devices TO 'ads_user'@'localhost';
 GRANT UPDATE (last_seen) ON ads_l.monthly_sources TO 'ads_user'@'localhost';
+GRANT DELETE ON ads_l.monthly_devices TO 'ads_user'@'localhost';
+GRANT DELETE ON ads_l.monthly_sources TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_visibility_detail TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_visibility_grid TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_reception_pattern TO 'ads_user'@'localhost';

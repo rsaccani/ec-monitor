@@ -156,3 +156,24 @@ CREATE TABLE IF NOT EXISTS `monthly_prediction` (
   `error_sum` double NOT NULL DEFAULT 0,
   PRIMARY KEY (`month`,`source`,`category`,`horizon`,`circling`,`predictor`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Months older than the previous one, reduced to counts by the service
+-- (sources.archive_loop); their device addresses are then deleted from
+-- monthly_devices and monthly_sources. Category 255: none recorded.
+CREATE TABLE IF NOT EXISTS `monthly_devices_summary` (
+  `month` char(7) NOT NULL,
+  `prefix` char(3) NOT NULL,
+  `category` tinyint(3) unsigned NOT NULL,
+  `devices` int(10) unsigned NOT NULL,
+  PRIMARY KEY (`month`,`prefix`,`category`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `monthly_sources_summary` (
+  `month` char(7) NOT NULL,
+  `source` varchar(9) NOT NULL,
+  `via` enum('radio','net') NOT NULL,
+  `category` tinyint(3) unsigned NOT NULL,
+  `devices` int(10) unsigned NOT NULL,
+  `multi_day` int(10) unsigned NOT NULL,
+  PRIMARY KEY (`month`,`source`,`via`,`category`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

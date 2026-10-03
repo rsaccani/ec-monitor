@@ -617,16 +617,27 @@ def ads_l_stats():
         return "[]"
     try:
         with db.cursor() as cur:
+            # Older months live only as counts in monthly_devices_summary
+            # (sources.archive_loop), with 255 for "no category recorded".
             cur.execute("""
                 SELECT month, LEFT(device_id, 3), COUNT(*)
                     FROM monthly_devices
                 GROUP BY month, LEFT(device_id, 3)
+                UNION ALL
+                SELECT month, prefix, SUM(devices)
+                    FROM monthly_devices_summary
+                GROUP BY month, prefix
             """)
             by_prefix = cur.fetchall()
             cur.execute("""
                 SELECT month, category, COUNT(*)
                     FROM monthly_devices
                 WHERE category IS NOT NULL
+                GROUP BY month, category
+                UNION ALL
+                SELECT month, category, SUM(devices)
+                    FROM monthly_devices_summary
+                WHERE category <> 255
                 GROUP BY month, category
             """)
             by_category = cur.fetchall()
@@ -830,6 +841,7 @@ def bootstrap():
     if not SKIP_STATS_DATABASE:
         Thread(target=tracker.writer_loop, daemon=True).start()
         Thread(target=tracker.visibility_loop, daemon=True).start()
+        Thread(target=tracker.archive_loop, daemon=True).start()
     Thread(target=tracker.prune_loop, daemon=True).start()
 
     Thread(target=ads_l_listener, daemon=True).start()

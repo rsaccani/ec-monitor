@@ -110,6 +110,7 @@ CIRCLING_ROT = 2.0                       # half-turns per minute (6 deg/s)
 IMPLAUSIBLE_MS = 500 / 3.6               # 500 km/h: a shared address or a corrupt fix
 STALE_SECONDS = 5 * 60                   # a fix older than this on arrival is ignored
 VISIBILITY_FLUSH = 15 * 60               # seconds between appends to the database
+ARCHIVE_EVERY = 6 * 3600                 # seconds between checks for months to archive
 UNKNOWN_CATEGORY = 255
 SYMBOL_CATEGORY = {"g": 7, "'": 1, "^": 8, "X": 3, "O": 11}
 # Totals per (day, source, via, category):
@@ -729,6 +730,63 @@ class SourceTracker:
                 logger.error(f"Error writing to database (pattern/prediction, {len(pattern)}+{len(prediction)} rows): {e}")
                 conn = None
 
+    def archive_loop(self):
+        """Keep device addresses for the current and the previous month only.
+
+        A device address can be traced to an aircraft and its pilot, and once a
+        month is over its counts no longer change. So every month older than
+        the previous one is reduced to counts in the *_summary tables and its
+        addresses are deleted, in one transaction per table. The previous month
+        is kept whole for the month-to-month return of device ids.
+        """
+        time.sleep(60)
+        while True:
+            self.archive_once()
+            time.sleep(ARCHIVE_EVERY)
+
+    def archive_once(self):
+        """One pass of archive_loop."""
+        today = datetime.datetime.utcnow().date().replace(day=1)
+        keep_from = (today - datetime.timedelta(days=1)).strftime("%Y-%m")
+        steps = [
+            ("monthly_devices",
+             """INSERT INTO monthly_devices_summary (month, prefix, category, devices)
+                SELECT month, LEFT(device_id, 3), COALESCE(category, 255), COUNT(*)
+                    FROM monthly_devices WHERE month < %s
+                GROUP BY month, LEFT(device_id, 3), COALESCE(category, 255)"""),
+            ("monthly_sources",
+             """INSERT INTO monthly_sources_summary (month, source, via, category, devices, multi_day)
+                SELECT month, source, via, COALESCE(category, 255), COUNT(*),
+                       SUM(DATE(last_seen) > DATE(first_seen))
+                    FROM monthly_sources WHERE month < %s
+                GROUP BY month, source, via, COALESCE(category, 255)"""),
+        ]
+        for table, summarise in steps:
+            conn = None
+            try:
+                conn = self.connect_db()
+                conn.begin()
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT month) FROM {table} WHERE month < %s", (keep_from,))
+                    n, months = cur.fetchone()
+                    if n:
+                        cur.execute(summarise, (keep_from,))
+                        cur.execute(f"DELETE FROM {table} WHERE month < %s", (keep_from,))
+                conn.commit()
+                if n:
+                    logger.info(f"Archived {table}: {n} addresses of {months} month(s) before {keep_from} reduced to counts")
+                    self.stats_cache = (0, None)
+            except pymysql.MySQLError as e:
+                logger.error(f"Error archiving {table}: {e}")
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except pymysql.MySQLError:
+                        pass
+            finally:
+                if conn is not None:
+                    conn.close()
+
     def visibility_stats(self, days=62):
         """Sums per day, source, via and category for the last `days` days."""
         with self.lock:
@@ -938,10 +996,17 @@ class SourceTracker:
             conn = self.connect_db()
             try:
                 with conn.cursor() as cur:
+                    # Months older than the previous one live only as counts in
+                    # monthly_sources_summary (archive_loop); a month is never
+                    # in both tables.
                     cur.execute("""
                         SELECT month, source, via, COUNT(*),
                                SUM(DATE(last_seen) > DATE(first_seen))
                             FROM monthly_sources
+                        GROUP BY month, source, via
+                        UNION ALL
+                        SELECT month, source, via, SUM(devices), SUM(multi_day)
+                            FROM monthly_sources_summary
                         GROUP BY month, source, via
                     """)
                     rows = cur.fetchall()
@@ -951,6 +1016,9 @@ class SourceTracker:
                         SELECT month, source, via, category, COUNT(*)
                             FROM monthly_sources
                         GROUP BY month, source, via, category
+                        UNION ALL
+                        SELECT month, source, via, category, devices
+                            FROM monthly_sources_summary
                     """)
                     cat_rows = cur.fetchall()
             finally:
