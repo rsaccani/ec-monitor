@@ -213,18 +213,34 @@ class Terrain:
         except (OSError, ValueError, KeyError) as e:
             logger.info(f"No terrain model ({e}); height above ground will be unknown")
 
-    def elevation(self, lat, lon):
-        """Metres, 0 over the sea, None outside the model."""
-        if not self.ok:
-            return None
-        r = int((self.north - lat) / self.step)
-        c = int((lon - self.west) / self.step)
-        if not (0 <= r < self.rows and 0 <= c < self.cols):
-            return None
+    def _cell(self, r, c):
         v = struct.unpack_from("<h", self._mm, (r * self.cols + c) * 2)[0]
         # ETOPO keeps sea-floor depths: over the sea the ground is the surface.
         # Clamping also lifts land below sea level to 0, a few metres at most.
         return 0 if v == self.nodata or v < 0 else v
+
+    def elevation(self, lat, lon):
+        """Metres, 0 over the sea, None outside the model.
+
+        Interpolated between the centres of the four nearest cells (METHOD.md,
+        section 3): on a slope the value of the one cell containing the point
+        was off by about twice as much, since the cell is the average of
+        ground that rises across it.
+        """
+        if not self.ok:
+            return None
+        y = (self.north - lat) / self.step
+        x = (lon - self.west) / self.step
+        if not (0 <= y < self.rows and 0 <= x < self.cols):
+            return None
+        # Cells are registered by their area, so centres sit at i + 0.5.
+        y = min(max(y - 0.5, 0.0), self.rows - 1.0)
+        x = min(max(x - 0.5, 0.0), self.cols - 1.0)
+        r, c = int(y), int(x)
+        r1, c1 = min(r + 1, self.rows - 1), min(c + 1, self.cols - 1)
+        dy, dx = y - r, x - c
+        return ((self._cell(r, c) * (1 - dx) + self._cell(r, c1) * dx) * (1 - dy) +
+                (self._cell(r1, c) * (1 - dx) + self._cell(r1, c1) * dx) * dy)
 
 
 # Monthly totals per (month, source, via, category, msl band, agl band).

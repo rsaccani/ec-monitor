@@ -122,8 +122,15 @@ last seen before it, which is where coverage gave way:
   tracking link between 600 and 1,200 m above the ground. The ground is the
   NOAA ETOPO 2022 surface model at 15 arc-seconds (cells of about 460 by 310 m
   at the latitude of the Alps) over 35–72°N and 25°W–45°E; over the sea it is
-  the sea surface. Close to a ridge the ground under an aircraft can differ
-  from the cell's elevation by 150–250 m, which moves segments near a band
+  the sea surface. The ground under an aircraft is interpolated between the
+  centres of the four nearest cells (bilinear), which follows a slope across
+  a cell; the value of the one cell containing the point would treat the
+  slope as flat. Tested on the Alps by averaging the model to cells twice as
+  large and reading it back at 400,000 random points, interpolation lowered
+  the error on the steepest tenth of the ground from a median of 100 m to
+  30 m, and its 90th percentile from 220 m to 90 m. Relief smaller than a
+  cell stays: close to a ridge the ground can still differ from the model by
+  some tens of metres to over a hundred, which moves segments near a band
   boundary without changing a band's result. Outside that area the height
   above the ground is unknown.
 - **Cell**, a square of 0.25 degrees (about 28 by 19 km in the Alps), for a
