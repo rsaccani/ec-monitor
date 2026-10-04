@@ -74,9 +74,9 @@ that case is outside what this feed can show.
 **Distance between positions.** A gap is judged by how far the aircraft
 moved. Thirty silent seconds leave a paraglider 300 m from its last point and
 a glider at 150 km/h more than a kilometre and a quarter. The thresholds are
-**300 m**, the largest gap the VarioVoice app is designed to leave (it sends
-every 150 m, so that one lost transmission stays inside the budget) and
-roughly where a paraglider becomes hard to find by eye, and **1 km** and
+**300 m**, the distance by which a device that sends a position every 150 m
+falls behind when one transmission is lost, and roughly where a paraglider
+becomes hard to find by eye, and **1 km** and
 **3 km**, for the tail and for fast aircraft, which cover 300 m in a few
 seconds.
 
