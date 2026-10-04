@@ -91,9 +91,7 @@ service, its directory and the `ads_l` database still carry that name.
 ## Endpoints
 
 The public endpoints live under `/conspicuity-monitor/api/`, which nginx proxies to the service on the
-same host as the page. Until the pages and any saved links have moved, the same endpoints also answer
-under their old names (`/ads-l/` for `/adsl`, `/ads-l/stats` for `/adsl/monthly`, `/ads-l/<name>` for
-the others). `/demo` and `/device-map` are for local use and are not proxied.
+same host as the page. `/demo` and `/device-map` are for local use and are not proxied.
 
 The statistics endpoints answer JSON, and also `?format=csv` with one flat row per entry (nested fields
 become `parent.child` columns), for whoever wants to redo the sums in a spreadsheet. They are cached for
@@ -122,6 +120,10 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 ### `/conspicuity-monitor/api/visibility`
 **Method:** GET
 **Description:** Daily visibility totals for the last 62 days, per source, channel and aircraft category, as defined in [METHOD.md](METHOD.md): airborne seconds, and the seconds during which the position a receiver could estimate was more than 300 m, 1 km or 3 km from the true one, for the last-point and the packet-based estimator. Also packets, packets carrying a turn rate, segments, session breaks and implausible segments. Cached for 10 minutes.
+
+### `/conspicuity-monitor/api/hours`
+**Method:** GET
+**Description:** Flying time per month and aircraft category (`air_seconds`, `segments`), each aircraft counted once: every fix of the same 24-bit address feeds one timeline, whatever source or channel it came by. Starts on 2026-10-04 (METHOD.md).
 
 ### `/conspicuity-monitor/api/visibility/detail`
 **Method:** GET
@@ -183,6 +185,7 @@ GRANT UPDATE ON ads_l.monthly_visibility_detail TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_visibility_grid TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_reception_pattern TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_prediction TO 'ads_user'@'localhost';
+GRANT UPDATE ON ads_l.monthly_hours TO 'ads_user'@'localhost';
 ```
 
 The service connects to `localhost` over TCP, port 3306, and reads the user and password from a `.env`

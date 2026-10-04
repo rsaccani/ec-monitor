@@ -136,7 +136,7 @@ def get_db_connection(max_retries=30, retry_delay=10):
         return None
     retries = 0
     while retries < max_retries:
-        main_logger.info("Attempting to connect to db.")
+        main_logger.debug("Attempting to connect to db.")
         try:
             conn = pymysql.connect(
                 host="localhost",
@@ -145,7 +145,7 @@ def get_db_connection(max_retries=30, retry_delay=10):
                 database="ads_l",
                 autocommit=True,
             )
-            main_logger.info("Connection to database established.")
+            main_logger.debug("Connection to database established.")
             return conn
         except pymysql.MySQLError as e:
             retries += 1
@@ -263,6 +263,29 @@ def is_valid_heading(heading):
     return 0 <= heading <= 360
 
 
+# Rejected packets are counted and summed up once an hour. Logged one by one
+# they filled the system log (and logcheck's mail) with some 1,700 lines a
+# day, each carrying a device address.
+REJECT_SUMMARY_EVERY = 3600
+_rejected = {}
+_rejected_since = time.time()
+_rejected_lock = threading.Lock()
+
+
+def note_rejected(failures):
+    global _rejected_since
+    with _rejected_lock:
+        for f in failures:
+            field = f.split(" ", 1)[0]
+            _rejected[field] = _rejected.get(field, 0) + 1
+        if time.time() - _rejected_since < REJECT_SUMMARY_EVERY:
+            return
+        summary = ", ".join(f"{k} {v}" for k, v in sorted(_rejected.items()))
+        _rejected.clear()
+        _rejected_since = time.time()
+    main_logger.info("Packets rejected in the last hour, by invalid field: %s", summary)
+
+
 def parse_aprs_line(line):
     global device_type_map
     try:
@@ -368,9 +391,7 @@ def parse_aprs_line(line):
             validation_failures.append(f"heading {heading}")
 
         if validation_failures:
-            main_logger.warning(
-                f"Validation failed for device {device_id}: {', '.join(validation_failures)}"
-            )
+            note_rejected(validation_failures)
             return None
 
         return {
@@ -567,19 +588,16 @@ def respond(rows, name):
 
 
 # --- ROUTES FLASK ---
-# Public paths, proxied by nginx under the monitor's page. The old /ads-l/
-# paths answer too until the pages and any saved links have moved.
+# Public paths, proxied by nginx under the monitor's page.
 API = "/conspicuity-monitor/api"
 
 
 @app.route("/demo")
-@app.route("/ads-l-map")
 def index():
     return render_template("map.html")
 
 
 @app.route(API + "/adsl")
-@app.route("/ads-l/")
 def get_ads_l():
     out = []
     for v in ads_l_devices.values():
@@ -596,7 +614,6 @@ ADDRESS_PREFIXES = {"ICA": "icao", "FLR": "flarm", "OGN": "ogn", "RND": "random"
 
 
 @app.route(API + "/adsl/monthly")
-@app.route("/ads-l/stats")
 def ads_l_stats():
     """Per-month counts, oldest month last (as before), every month on record.
 
@@ -671,7 +688,6 @@ def ads_l_stats():
 
 
 @app.route(API + "/live")
-@app.route("/ads-l/live")
 def get_live():
     """Positions from the other sources, for the map's layer selector.
 
@@ -693,7 +709,6 @@ def get_live():
 
 
 @app.route(API + "/sources")
-@app.route("/ads-l/sources")
 def get_sources():
     """Monthly distinct devices per OGN source, split by radio or network."""
     if tracker is None or SKIP_STATS_DATABASE:
@@ -710,7 +725,6 @@ def get_sources():
 
 
 @app.route(API + "/visibility")
-@app.route("/ads-l/visibility")
 def get_visibility():
     """Daily visibility totals per source, channel and category (METHOD.md)."""
     if tracker is None or SKIP_STATS_DATABASE:
@@ -722,8 +736,19 @@ def get_visibility():
         return jsonify([])
 
 
+@app.route(API + "/hours")
+def get_hours():
+    """Flying time per month and category, each aircraft counted once (METHOD.md)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify([])
+    try:
+        return respond(tracker.hours_stats(), "flying-hours")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading monthly_hours: {e}")
+        return jsonify([])
+
+
 @app.route(API + "/visibility/detail")
-@app.route("/ads-l/visibility/detail")
 def get_visibility_detail():
     """Monthly visibility by source, channel, category and height band (METHOD.md)."""
     if tracker is None or SKIP_STATS_DATABASE:
@@ -736,7 +761,6 @@ def get_visibility_detail():
 
 
 @app.route(API + "/visibility/grid")
-@app.route("/ads-l/visibility/grid")
 def get_visibility_grid():
     """Monthly visibility per 0.25-degree cell; ?month=YYYY-MM, default current."""
     if tracker is None or SKIP_STATS_DATABASE:
@@ -752,7 +776,6 @@ def get_visibility_grid():
 
 
 @app.route(API + "/pattern")
-@app.route("/ads-l/pattern")
 def get_pattern():
     """Radio packets received while circling, by angle to the receiver (METHOD.md)."""
     if tracker is None or SKIP_STATS_DATABASE:
@@ -765,7 +788,6 @@ def get_pattern():
 
 
 @app.route(API + "/prediction")
-@app.route("/ads-l/prediction")
 def get_prediction():
     """Prediction errors at 5, 10 and 20 s, with and without the turn rate (METHOD.md)."""
     if tracker is None or SKIP_STATS_DATABASE:
@@ -781,7 +803,6 @@ _method_cache = (0, None)
 
 
 @app.route(API + "/method")
-@app.route("/ads-l/method")
 def get_method():
     """METHOD.md and its commit history, as deployed (read from this checkout).
 

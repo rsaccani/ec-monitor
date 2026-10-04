@@ -86,6 +86,16 @@ SOURCES = {
 # synthesised copies of packets already counted elsewhere.
 EXCLUDED = {"OGNSDR", "OGNSXR", "OGNDELAY", "OGMLAT", "OGNDVS"}
 
+# Tocalls that are the same system under another protocol version or decoder.
+# A device heard under two of them is one aircraft on one system: its packets
+# are measured as a single stream and the device is counted once. Until
+# 4 October 2026 OGFLR7 was measured apart from OGFLR, which split one FLARM
+# into two sparser streams.
+SAME_SYSTEM = {"OGNFLR": "OGFLR", "OGFLR6": "OGFLR", "OGFLR7": "OGFLR", "OGNPAW": "OGPAW"}
+# The same mapping in SQL, for rows written before it applied.
+SAME_SYSTEM_SQL = ("CASE source " + " ".join(f"WHEN '{a}' THEN '{b}'" for a, b in SAME_SYSTEM.items())
+                   + " ELSE source END")
+
 # Map layers, by kind. ADS-B stays off the map: about 1,400 aircraft at any
 # moment, mostly airliners, would bury everything else and weigh on the poll.
 LAYER_OF_KIND = {
@@ -267,6 +277,7 @@ def _upsert(table, keys, columns):
     return f"INSERT INTO {table} ({cols}) VALUES ({marks}) ON DUPLICATE KEY UPDATE {adds}"
 
 
+HOURS_SQL = _upsert("monthly_hours", ["month", "category"], ["segments", "air_seconds"])
 DETAIL_SQL = _upsert("monthly_visibility_detail",
                      ("month", "source", "via", "category", "msl_band", "agl_band"), DETAIL_COLUMNS)
 # Reception pattern while circling (METHOD.md): received radio packets by the
@@ -359,6 +370,11 @@ class SourceTracker:
         self.history = {}         # (device, source, via) -> deque of recent fixes
         self.scored_at = {}       # (device, source, via) -> time of the last scored fix
         self.rot_devices = set()  # devices that have reported a non-zero turn rate
+        # Flying time per aircraft, whatever source or channel each fix came
+        # by: last fix per 24-bit address, and seconds per (month, category).
+        self.addr_fix = {}
+        self.hours = collections.defaultdict(lambda: [0.0, 0.0])
+        self.hours_cache = (0, None)
         self._tick, self._now, self._month = None, None, None
         self._days = {}
         self.prediction = collections.defaultdict(lambda: [0.0] * len(PREDICTION_COLUMNS))
@@ -376,7 +392,7 @@ class SourceTracker:
         except ValueError:
             return
         path = head.split(",")
-        tocall = path[0]
+        tocall = SAME_SYSTEM.get(path[0], path[0])
         if tocall == "OGNSDR" and body.startswith("/"):
             m = _position.match(body)
             if m:
@@ -482,6 +498,7 @@ class SourceTracker:
             return                          # older than what we already have
         if calendar.timegm(now.timetuple()) - t > STALE_SECONDS:
             return                          # relayed late; would open a false gap
+        self.count_hours(day[:7], src[-6:], category, t, lat, lon, speed)
         if station is not None and course is not None:
             self.record_pattern(day[:7], tocall, category, station, lat, lon, t, course, rot, prev, body)
         self.record_prediction(day[:7], tocall, category, key, (t, lat, lon, course, speed, rot))
@@ -569,6 +586,31 @@ class SourceTracker:
             pg[3] += o1[0]
             pg[4] += o1[1]
             pg[5] += o0[1]
+
+    def count_hours(self, month, address, category, t, lat, lon, speed):
+        """Flying time per aircraft (METHOD.md): one address, all its sources.
+
+        Every source and channel feeds the same timeline, so an aircraft heard
+        by FLARM, FANET and ADS-L at once counts its time once, and so does a
+        phone app that uses the device's own address. The segment rules are
+        those of the visibility measure.
+        """
+        prev = self.addr_fix.get(address)
+        if prev is not None and t <= prev[0]:
+            return                          # already covered by another source
+        self.addr_fix[address] = (t, lat, lon, speed)
+        if prev is None:
+            return
+        seconds = t - prev[0]
+        if seconds > SESSION_BREAK:
+            return
+        if _distance(prev[1], prev[2], lat, lon) > IMPLAUSIBLE_MS * max(seconds, 1):
+            return
+        if not ((prev[3] or 0) >= AIRBORNE_KT or (speed or 0) >= AIRBORNE_KT):
+            return
+        h = self.hours[(month, category)]
+        h[0] += 1
+        h[1] += seconds
 
     def count_vanish(self, month, tocall, via, category, lat, lon, alt_m, silent_seconds):
         """One disappearance, at the height of the last position seen (METHOD.md)."""
@@ -693,6 +735,9 @@ class SourceTracker:
             grid, self.grid = self.grid, collections.defaultdict(lambda: [0.0] * len(GRID_COLUMNS))
             pattern, self.pattern = self.pattern, collections.defaultdict(lambda: [0.0, 0.0, 0.0])
             prediction, self.prediction = self.prediction, collections.defaultdict(lambda: [0.0] * len(PREDICTION_COLUMNS))
+            hours, self.hours = self.hours, collections.defaultdict(lambda: [0.0, 0.0])
+            self.addr_fix = {k: v for k, v in list(self.addr_fix.items())
+                             if time.time() - v[0] < SESSION_BREAK}
             self.history = {k: v for k, v in list(self.history.items())
                             if v and time.time() - v[-1][0] < HISTORY_SECONDS}
             self.scored_at = {k: v for k, v in list(self.scored_at.items())
@@ -706,7 +751,7 @@ class SourceTracker:
                     # Silent for more than SESSION_BREAK and last seen flying: gone.
                     self.count_vanish(v[8], k[1], k[2], v[7], v[1], v[2], v[6], SESSION_BREAK + 1)
             self.last_fix = keep
-            if not totals and not detail and not grid and not pattern and not prediction:
+            if not totals and not detail and not grid and not pattern and not prediction and not hours:
                 continue
             flushed = datetime.datetime.utcnow().replace(microsecond=0)
             rows = [(day, tocall, via, cat, flushed, int(v[0]), int(v[1]), int(v[2]), int(v[3]), int(v[4])) +
@@ -745,6 +790,14 @@ class SourceTracker:
             except pymysql.MySQLError as e:
                 logger.error(f"Error writing to database (pattern/prediction, {len(pattern)}+{len(prediction)} rows): {e}")
                 conn = None
+            try:
+                if conn is None:
+                    conn = self.connect_db()
+                with conn.cursor() as cur:
+                    cur.executemany(HOURS_SQL, [k + tuple(round(x, 1) for x in v) for k, v in hours.items()])
+            except pymysql.MySQLError as e:
+                logger.error(f"Error writing to database (hours, {len(hours)} rows): {e}")
+                conn = None
 
     def archive_loop(self):
         """Keep device addresses for the current and the previous month only.
@@ -771,11 +824,13 @@ class SourceTracker:
                     FROM monthly_devices WHERE month < %s
                 GROUP BY month, LEFT(device_id, 3), COALESCE(category, 255)"""),
             ("monthly_sources",
-             """INSERT INTO monthly_sources_summary (month, source, via, category, devices, multi_day)
-                SELECT month, source, via, COALESCE(category, 255), COUNT(*),
-                       SUM(DATE(last_seen) > DATE(first_seen))
-                    FROM monthly_sources WHERE month < %s
-                GROUP BY month, source, via, COALESCE(category, 255)"""),
+             f"""INSERT INTO monthly_sources_summary (month, source, via, category, devices, multi_day)
+                SELECT month, src, via, cat, COUNT(*), SUM(DATE(last_seen) > DATE(first_seen))
+                    FROM (SELECT month, {SAME_SYSTEM_SQL} AS src, via, device_id,
+                                 MIN(COALESCE(category, 255)) AS cat,
+                                 MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
+                              FROM monthly_sources WHERE month < %s GROUP BY 1, 2, 3, 4) d
+                GROUP BY month, src, via, cat"""),
         ]
         for table, summarise in steps:
             conn = None
@@ -863,6 +918,24 @@ class SourceTracker:
                     d[c] = float(v)
                 out.append(d)
             self.detail_cache = (time.time(), out)
+            return out
+
+    def hours_stats(self):
+        """Flying time per month and category, each aircraft counted once."""
+        with self.lock:
+            stamp, cached = self.hours_cache
+            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+                return cached
+            conn = self.connect_db()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT month, category, segments, air_seconds FROM monthly_hours ORDER BY month")
+                    rows = cur.fetchall()
+            finally:
+                conn.close()
+            out = [{"month": r[0], "category": None if r[1] == UNKNOWN_CATEGORY else int(r[1]),
+                    "segments": float(r[2]), "air_seconds": float(r[3])} for r in rows]
+            self.hours_cache = (time.time(), out)
             return out
 
     def pattern_stats(self):
@@ -1015,11 +1088,12 @@ class SourceTracker:
                     # Months older than the previous one live only as counts in
                     # monthly_sources_summary (archive_loop); a month is never
                     # in both tables.
-                    cur.execute("""
-                        SELECT month, source, via, COUNT(*),
-                               SUM(DATE(last_seen) > DATE(first_seen))
-                            FROM monthly_sources
-                        GROUP BY month, source, via
+                    cur.execute(f"""
+                        SELECT month, src, via, COUNT(*), SUM(DATE(last_seen) > DATE(first_seen))
+                            FROM (SELECT month, {SAME_SYSTEM_SQL} AS src, via, device_id,
+                                         MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
+                                      FROM monthly_sources GROUP BY 1, 2, 3, 4) d
+                        GROUP BY month, src, via
                         UNION ALL
                         SELECT month, source, via, SUM(devices), SUM(multi_day)
                             FROM monthly_sources_summary
@@ -1028,10 +1102,10 @@ class SourceTracker:
                     rows = cur.fetchall()
                     # The same, by aircraft category (the one seen first that
                     # month), for adoption by kind of aircraft.
-                    cur.execute("""
-                        SELECT month, source, via, category, COUNT(*)
+                    cur.execute(f"""
+                        SELECT month, {SAME_SYSTEM_SQL} AS src, via, category, COUNT(DISTINCT device_id)
                             FROM monthly_sources
-                        GROUP BY month, source, via, category
+                        GROUP BY 1, 2, 3, 4
                         UNION ALL
                         SELECT month, source, via, category, devices
                             FROM monthly_sources_summary

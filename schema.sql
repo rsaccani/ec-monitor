@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS `monthly_prediction` (
   PRIMARY KEY (`month`,`source`,`category`,`horizon`,`circling`,`predictor`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- Flying time per month and category, each aircraft counted once whatever
+-- source or channel it was heard by (sources.count_hours).
+CREATE TABLE IF NOT EXISTS `monthly_hours` (
+  `month` char(7) NOT NULL,
+  `category` tinyint(3) unsigned NOT NULL,
+  `segments` double NOT NULL DEFAULT 0,
+  `air_seconds` double NOT NULL DEFAULT 0,
+  PRIMARY KEY (`month`,`category`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 -- Months older than the previous one, reduced to counts by the service
 -- (sources.archive_loop); their device addresses are then deleted from
 -- monthly_devices and monthly_sources. Category 255: none recorded.
