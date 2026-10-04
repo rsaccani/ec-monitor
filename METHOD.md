@@ -5,7 +5,7 @@ from that moment on follows the rules below. They were worked out and tested
 on the live feed during 3 October 2026; the data of that day served to test
 them and was discarded. Any later change to a rule is committed to this file
 with its date and its reason, and the figures it affects say so. The
-development history of version 1 remains in the repository.
+development history of version 1 was not published.
 
 ## 1. The data
 
