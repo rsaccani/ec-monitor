@@ -179,6 +179,12 @@ updates every 18 seconds and fails a 6-second requirement while its position
 is never more than 150 m off; an aircraft at 250 km/h updating every 6
 seconds passes it, after moving 400 m.
 
+How far each kind of aircraft moves in a given silence is read from the
+measures of section 6: the error of the fourth prediction, S itself, 10
+seconds ahead in straight flight is the distance flown in those 10 seconds. Its
+median per kind, and the seconds after which the position falls 300 m
+behind (10 × 300 / that median), are shown with question 4.
+
 ## 6. The turn rate
 
 **Where it comes from.** It is sent by the aircraft in FLARM's current
@@ -247,15 +253,43 @@ signal-to-noise ratio, corrected for distance by the free-space loss (adding
 can be read in decibels. While an aircraft circles, every receiver sees it
 from every side equally often, so differences in receiver sensitivity cancel.
 
-Gliders on the same radio system are the comparison, and an imperfect one:
-FLARM's antenna note answers "Does the human body attenuate the FLARM
-signal?" with "Yes", and the most common glider installation sits on or above
-the instrument panel with the pilot right behind it, while carbon-fibre
-fuselages shield further. The comparison is between two ways of carrying a
-transmitter, on a paraglider pilot's harness or pod and mostly in front of a
-glider pilot. The feed shows one receiving station per packet, the first to
-forward it, and a phone app has no receiving station, so this measure applies
-to radio only.
+Stations close to the aircraft receive almost every packet whatever the
+direction, which hides a shadow; it shows at the far stations, where the
+signal is near the limit of reception. The packet pattern is therefore drawn
+from stations more than 20 km away. The signal-to-noise ratio is read from
+stations within 5 km: there few packets go missing, so the average is not
+raised by the weak ones dropping out, as it is farther away. The two are
+independent readings of the same shadow, from different stations and
+different quantities.
+
+What the shadow costs in range is derived from the second. The difference in
+decibels between the strongest and the weakest sector becomes a share of the
+range, 10^(−dB/20), on the assumption of two aircraft in line of sight,
+where the signal falls with the square of the distance: every 6 dB halves
+the range. Each sector needs at least 300 packets with a signal-to-noise
+ratio before the figure is given.
+
+The receiving stations are on the ground, below the aircraft, so both
+readings concern the signal that leaves the transmitter downwards: a station
+5 km away and 1,000 to 2,000 m lower is seen 10 to 20 degrees below the
+horizon, one 20 to 40 km away 2 to 6 degrees below. While circling the
+aircraft is also banked, by 20 to 45 degrees, so a station on the inside of
+the turn lies well below the pilot's horizontal plane and one on the outside
+above it. Towards another aircraft at the same height the shadow may be
+stronger or weaker; no ground station can measure it.
+
+Gliders and powered aircraft on the same radio system are the comparison,
+and an imperfect one. FLARM's antenna note answers "Does the human body
+attenuate the FLARM signal?" with "Yes", and the most common glider
+installation sits on or above the instrument panel with the pilot right
+behind it, while carbon-fibre fuselages shield further. In powered aircraft
+the antenna may be on the panel, on the canopy or under a metal fuselage,
+and circling is mostly the turns of a circuit, a smaller sample. The
+comparison is between ways of carrying a transmitter: on a paraglider
+pilot's harness or pod, mostly in front of a glider pilot, and in a powered
+aircraft. The feed shows one receiving station per packet, the first to
+forward it, and a phone app has no receiving station, so this measure
+applies to radio only.
 
 ## 8. How much flying happens where phone apps work
 
