@@ -277,6 +277,7 @@ def _upsert(table, keys, columns):
     return f"INSERT INTO {table} ({cols}) VALUES ({marks}) ON DUPLICATE KEY UPDATE {adds}"
 
 
+SYSTEMS_MIN_COMBO = 5   # aircraft before a combination of systems is listed by name
 HOURS_SQL = _upsert("monthly_hours", ["month", "category"], ["segments", "air_seconds"])
 DETAIL_SQL = _upsert("monthly_visibility_detail",
                      ("month", "source", "via", "category", "msl_band", "agl_band"), DETAIL_COLUMNS)
@@ -375,6 +376,7 @@ class SourceTracker:
         self.addr_fix = {}
         self.hours = collections.defaultdict(lambda: [0.0, 0.0])
         self.hours_cache = (0, None)
+        self.systems_cache = (0, None)
         self._tick, self._now, self._month = None, None, None
         self._days = {}
         self.prediction = collections.defaultdict(lambda: [0.0] * len(PREDICTION_COLUMNS))
@@ -936,6 +938,71 @@ class SourceTracker:
             out = [{"month": r[0], "category": None if r[1] == UNKNOWN_CATEGORY else int(r[1]),
                     "segments": float(r[2]), "air_seconds": float(r[3])} for r in rows]
             self.hours_cache = (time.time(), out)
+            return out
+
+    def systems_stats(self):
+        """How many aircraft are heard on more than one system (METHOD.md).
+
+        One aircraft is one 24-bit address. Its systems are the sources it was
+        heard by that month, whatever the channel (FANET by radio and through
+        an internet gateway is one system), grouped as radio, phone app or
+        tracker; platforms that relay other sources are left out. Only counts
+        leave this function, and combinations shared by fewer than
+        SYSTEMS_MIN_COMBO aircraft are pooled so that no rare aircraft stands out.
+        """
+        with self.lock:
+            stamp, cached = self.systems_cache
+            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+                return cached
+            conn = self.connect_db()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT month, source, RIGHT(device_id, 6), category FROM monthly_sources")
+                    rows = cur.fetchall()
+            finally:
+                conn.close()
+            systems = collections.defaultdict(set)
+            category = {}
+            for month, tocall, addr, cat in rows:
+                label, kind = source_info(SAME_SYSTEM.get(tocall, tocall))
+                if kind == "platform":
+                    continue
+                cls = "phone" if kind == "app" else "tracker" if kind == "tracker" else "radio"
+                systems[(month, addr)].add((label, cls))
+                if cat is not None and cat != UNKNOWN_CATEGORY and (month, addr) not in category:
+                    category[(month, addr)] = int(cat)
+            groups = {}
+            for key, sys in systems.items():
+                month = key[0]
+                cat = category.get(key)
+                g = groups.setdefault((month, cat), {"n": [0, 0, 0], "radio_phone": 0, "phone_only": 0,
+                                                     "combos": collections.Counter(), "adsl": [0, 0, 0, 0]})
+                names = sorted({x[0] for x in sys})
+                classes = {x[1] for x in sys}
+                g["n"][min(len(names), 3) - 1] += 1
+                if "phone" in classes and "radio" in classes:
+                    g["radio_phone"] += 1
+                elif classes == {"phone"}:
+                    g["phone_only"] += 1
+                if len(names) > 1:
+                    g["combos"][" + ".join(names)] += 1
+                if "ADS-L" in names:
+                    a = g["adsl"]
+                    a[0] += 1
+                    a[1] += "FLARM" in names
+                    a[2] += "FANET" in names
+                    a[3] += len(names) == 1
+            out = []
+            for (month, cat), g in sorted(groups.items(), key=lambda x: (x[0][0], x[0][1] if x[0][1] is not None else -1)):
+                combos = [{"systems": k, "aircraft": v} for k, v in g["combos"].most_common() if v >= SYSTEMS_MIN_COMBO]
+                pooled = sum(v for v in g["combos"].values() if v < SYSTEMS_MIN_COMBO)
+                out.append({"month": month, "category": cat,
+                            "one": g["n"][0], "two": g["n"][1], "three_or_more": g["n"][2],
+                            "radio_and_phone": g["radio_phone"], "phone_only": g["phone_only"],
+                            "combinations": combos, "other_combinations": pooled,
+                            "adsl": g["adsl"][0], "adsl_with_flarm": g["adsl"][1],
+                            "adsl_with_fanet": g["adsl"][2], "adsl_only": g["adsl"][3]})
+            self.systems_cache = (time.time(), out)
             return out
 
     def pattern_stats(self):

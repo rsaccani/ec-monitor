@@ -125,6 +125,10 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 **Method:** GET
 **Description:** Flying time per month and aircraft category (`air_seconds`, `segments`), each aircraft counted once: every fix of the same 24-bit address feeds one timeline, whatever source or channel it came by. Starts on 2026-10-04 (METHOD.md).
 
+### `/conspicuity-monitor/api/systems`
+**Method:** GET
+**Description:** Per month and aircraft category, how many aircraft (24-bit addresses) were heard on one, two, or three or more systems, how many on both a radio system and a phone app (`radio_and_phone`) or on phone apps only (`phone_only`), the combinations of systems shared by at least 5 aircraft with the rest pooled in `other_combinations`, and the ADS-L transmitters among them (`adsl`, `adsl_with_flarm`, `adsl_with_fanet`, `adsl_only`). Only counts; computed from the months whose addresses are still kept (METHOD.md).
+
 ### `/conspicuity-monitor/api/visibility/detail`
 **Method:** GET
 **Description:** Monthly visibility totals per source, channel, aircraft category, height band above sea (`msl_band`, 0 = below 1,000 m … 4 = above 4,000 m, 255 when the packet carries no altitude) and above ground (`agl_band`, 0 = below 300 m, 1 = 300–600, 2 = 600–1,200, 3 = 1,200–2,000, 4 = above 2,000; 255 when outside the terrain model or with no altitude), with a third estimator that ignores the turn rate (`p2_*`) and the same figures restricted to segments that carried a turn rate (`rot_*`) or showed circling (`circ_*`), and the airborne seconds during which the last position was no older than 3, 6, 15 and 30 s (`age_le*`) with the segments no longer than 3 and 6 s (`seg_le*`), and `vanish_2`, `vanish_5`, `vanish_20`, devices silent for more than 2, 5 or 20 minutes after being last seen airborne in that band, and `int_le2` … `int_le64`, airborne segments no longer than 2 … 64 s (the real interval between received packets). See METHOD.md.

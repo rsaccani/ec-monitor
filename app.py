@@ -748,6 +748,18 @@ def get_hours():
         return jsonify([])
 
 
+@app.route(API + "/systems")
+def get_systems():
+    """Aircraft heard on one or more systems, by month and category (METHOD.md)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify([])
+    try:
+        return respond(tracker.systems_stats(), "systems-per-aircraft")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading monthly_sources for systems: {e}")
+        return jsonify([])
+
+
 @app.route(API + "/visibility/detail")
 def get_visibility_detail():
     """Monthly visibility by source, channel, category and height band (METHOD.md)."""

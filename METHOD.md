@@ -77,6 +77,18 @@ app uses the address of the aircraft's own device. Two devices with different
 addresses on one aircraft still count twice, and an aircraft nobody hears
 counts nothing. The measure starts at 15:19 UTC on 4 October 2026.
 
+**Systems per aircraft.** One aircraft is one 24-bit address, and its
+systems are the sources it was heard by in the month, on either channel:
+FANET by radio and through an internet gateway is one system. Systems are
+grouped as radio, phone app or tracker, and platforms that only relay other
+sources are left out. An instrument that sends several protocols under one
+address therefore counts as one aircraft on several systems, and so does a
+phone app set up with the address of the radio device on board, which SafeSky
+asks its users to do. Two devices with different addresses on one aircraft
+count as two aircraft. Combinations shared by fewer than 5 aircraft are
+pooled. These counts need the device addresses, so they exist for the months
+whose addresses are still kept (section 9).
+
 ## 2. Visibility through the network
 
 The question: for how much of its flight does somebody watching through a
