@@ -17,7 +17,14 @@ platforms forward to it over the internet.
 "tocall", listed in `tocalls.txt` in glidernet/ogn-aprs-protocol): FLARM,
 ADS-L, FANET, OGN trackers, PilotAware, ADS-B, and each phone app or platform.
 Position reports from the receivers themselves, delayed copies and synthetic
-packets are left out.
+packets are left out. Some systems appear under more than one tocall, for
+protocol versions or decoders: FLARM as OGFLR, OGNFLR, OGFLR6 and OGFLR7,
+PilotAware as OGPAW and OGNPAW. Each is treated as one source, so a device
+heard under two of them is followed as one stream and counted once. Until
+15:19 UTC on 4 October 2026 they were followed apart, which split one
+FLARM into two sparser streams that looked less visible than the device was
+and counted its flying time twice; the October 2026 figures mix the two rules
+up to that time.
 
 **Channel.** A packet is **radio** when it carries the reception figures that
 a ground receiver adds (signal-to-noise in dB and frequency offset in kHz),
@@ -60,6 +67,15 @@ device they produce jumps of hundreds of kilometres.
 
 **ADS-B** is counted among the sources but left out of the measures of
 visibility, being almost entirely airliners.
+
+**Flying time** of each kind of aircraft is measured once per aircraft. Every
+fix of the same 24-bit address joins one timeline, whichever source and
+channel it came by, and the airborne segments of that timeline are added up
+with the rules above. A paraglider whose instrument sends FLARM, FANET and
+ADS-L under one address counts its time once, and so does a pilot whose phone
+app uses the address of the aircraft's own device. Two devices with different
+addresses on one aircraft still count twice, and an aircraft nobody hears
+counts nothing. The measure starts at 15:19 UTC on 4 October 2026.
 
 ## 2. Visibility through the network
 
