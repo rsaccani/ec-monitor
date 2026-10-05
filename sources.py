@@ -405,6 +405,8 @@ class SourceTracker:
             return
         if tocall in EXCLUDED or not body.startswith("/") or "h" not in body[:8]:
             return  # status lines and anything that is not a timed position
+        if body[26:27] == "_" or (body[8:15] == "0000.00" and body[17:25] == "00000.00"):
+            return  # a weather station (FANET forwards them), or a device with no GPS fix
 
         if self.hidden(src):
             return              # not tracked, not counted, not measured
