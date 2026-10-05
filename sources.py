@@ -96,6 +96,12 @@ SAME_SYSTEM = {"OGNFLR": "OGFLR", "OGFLR6": "OGFLR", "OGFLR7": "OGFLR", "OGNPAW"
 # generic tocall APRS; the device prefix PAW is what identifies them.
 GENERIC_TOCALL = {("APRS", "PAW"): "OGPAW"}
 
+# Meshtastic is a mesh network for people on the ground; OGN receivers decode
+# it too. A node counts only when it declares an aircraft type in its id.
+AIRCRAFT_ONLY = {"OGMSHT"}
+# The same rule in SQL, for rows written before it applied.
+COUNTED_SQL = "NOT (source IN ({}) AND category IS NULL)".format(", ".join(f"'{s}'" for s in AIRCRAFT_ONLY))
+
 
 def same_system(tocall, device_id):
     """The source a packet is counted under, merging names of one system."""
@@ -450,6 +456,8 @@ class SourceTracker:
         id_category, no_track = id_info(body)
         if no_track:
             return              # the device itself asks not to be tracked
+        if id_category is None and tocall in AIRCRAFT_ONLY:
+            return              # a node on the ground, not an aircraft
         label, kind = source_info(tocall)
         via = "radio" if kind == "adsb" or _radio_meta.search(body) else "net"
 
@@ -875,7 +883,7 @@ class SourceTracker:
                     FROM (SELECT month, {SAME_SYSTEM_SQL} AS src, via, device_id,
                                  MIN(COALESCE(category, 255)) AS cat,
                                  MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
-                              FROM monthly_sources WHERE month < %s GROUP BY 1, 2, 3, 4) d
+                              FROM monthly_sources WHERE month < %s AND {COUNTED_SQL} GROUP BY 1, 2, 3, 4) d
                 GROUP BY month, src, via, cat"""),
         ]
         for table, summarise in steps:
@@ -1001,7 +1009,7 @@ class SourceTracker:
             conn = self.connect_db()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT month, source, device_id, category FROM monthly_sources")
+                    cur.execute(f"SELECT month, source, device_id, category FROM monthly_sources WHERE {COUNTED_SQL}")
                     rows = cur.fetchall()
             finally:
                 conn.close()
@@ -1209,7 +1217,7 @@ class SourceTracker:
                         SELECT month, src, via, COUNT(*), SUM(DATE(last_seen) > DATE(first_seen))
                             FROM (SELECT month, {SAME_SYSTEM_SQL} AS src, via, device_id,
                                          MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
-                                      FROM monthly_sources GROUP BY 1, 2, 3, 4) d
+                                      FROM monthly_sources WHERE {COUNTED_SQL} GROUP BY 1, 2, 3, 4) d
                         GROUP BY month, src, via
                         UNION ALL
                         SELECT month, source, via, SUM(devices), SUM(multi_day)
@@ -1221,7 +1229,7 @@ class SourceTracker:
                     # month), for adoption by kind of aircraft.
                     cur.execute(f"""
                         SELECT month, {SAME_SYSTEM_SQL} AS src, via, category, COUNT(DISTINCT device_id)
-                            FROM monthly_sources
+                            FROM monthly_sources WHERE {COUNTED_SQL}
                         GROUP BY 1, 2, 3, 4
                         UNION ALL
                         SELECT month, source, via, category, devices

@@ -284,12 +284,12 @@ def parse_aprs_line(line):
         device_id, rest = line.split(">", 1)
         device_id = device_id.strip()
 
-        # Station and type
-        m_station = re.match(r"^\w+,([^,]+),([^:/]+):", rest)
-        if m_station:
-            routing_info, station = m_station.groups()
-        else:
-            station = routing_info = None
+        # Receiving station: the last element of the path, after the q
+        # construct (a relay, as in OGMSHT,RELAY*,qAS,station, comes before it).
+        head = rest.split(":", 1)[0].split(",")
+        q = [p for p in head[1:] if p.startswith("q")]
+        routing_info = q[0] if q else None
+        station = head[-1] if len(head) > 1 else None
 
         # Lat/Lon and timestamp GPS
         m_gps = re.search(
