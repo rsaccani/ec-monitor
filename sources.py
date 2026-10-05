@@ -395,9 +395,11 @@ class SourceTracker:
             return
         path = head.split(",")
         tocall = SAME_SYSTEM.get(path[0], path[0])
-        if tocall == "OGNSDR" and body.startswith("/"):
+        # FANET ground stations send their own beacon under the aircraft tocall,
+        # with the receiver symbol: they are stations, not devices.
+        if (tocall == "OGNSDR" or body[26:27] == "&") and body.startswith("/"):
             m = _position.match(body)
-            if m:
+            if m and not (m.group(4) == "00" and m.group(8) == "000"):  # no position yet
                 g = m.groups()
                 lat = int(g[3]) + float(g[4]) / 60
                 lon = int(g[7]) + float(g[8]) / 60
