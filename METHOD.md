@@ -19,7 +19,11 @@ ADS-L, FANET, OGN trackers, PilotAware, ADS-B, and each phone app or platform.
 Position reports from the receivers themselves, delayed copies and synthetic
 packets are left out. Some systems appear under more than one tocall, for
 protocol versions or decoders: FLARM as OGFLR, OGNFLR, OGFLR6 and OGFLR7,
-PilotAware as OGPAW and OGNPAW. Each is treated as one source, so a device
+PilotAware as OGPAW and OGNPAW, and as the generic APRS when PilotAware's own
+ground stations forward its devices (their prefix PAW identifies them; until
+09:51 UTC on 5 October 2026 they were stored under other radio, and the
+counts reassign those rows when they are computed, so the October 2026
+figures include them). Each is treated as one source, so a device
 heard under two of them is followed as one stream and counted once. Until
 15:19 UTC on 4 October 2026 they were followed apart, which split one
 FLARM into two sparser streams that looked less visible than the device was
