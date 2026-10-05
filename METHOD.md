@@ -26,6 +26,18 @@ FLARM into two sparser streams that looked less visible than the device was
 and counted its flying time twice; the October 2026 figures mix the two rules
 up to that time.
 
+Three kinds of packet are left out because they describe no aircraft. FANET
+forwards the reports of its weather stations and the beacons of its ground
+stations under the same source as its aircraft. A position within 1 degree of
+latitude and longitude of 0,0 comes from a device without a fix, or from a
+FLARM packet decoded by a receiver that does not know where it is: FLARM sends
+only the low part of the position and the receiver supplies the rest from its
+own. Weather reports are left out from 08:20 UTC on 5 October 2026, the other
+two from 08:51 UTC. Before that they were counted as FANET devices of unknown
+category, and a weather station counted as flying whenever the wind it reported
+reached 10 km/h. The October 2026 device counts were cleaned of them
+afterwards.
+
 **Channel.** A packet is **radio** when it carries the reception figures that
 a ground receiver adds (signal-to-noise in dB and frequency offset in kHz),
 and **internet** otherwise. ADS-B is radio by definition, although its
@@ -75,7 +87,9 @@ with the rules above. A paraglider whose instrument sends FLARM, FANET and
 ADS-L under one address counts its time once, and so does a pilot whose phone
 app uses the address of the aircraft's own device. Two devices with different
 addresses on one aircraft still count twice, and an aircraft nobody hears
-counts nothing. The measure starts at 15:19 UTC on 4 October 2026.
+counts nothing. The measure starts at 15:19 UTC on 4 October 2026, and for
+aircraft of unknown category at 08:33 UTC on 5 October 2026, when the time the
+FANET weather stations had added to that category was removed.
 
 **Systems per aircraft.** One aircraft is one 24-bit address, and its
 systems are the sources it was heard by in the month, on either channel:
