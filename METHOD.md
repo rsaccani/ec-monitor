@@ -192,7 +192,7 @@ than 4 seconds, while two thirds of FLARM's and of the OGN trackers' were 2
 seconds or less. With the 10-second tolerance, a radio counts as without
 signal after a silence of 11 to 15 seconds. Sources whose interval is not
 known, radio or app, are left out of this measure; ADS-B stays out as
-everywhere else. The rule applies from the deploy of 5 October 2026, and the
+everywhere else. The rule applies from 17:51 UTC on 5 October 2026, and the
 October 2026 figures for these questions count only the time since then.
 The distance measure stays in the data and on the page for each source,
 where it describes what a map shows, cadence included.
