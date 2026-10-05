@@ -92,8 +92,20 @@ EXCLUDED = {"OGNSDR", "OGNSXR", "OGNDELAY", "OGMLAT", "OGNDVS"}
 # 4 October 2026 OGFLR7 was measured apart from OGFLR, which split one FLARM
 # into two sparser streams.
 SAME_SYSTEM = {"OGNFLR": "OGFLR", "OGFLR6": "OGFLR", "OGFLR7": "OGFLR", "OGNPAW": "OGPAW"}
+# PilotAware's own ground stations (PW...) forward its devices under the
+# generic tocall APRS; the device prefix PAW is what identifies them.
+GENERIC_TOCALL = {("APRS", "PAW"): "OGPAW"}
+
+
+def same_system(tocall, device_id):
+    """The source a packet is counted under, merging names of one system."""
+    return GENERIC_TOCALL.get((tocall, device_id[:3])) or SAME_SYSTEM.get(tocall, tocall)
+
+
 # The same mapping in SQL, for rows written before it applied.
-SAME_SYSTEM_SQL = ("CASE source " + " ".join(f"WHEN '{a}' THEN '{b}'" for a, b in SAME_SYSTEM.items())
+SAME_SYSTEM_SQL = ("CASE " + " ".join(f"WHEN source = '{a}' AND LEFT(device_id, 3) = '{p}' THEN '{b}'"
+                                      for (a, p), b in GENERIC_TOCALL.items())
+                   + " " + " ".join(f"WHEN source = '{a}' THEN '{b}'" for a, b in SAME_SYSTEM.items())
                    + " ELSE source END")
 
 # Map layers, by kind. ADS-B stays off the map: about 1,400 aircraft at any
@@ -413,7 +425,7 @@ class SourceTracker:
         except ValueError:
             return
         path = head.split(",")
-        tocall = SAME_SYSTEM.get(path[0], path[0])
+        tocall = same_system(path[0], src)
         # FANET ground stations send their own beacon under the aircraft tocall,
         # with the receiver symbol: they are stations, not devices.
         if (tocall == "OGNSDR" or body[26:27] == "&") and body.startswith("/"):
@@ -989,14 +1001,15 @@ class SourceTracker:
             conn = self.connect_db()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT month, source, RIGHT(device_id, 6), category FROM monthly_sources")
+                    cur.execute("SELECT month, source, device_id, category FROM monthly_sources")
                     rows = cur.fetchall()
             finally:
                 conn.close()
             systems = collections.defaultdict(set)
             category = {}
-            for month, tocall, addr, cat in rows:
-                label, kind = source_info(SAME_SYSTEM.get(tocall, tocall))
+            for month, tocall, device_id, cat in rows:
+                addr = device_id[-6:]
+                label, kind = source_info(same_system(tocall, device_id))
                 if kind == "platform":
                     continue
                 cls = "phone" if kind == "app" else "tracker" if kind == "tracker" else "radio"
