@@ -152,7 +152,29 @@ APP_CADENCE = {
     "OGNAVI": (None, 60, 60),     # Naviter, measured on the feed 2026-10-05
     "OGNVVO": (150, 10, 45),      # VarioVoice, OGNScheduler.swift
 }
+# The same rule for radio, so that questions 2, 3 and 6 compare the channels
+# by time without signal (METHOD.md, section 2). FLARM and ADS-L send every
+# second and OGN trackers and PilotAware every one or two; FANET sends a
+# position every few seconds, and on the feed 95% of its intervals in flight
+# exceed 4 s, so 5 s is its nominal. Radio systems not listed are left out of
+# the judgement, as unlisted apps are.
+RADIO_CADENCE = {
+    "OGADSL": (None, 1, 1),
+    "OGFLR": (None, 1, 1),
+    "OGNTRK": (None, 2, 2),
+    "OGPAW": (None, 2, 2),
+    "OGNFNT": (None, 5, 5),
+}
 CADENCE_TOLERANCE = 10
+
+
+def cadence_of(tocall, kind, via):
+    """The (metres, floor, heartbeat) rule a source keeps with signal, or None."""
+    if kind == "app":
+        return APP_CADENCE.get(tocall)
+    if via == "radio" and kind != "adsb":
+        return RADIO_CADENCE.get(tocall)
+    return None
 
 
 def expected_interval(cadence, speed_ms):
@@ -302,6 +324,7 @@ DETAIL_COLUMNS = (
     "age_le3", "age_le6", "age_le15", "age_le30", "seg_le3", "seg_le6",
     "vanish_2", "vanish_5", "vanish_20",
     "int_le2", "int_le4", "int_le8", "int_le16", "int_le32", "int_le64",
+    "cad_air", "cad_late",
 )
 INTERVAL_LIMITS = (2, 4, 8, 16, 32, 64)
 VANISH_MINUTES = (2, 5, 20)
@@ -644,6 +667,16 @@ class SourceTracker:
             det[18] += seconds
             det[19] += o1[0]; det[20] += o1[1]; det[21] += o2[0]; det[22] += o2[1]
         kind = source_info(tocall)[1]
+        # Time without signal: only the part of the gap beyond the interval
+        # the source keeps by design, at the slower end of the segment (an
+        # aircraft that slows down makes a distance-based app wait longer).
+        cadence = cadence_of(tocall, kind, via)
+        late = None
+        if cadence is not None:
+            slow = min(pspeed or 0, speed or 0) * 0.514444
+            late = max(0.0, seconds - expected_interval(cadence, slow) - CADENCE_TOLERANCE)
+            det[38] += seconds
+            det[39] += late
         grp = "adsl" if kind == "adsl" else "radio" if kind == "other" and via == "radio" else LAYER_OF_KIND[kind]
         cell_key = (month, math.floor(plat / CELL_DEG), math.floor(plon / CELL_DEG), grp, via)
         cell = self.grid[cell_key]
@@ -653,13 +686,9 @@ class SourceTracker:
         cell[3] += o1[0]
         cell[4] += o1[1]
         cell[5] += o0[1]
-        cadence = APP_CADENCE.get(tocall) if kind == "app" else None
-        if cadence is not None:
-            # The slower end of the segment: an aircraft that slows down
-            # during a gap makes a distance-based app wait longer.
-            slow = min(pspeed or 0, speed or 0) * 0.514444
+        if late is not None:
             cell[6] += seconds
-            cell[7] += max(0.0, seconds - expected_interval(cadence, slow) - CADENCE_TOLERANCE)
+            cell[7] += late
         if category in (6, 7):
             # Paragliders and hang gliders on any source and channel: the
             # denominator of "how much free flight happens where apps work".
@@ -1003,7 +1032,7 @@ class SourceTracker:
                     d[c] = float(v)
                 # The cadence rule question 5 applies to this source, if any,
                 # so that the page shows the rule the code follows.
-                cad = APP_CADENCE.get(r[1]) if kind == "app" else None
+                cad = cadence_of(r[1], kind, r[2])
                 d["cadence_m"], d["cadence_floor"], d["cadence_heartbeat"] = cad or (None, None, None)
                 out.append(d)
             self.detail_cache = (time.time(), out)

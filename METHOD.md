@@ -164,6 +164,39 @@ aircraft category, height band, cell). For an aircraft circling in a thermal
 the true error oscillates rather than grows, so this overstates the gap a
 little; the choice is deliberately the cautious one.
 
+**Time without signal, for comparing channels (from 5 October 2026).** The
+distance measure above mixes three things: the coverage of the channel, how
+often each source chooses to send, and the speed of the aircraft. Some apps
+send a position once a minute by design, and in that minute a glider covers
+two kilometres whatever the network does. How far behind an aircraft falls
+therefore depends on how often each app chooses to send, which is a property
+of the app. Speed weighs in the same way: 1 km is a minute and a half of
+silence for a paraglider at 36 km/h and 15 seconds for an aircraft at
+240 km/h, and gliders and powered aircraft fly faster high above the ground
+than in the circuit, so a distance threshold also changes with height.
+
+To compare the channels themselves, the comparison between radio and phone
+apps (question 2 of the page), the losses by height above the ground
+(section 3, question 3) and the map of where aircraft are lost (question 6)
+count only the **time without signal**: for each segment of T seconds, the
+part beyond the interval the source keeps by design at the slower end's
+speed, plus a tolerance of 10 seconds, the same rule as section 8. How often
+a source should send is a separate question, answered by the measure in
+seconds and metres of section 5 (question 4 of the page).
+
+The intervals kept by design are those of section 8 for the apps, and for
+radio: **FLARM and ADS-L 1 second**, **OGN trackers and PilotAware
+2 seconds**, **FANET 5 seconds**. FANET's figure comes from the feed: in
+October 2026, 95% of the intervals between its packets in flight were longer
+than 4 seconds, while two thirds of FLARM's and of the OGN trackers' were 2
+seconds or less. With the 10-second tolerance, a radio counts as without
+signal after a silence of 11 to 15 seconds. Sources whose interval is not
+known, radio or app, are left out of this measure; ADS-B stays out as
+everywhere else. The rule applies from the deploy of 5 October 2026, and the
+October 2026 figures for these questions count only the time since then.
+The distance measure stays in the data and on the page for each source,
+where it describes what a map shows, cadence included.
+
 ## 3. Where and how high
 
 Every segment is attributed to the place and height where the aircraft was

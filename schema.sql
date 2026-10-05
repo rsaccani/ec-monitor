@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS `monthly_visibility_detail` (
   `int_le16` double NOT NULL DEFAULT 0,
   `int_le32` double NOT NULL DEFAULT 0,
   `int_le64` double NOT NULL DEFAULT 0,
+  `cad_air` double NOT NULL DEFAULT 0,
+  `cad_late` double NOT NULL DEFAULT 0,
   PRIMARY KEY (`month`,`source`,`via`,`category`,`msl_band`,`agl_band`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
