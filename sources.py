@@ -491,8 +491,12 @@ class SourceTracker:
             "type": pkt.get("ddb_model"),
             "category": pkt.get("category"),
             "station": pkt["station"] if via == "radio" else None,
+            "sig": pkt.get("signal") if via == "radio" else None,
+            "fix": pkt.get("gps_fix"),
+            "sats": pkt.get("gps_sats"),
             "t": pkt["timestamp"].isoformat(),
             "_mono": t,
+            "_raw": line,
         }
 
     def measure(self, src, tocall, via, body, now, station=None, id_category=None):
@@ -1163,8 +1167,13 @@ class SourceTracker:
                              (bbox[0] <= d["lon"] <= bbox[2] if bbox[0] <= bbox[2]
                               else d["lon"] >= bbox[0] or d["lon"] <= bbox[2])):
                 continue
-            out.append({k: v for k, v in d.items() if k != "_mono"})
+            out.append({k: v for k, v in d.items() if not k.startswith("_")})
         return out
+
+    def live_raw(self, device_id):
+        """The last packet kept for one device, for the map's details box."""
+        d = self.live.get(device_id)
+        return d["_raw"] if d else None
 
     def monthly_stats(self):
         """Per month and source: distinct devices, split by radio or network.

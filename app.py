@@ -683,9 +683,14 @@ def ads_l_stats():
 def get_live():
     """Positions from the other sources, for the map's layer selector.
 
-    ?layers=flarm,fanet,radio,apps,network  (ADS-L stays on /ads-l/)
+    ?layers=flarm,fanet,radio,apps,network  (ADS-L stays on /adsl)
     &bbox=west,south,east,north             (optional, degrees)
+    ?id=FLR123456                           the last raw packet of one device,
+                                            fetched when its details are opened
     """
+    if request.args.get("id"):
+        raw = tracker.live_raw(request.args["id"]) if tracker else None
+        return jsonify({"raw": raw})
     layers = set((request.args.get("layers") or "").split(",")) & set(sources.LAYER_OF_KIND.values())
     bbox = None
     try:
