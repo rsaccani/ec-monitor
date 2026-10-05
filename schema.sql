@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS `monthly_visibility_grid` (
   `p1_300` double NOT NULL DEFAULT 0,
   `p1_1000` double NOT NULL DEFAULT 0,
   `p0_1000` double NOT NULL DEFAULT 0,
+  `cad_air` double NOT NULL DEFAULT 0,
+  `cad_late` double NOT NULL DEFAULT 0,
   PRIMARY KEY (`month`,`lat_idx`,`lon_idx`,`grp`,`via`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 

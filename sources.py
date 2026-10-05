@@ -139,6 +139,28 @@ IMPLAUSIBLE_MS = 500 / 3.6               # 500 km/h: a shared address or a corru
 STALE_SECONDS = 5 * 60                   # a fix older than this on arrival is ignored
 VISIBILITY_FLUSH = 15 * 60               # seconds between appends to the database
 ARCHIVE_EVERY = 6 * 3600                 # seconds between checks for months to archive
+# When each phone app sends a fix while its phone has signal (METHOD.md,
+# section 8): (metres moved, floor, heartbeat). It sends once the aircraft has
+# moved that far, never sooner than the floor and never later than the
+# heartbeat, in seconds; a fixed cadence has floor = heartbeat and no distance.
+# Only the time beyond the expected interval plus the tolerance counts as time
+# without coverage, so an app that sends once a minute by design is not taken
+# for one that lost the network. An app not listed here is left out of the
+# judgement until its cadence is known.
+APP_CADENCE = {
+    "OGNSKY": (None, 2, 2),       # SafeSky, measured on the feed 2026-10-05
+    "OGNAVI": (None, 60, 60),     # Naviter, measured on the feed 2026-10-05
+    "OGNVVO": (150, 10, 45),      # VarioVoice, OGNScheduler.swift
+}
+CADENCE_TOLERANCE = 10
+
+
+def expected_interval(cadence, speed_ms):
+    """Seconds an app is expected to wait before its next fix at this speed."""
+    metres, floor, heartbeat = cadence
+    if metres is None or not speed_ms:
+        return heartbeat
+    return min(heartbeat, max(floor, metres / speed_ms))
 UNKNOWN_CATEGORY = 255
 SYMBOL_CATEGORY = {"g": 7, "'": 1, "^": 8, "X": 3, "O": 11}
 # Totals per (day, source, via, category):
@@ -285,7 +307,8 @@ INTERVAL_LIMITS = (2, 4, 8, 16, 32, 64)
 VANISH_MINUTES = (2, 5, 20)
 AGE_LIMITS = (3, 6, 15, 30)
 # Monthly totals per (month, cell, group, via).
-GRID_COLUMNS = ("segments", "air_seconds", "p0_300", "p1_300", "p1_1000", "p0_1000")
+GRID_COLUMNS = ("segments", "air_seconds", "p0_300", "p1_300", "p1_1000", "p0_1000",
+                "cad_air", "cad_late")
 
 
 def _upsert(table, keys, columns):
@@ -630,6 +653,13 @@ class SourceTracker:
         cell[3] += o1[0]
         cell[4] += o1[1]
         cell[5] += o0[1]
+        cadence = APP_CADENCE.get(tocall) if kind == "app" else None
+        if cadence is not None:
+            # The slower end of the segment: an aircraft that slows down
+            # during a gap makes a distance-based app wait longer.
+            slow = min(pspeed or 0, speed or 0) * 0.514444
+            cell[6] += seconds
+            cell[7] += max(0.0, seconds - expected_interval(cadence, slow) - CADENCE_TOLERANCE)
         if category in (6, 7):
             # Paragliders and hang gliders on any source and channel: the
             # denominator of "how much free flight happens where apps work".
@@ -640,6 +670,7 @@ class SourceTracker:
             pg[3] += o1[0]
             pg[4] += o1[1]
             pg[5] += o0[1]
+            pg[6] += seconds    # the free-flight time since the cadence rule
 
     def count_hours(self, month, address, category, t, lat, lon, speed):
         """Flying time per aircraft (METHOD.md): one address, all its sources.
@@ -970,6 +1001,10 @@ class SourceTracker:
                      "agl_band": None if r[5] == UNKNOWN_BAND else int(r[5])}
                 for c, v in zip(DETAIL_COLUMNS, r[6:]):
                     d[c] = float(v)
+                # The cadence rule question 5 applies to this source, if any,
+                # so that the page shows the rule the code follows.
+                cad = APP_CADENCE.get(r[1]) if kind == "app" else None
+                d["cadence_m"], d["cadence_floor"], d["cadence_heartbeat"] = cad or (None, None, None)
                 out.append(d)
             self.detail_cache = (time.time(), out)
             return out
