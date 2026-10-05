@@ -355,15 +355,26 @@ Whether an app-based means of compliance is viable depends on where people
 fly, above all where carriage cannot be enforced. For each month:
 
 - A cell counts as **covered by apps** when phone apps logged at least 2 hours
-  of airborne time in it and their last position stayed within 300 m of the
-  true one for at least 95% of that time.
+  of airborne time in it and had signal for at least 95% of that time. Each
+  app sends at its own pace: SafeSky every 2 seconds and Naviter every 60, as
+  measured on the feed, and VarioVoice once the aircraft has moved 150 m, but
+  never sooner than 10 seconds nor later than 45. For each interval between
+  two fixes, only the part beyond the interval the app is expected to keep at
+  the slower of the two speeds, plus 10 seconds, counts as time without
+  signal. An app whose cadence is not known is left out of the judgement.
+  This rule applies from 16:04 UTC on 5 October 2026, and the free-flight time
+  of the figure is counted from then. Until that moment a cell was judged by
+  whether the apps' last position stayed within 300 m of the true one, which
+  mostly measured where Naviter is used, since a fix a minute leaves an
+  aircraft behind on the map whatever the coverage.
 - The airborne time of each kind of aircraft is summed per cell over every
   source and channel, radio included, so that pilots who carry no app count
   too.
-- The figure is the share of that time spent in covered cells. Cells with
-  less than 2 hours of app data count as not covered, so the share is a lower
-  bound, and it is published only when less than half of the time falls in
-  such cells. A pilot heard through two sources at once counts on both, which
+- The figure is the share of that time spent in covered cells, among the
+  cells with at least 2 hours of app data. Counting the other cells as not
+  covered gives a lower bound over all the time, published alongside. Both
+  are published only when less than half of the time falls in cells with too
+  little app data. A pilot heard through two sources at once counts on both, which
   inflates the hours and leaves the share alone as long as such pilots fly in
   covered and uncovered cells alike.
 
