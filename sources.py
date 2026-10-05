@@ -337,7 +337,26 @@ GRID_SQL = _upsert("monthly_visibility_grid",
 
 
 _radio_meta = re.compile(r" -?\d+(?:\.\d+)?dB .*?[+-]\d+(?:\.\d+)?kHz")
-_id_header = re.compile(r"\bid([0-9A-F]{2})[0-9A-F]{6}\b")
+_id_field = re.compile(r"\bid([0-9A-F]{8}|[0-9A-F]{10})\b")
+
+
+def id_info(text):
+    """(aircraft category or None, no-track flag) from the id field of a packet.
+
+    The OGN id is 8 hex digits: in its first byte bit 7 is stealth, bit 6
+    no-track, bits 2-5 the category and bits 0-1 the address type. Naviter
+    writes 10 (Naviter_APRS_format.md in glidernet/ogn-aprs-protocol): of the
+    40 bits, 39 is stealth, 38 no-track and 34-37 the category.
+    """
+    m = _id_field.search(text)
+    if not m:
+        return None, False
+    h = m.group(1)
+    if len(h) == 8:
+        b = int(h[:2], 16)
+        return (b >> 2) & 0x0F, bool(b & 0x40)
+    w = int(h[:4], 16)
+    return (w >> 10) & 0x0F, bool(w & 0x4000)
 
 
 def source_info(tocall):
@@ -416,6 +435,9 @@ class SourceTracker:
 
         if self.hidden(src):
             return              # not tracked, not counted, not measured
+        id_category, no_track = id_info(body)
+        if no_track:
+            return              # the device itself asks not to be tracked
         label, kind = source_info(tocall)
         via = "radio" if kind == "adsb" or _radio_meta.search(body) else "net"
 
@@ -433,8 +455,7 @@ class SourceTracker:
             self.seen_day = day
         key = (month, tocall, via, src)
         if key not in self.seen:
-            m = _id_header.search(body)
-            category = (int(m.group(1), 16) >> 2) & 0x0F if m else None
+            category = id_category
             self.seen.add(key)
             try:
                 self.writes.put_nowait((month, tocall, via, src, category, now))
@@ -442,7 +463,7 @@ class SourceTracker:
                 pass  # the writer is stuck; the next day retries
 
         if kind != "adsb":
-            self.measure(src, tocall, via, body, now, path[-1] if via == "radio" else None)
+            self.measure(src, tocall, via, body, now, path[-1] if via == "radio" else None, id_category)
 
         if kind == "adsb" or kind == "adsl":
             return  # ADS-B is not mapped; ADS-L has its own, richer feed
@@ -474,7 +495,7 @@ class SourceTracker:
             "_mono": t,
         }
 
-    def measure(self, src, tocall, via, body, now, station=None):
+    def measure(self, src, tocall, via, body, now, station=None, id_category=None):
         """Accumulate the visibility totals of METHOD.md for one packet."""
         fix = parse_fix(body, now)
         if fix is None:
@@ -489,9 +510,8 @@ class SourceTracker:
                 self.rot_devices.add((src, tocall))
             elif (src, tocall) not in self.rot_devices:
                 rot = None
-        m = _id_header.search(body)
-        if m:
-            category = (int(m.group(1), 16) >> 2) & 0x0F
+        if id_category is not None:
+            category = id_category
         else:
             category = SYMBOL_CATEGORY.get(symbol, UNKNOWN_CATEGORY)
         key = (src, tocall, via)

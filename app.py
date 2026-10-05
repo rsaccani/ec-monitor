@@ -92,14 +92,6 @@ AIRCRAFT_CATEGORIES = {
 }
 
 
-def aircraft_category_code(pkt_id):
-    """Return the 0-15 aircraft category encoded in an OGN id, or None."""
-    if not pkt_id or len(pkt_id) < 2:
-        return None
-    try:
-        return (int(pkt_id[:2], 16) >> 2) & 0x0F
-    except ValueError:
-        return None
 
 
 
@@ -355,19 +347,19 @@ def parse_aprs_line(line):
         gps_sats = int(gps_match.group(2)) if gps_match else None
 
         # packet ID
-        id_match = re.search(r"\bid([A-F0-9]{8})\b", line)
+        id_match = re.search(r"\bid([A-F0-9]{8}|[A-F0-9]{10})\b", line)
         pkt_id = id_match.group(1) if id_match else None
 
         # Signal quality
         qual_match = re.search(r"!W(\d+)!", line)
         quality = int(qual_match.group(1)) if qual_match else None
 
-        category_code = aircraft_category_code(pkt_id)
+        category_code, no_track = sources.id_info(line)
 
         # The database is keyed by the 24-bit address, whatever the prefix
         # (OGN, FLR, ICA...); a device not to be tracked is dropped here.
         lookup_id = device_id[-6:]
-        if lookup_id in ddb_notrack:
+        if lookup_id in ddb_notrack or no_track:
             return None
         ddb_model = device_type_map.get(lookup_id)
         aircraft_type = ddb_model or aircraft_aprs
