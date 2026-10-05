@@ -42,6 +42,11 @@ category, and a weather station counted as flying whenever the wind it reported
 reached 10 km/h. The October 2026 device counts were cleaned of them
 afterwards.
 
+Meshtastic, a mesh network for people on the ground that some receivers
+decode, counts only for nodes whose id declares an aircraft type, from 10:22
+UTC on 5 October 2026. Earlier rows of nodes that declare none are left out
+whenever the counts are computed, so the October 2026 figures exclude them.
+
 **Channel.** A packet is **radio** when it carries the reception figures that
 a ground receiver adds (signal-to-noise in dB and frequency offset in kHz),
 and **internet** otherwise. ADS-B is radio by definition, although its
