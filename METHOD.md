@@ -55,7 +55,14 @@ device address is kept is set out in section 9.
 
 **Aircraft category** comes from the aircraft type in the packet's OGN id
 when there is one, and from the APRS symbol otherwise (`g` paraglider or hang
-glider, `'` glider, `^` powered aircraft, `X` helicopter, `O` balloon).
+glider, `'` glider, `^` powered aircraft, `X` helicopter, `O` balloon). Naviter writes a longer id of its own, with the aircraft type in other bits;
+until 09:21 UTC on 5 October 2026 it was not read, and since Naviter sends the
+glider symbol for every aircraft, its paragliders were counted as gliders in
+the measures and without a category in the device counts.
+
+**Do not track.** A packet whose id carries the owner's no-tracking flag is
+dropped on arrival, like a device marked in the OGN device database, from
+09:21 UTC on 5 October 2026.
 
 **Time** is the instant of the fix written in the packet. A packet whose fix
 is more than 5 minutes older than its arrival is ignored, since it would open
