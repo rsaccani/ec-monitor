@@ -141,7 +141,9 @@ AIRBORNE_KT = 10 / 1.852                 # 10 km/h, at either end of a segment
 # for the kind of aircraft (METHOD.md, section 2): at 10 km/h at either end a
 # powered aircraft taxiing, or a paraglider pilot packing up, was flying, and
 # the gap that followed counted as lost signal. Other kinds keep AIRBORNE_KT.
-FLYING_KT = {6: 15 / 1.852, 7: 15 / 1.852, 1: 25.0, 2: 40.0, 8: 40.0, 9: 40.0}
+# APRS carries whole knots: 8 kt is 14.8 km/h, the nearest to 15 (until the
+# evening of 6 October 2026 15/1.852 kt, which only 9 kt, 16.7 km/h, passed).
+FLYING_KT = {6: 8.0, 7: 8.0, 1: 25.0, 2: 40.0, 8: 40.0, 9: 40.0}
 # Free-flight packets beyond what a paraglider or a hang glider can do are
 # discarded as implausible: a sounding balloon set to "paraglider" at 8,150 m,
 # a device reporting 702 km/h (6 October 2026).
@@ -654,6 +656,7 @@ class SourceTracker:
             tot[4] += 1
             self.last_fix.pop(key, None)
             self.addr_fix.pop(src[-6:], None)
+            self.radio_fix.pop(src[-6:], None)
             return
         tot[0] += 1
         if rot is not None:
@@ -666,7 +669,7 @@ class SourceTracker:
         if via == "radio" and tocall in RADIO_CADENCE:
             self.count_radio_aircraft(day[:7], src[-6:], category, tocall, t, lat, lon, speed, alt_m)
         if station is not None and course is not None:
-            self.record_pattern(day[:7], tocall, category, station, lat, lon, t, course, rot, prev, body)
+            self.record_pattern(day[:7], tocall, category, station, lat, lon, t, course, rot, prev, body, speed)
         self.record_prediction(day[:7], tocall, category, key, (t, lat, lon, course, speed, rot))
         self.last_fix[key] = (t, lat, lon, course, speed, rot, alt_m, category, day[:7])
         if prev is None:
@@ -798,9 +801,11 @@ class SourceTracker:
         """Time without signal by radio for the aircraft, whichever system is heard.
 
         One timeline per address over every radio system with a known
-        interval; a silence counts beyond the shortest interval among the
+        interval; a silence counts beyond the longest interval among the
         systems heard from that address in the last SESSION_BREAK, plus the
-        tolerance. The segment rules are those of the visibility measure.
+        tolerance, i.e. only when every system is late on its own interval.
+        Until 6 October 2026 evening the shortest was used, which judged an
+        instrument's FANET packets by FLARM's 1 s. The segment rules are those of the visibility measure.
         """
         heard = self.radio_systems.setdefault(address, {})
         heard[tocall] = t
@@ -817,7 +822,7 @@ class SourceTracker:
             return
         if not flying(category, prev[3], speed):
             return
-        interval = min(RADIO_CADENCE[s][2] for s, ts in heard.items() if t - ts <= SESSION_BREAK)
+        interval = max(RADIO_CADENCE[s][2] for s, ts in heard.items() if t - ts <= SESSION_BREAK)
         late = max(0.0, seconds - interval - CADENCE_TOLERANCE)
         ground = self.terrain.elevation(prev[1], prev[2])
         agl = prev[4] - ground if prev[4] is not None and ground is not None else None
@@ -837,8 +842,10 @@ class SourceTracker:
             if silent_seconds > minutes * 60:
                 det[29 + i] += 1
 
-    def record_pattern(self, month, tocall, category, station, lat, lon, t, course, rot, prev, body=""):
+    def record_pattern(self, month, tocall, category, station, lat, lon, t, course, rot, prev, body="", speed=None):
         """One received radio packet while circling: count it by relative angle."""
+        if (speed or 0) < FLYING_KT.get(category, AIRBORNE_KT):
+            return      # an aircraft turning on the ground is not circling (from 6 October 2026 evening)
         if rot is not None:
             circling = abs(rot) >= CIRCLING_ROT
         elif prev is not None and prev[3] is not None and 0 < t - prev[0] <= 10:
@@ -1169,7 +1176,9 @@ class SourceTracker:
         One aircraft is one 24-bit address. Its systems are the sources it was
         heard by that month, whatever the channel (FANET by radio and through
         an internet gateway is one system), grouped as radio, phone app or
-        tracker; platforms that relay other sources are left out. Only counts
+        tracker; platforms that relay other sources are left out, and so are
+        aircraft heard by ADS-B alone (6 October 2026: 10,820 such addresses,
+        almost all airliners, sat among "powered aircraft"). Only counts
         leave this function, and combinations shared by fewer than
         SYSTEMS_MIN_COMBO aircraft are pooled so that no rare aircraft stands out.
         """
@@ -1197,6 +1206,8 @@ class SourceTracker:
                     category[(month, addr)] = int(cat)
             groups = {}
             for key, sys in systems.items():
+                if {x[0] for x in sys} == {"ADS-B"}:
+                    continue    # heard by ADS-B alone: almost all airliners, left out as everywhere else
                 month = key[0]
                 cat = category.get(key)
                 g = groups.setdefault((month, cat), {"n": [0, 0, 0], "radio_phone": 0, "phone_only": 0,
