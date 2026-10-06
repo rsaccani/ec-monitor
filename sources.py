@@ -137,6 +137,16 @@ STATS_CACHE_SECONDS = 600
 # --- Visibility measure (METHOD.md) -----------------------------------------
 GAP_THRESHOLDS = (300, 1000, 3000)      # metres
 AIRBORNE_KT = 10 / 1.852                 # 10 km/h, at either end of a segment
+# From 6 October 2026 a segment is flight only if both ends exceed a speed
+# for the kind of aircraft (METHOD.md, section 2): at 10 km/h at either end a
+# powered aircraft taxiing, or a paraglider pilot packing up, was flying, and
+# the gap that followed counted as lost signal. Other kinds keep AIRBORNE_KT.
+FLYING_KT = {6: 15 / 1.852, 7: 15 / 1.852, 1: 25.0, 2: 40.0, 8: 40.0, 9: 40.0}
+# Free-flight packets beyond what a paraglider or a hang glider can do are
+# discarded as implausible: a sounding balloon set to "paraglider" at 8,150 m,
+# a device reporting 702 km/h (6 October 2026).
+FREE_FLIGHT_MAX_KT = {7: 100 / 1.852, 6: 150 / 1.852}
+FREE_FLIGHT_MAX_M = 6000
 SESSION_BREAK = 20 * 60                  # seconds; longer segments are new sessions
 CIRCLING_ROT = 2.0                       # half-turns per minute (6 deg/s)
 IMPLAUSIBLE_MS = 500 / 3.6               # 500 km/h: a shared address or a corrupt fix
@@ -158,16 +168,19 @@ APP_CADENCE = {
 }
 # The same rule for radio, so that questions 2, 3 and 6 compare the channels
 # by time without signal (METHOD.md, section 2). FLARM and ADS-L send every
-# second and OGN trackers and PilotAware every one or two; FANET sends a
-# position every few seconds, and on the feed 95% of its intervals in flight
-# exceed 4 s, so 5 s is its nominal. Radio systems not listed are left out of
-# the judgement, as unlisted apps are.
+# second and OGN trackers and PilotAware every one or two. FANET's
+# specification sets floor((neighbours/10 + 1) * 5 s), slowing down where many
+# fly so as not to saturate the channel; on 6 October 2026 the feed showed
+# 5 s with fewer than ten FANET devices within 10 km and a median of 17 s with
+# ten to nineteen. 15 s, the interval up to 29 neighbours, is lenient for an
+# isolated pilot by up to 10 s a gap. Radio systems not listed are left out
+# of the judgement, as unlisted apps are.
 RADIO_CADENCE = {
     "OGADSL": (None, 1, 1),
     "OGFLR": (None, 1, 1),
     "OGNTRK": (None, 2, 2),
     "OGPAW": (None, 2, 2),
-    "OGNFNT": (None, 5, 5),
+    "OGNFNT": (None, 15, 15),
 }
 CADENCE_TOLERANCE = 10
 
@@ -259,6 +272,22 @@ UNKNOWN_BAND = 255
 CELL_DEG = 0.25
 DEM_PATH = os.environ.get("ADSL_DEM", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                     "data", "europe_15s.i16"))
+
+
+def flying(category, pspeed, speed):
+    """True when a segment between two fixes counts as flight (METHOD.md)."""
+    floor = FLYING_KT.get(category)
+    if floor is None:
+        return (pspeed or 0) >= AIRBORNE_KT or (speed or 0) >= AIRBORNE_KT
+    return min(pspeed or 0, speed or 0) >= floor
+
+
+def implausible(category, speed, alt_m):
+    """A free-flight fix no paraglider or hang glider can produce."""
+    top = FREE_FLIGHT_MAX_KT.get(category)
+    if top is None:
+        return False
+    return (speed or 0) > top or (alt_m or 0) > FREE_FLIGHT_MAX_M
 
 
 def msl_band(alt_m):
@@ -599,6 +628,13 @@ class SourceTracker:
         if day is None:
             day = self._days[dn] = datetime.datetime.utcfromtimestamp(dn * 86400).strftime("%Y-%m-%d")
         tot = self.totals[(day, tocall, via, category)]
+        if implausible(category, speed, alt_m):
+            # The device is sending, so no silence may run across this fix:
+            # it ends the track, and the next plausible fix starts a new one.
+            tot[4] += 1
+            self.last_fix.pop(key, None)
+            self.addr_fix.pop(src[-6:], None)
+            return
         tot[0] += 1
         if rot is not None:
             tot[1] += 1
@@ -615,7 +651,7 @@ class SourceTracker:
             return
         pt, plat, plon, pcourse, pspeed, prot, palt = prev[:7]
         seconds = t - pt
-        if seconds > VANISH_MINUTES[0] * 60 and (pspeed or 0) >= AIRBORNE_KT:
+        if seconds > VANISH_MINUTES[0] * 60 and (pspeed or 0) >= FLYING_KT.get(category, AIRBORNE_KT):
             self.count_vanish(day[:7], tocall, via, category, plat, plon, palt, seconds)
         if seconds > SESSION_BREAK:
             tot[3] += 1
@@ -625,7 +661,7 @@ class SourceTracker:
         if e0 > IMPLAUSIBLE_MS * max(seconds, 1):
             tot[4] += 1
             return
-        if not ((pspeed or 0) >= AIRBORNE_KT or (speed or 0) >= AIRBORNE_KT):
+        if not flying(category, pspeed, speed):
             return
         tot[2] += 1
         tot[5] += seconds
@@ -697,17 +733,6 @@ class SourceTracker:
         if late is not None:
             cell[6] += seconds
             cell[7] += late
-        if category in (6, 7):
-            # Paragliders and hang gliders on any source and channel: the
-            # denominator of "how much free flight happens where apps work".
-            pg = self.grid[(month, cell_key[1], cell_key[2], "pg", "radio")]
-            pg[0] += 1
-            pg[1] += seconds
-            pg[2] += o0[0]
-            pg[3] += o1[0]
-            pg[4] += o1[1]
-            pg[5] += o0[1]
-            pg[6] += seconds    # the free-flight time since the cadence rule
 
     def count_hours(self, month, address, category, t, lat, lon, speed):
         """Flying time per aircraft (METHOD.md): one address, all its sources.
@@ -728,11 +753,19 @@ class SourceTracker:
             return
         if _distance(prev[1], prev[2], lat, lon) > IMPLAUSIBLE_MS * max(seconds, 1):
             return
-        if not ((prev[3] or 0) >= AIRBORNE_KT or (speed or 0) >= AIRBORNE_KT):
+        if not flying(category, prev[3], speed):
             return
         h = self.hours[(month, category)]
         h[0] += 1
         h[1] += seconds
+        if category in (6, 7):
+            # Free flight per aircraft, where it was last seen: the
+            # denominator of question 5 from 6 October 2026 (group "pga";
+            # "pg", summed over every source and channel, stopped growing).
+            pg = self.grid[(month, math.floor(prev[1] / CELL_DEG), math.floor(prev[2] / CELL_DEG), "pga", "radio")]
+            pg[0] += 1
+            pg[1] += seconds
+            pg[6] += seconds
 
     def count_vanish(self, month, tocall, via, category, lat, lon, alt_m, silent_seconds):
         """One disappearance, at the height of the last position seen (METHOD.md)."""
@@ -870,7 +903,7 @@ class SourceTracker:
             for k, v in list(self.last_fix.items()):
                 if v[0] > cutoff:
                     keep[k] = v
-                elif (v[4] or 0) >= AIRBORNE_KT:
+                elif (v[4] or 0) >= FLYING_KT.get(v[7], AIRBORNE_KT):
                     # Silent for more than SESSION_BREAK and last seen flying: gone.
                     self.count_vanish(v[8], k[1], k[2], v[7], v[1], v[2], v[6], SESSION_BREAK + 1)
             self.last_fix = keep
