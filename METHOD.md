@@ -84,7 +84,7 @@ silent, which is intended: nobody could see the aircraft at the time.
 segment. A segment counts as airborne when the ground speed at both ends is
 at least 15 km/h for paragliders and hang gliders, 25 kt for gliders and
 40 kt for powered aircraft; for any other kind, when it is at least 10 km/h
-at either end. Until 6 October 2026 the 10 km/h rule applied to every kind,
+at either end. Until 11:00 UTC on 6 October 2026 the 10 km/h rule applied to every kind,
 and the raw feed replayed under both rules showed what it cost: a powered
 aircraft taxiing and a pilot packing up after landing were flying, and the
 silence of a phone app on the ground counted as lost signal. Below 300 m
@@ -100,7 +100,8 @@ measures of sections 2, 3 and 5. Section 4 counts it as a disappearance.
 
 **Implausible segment.** A segment implying more than 500 km/h is excluded:
 some addresses are shared by several devices at once, and followed as one
-device they produce jumps of hundreds of kilometres. From 6 October 2026 a
+device they produce jumps of hundreds of kilometres. From 11:00 UTC on
+6 October 2026 a
 position of a paraglider faster than 100 km/h, of a hang glider faster than
 150 km/h, or of either above 6,000 m is excluded too: the feed carried a
 "paraglider" at 8,150 m and 157 km/h, most likely a sounding balloon with a
@@ -208,14 +209,15 @@ twenty-nine, so that a busy site does not saturate the channel. On
 the median was 17. Counting from the network the devices a FANET instrument
 hears would undercount them, since the network does not hear every device,
 so the method takes 15 seconds, the interval up to 29 neighbours. For an
-isolated pilot it is lenient by up to 10 seconds a silence. Until
-6 October 2026 FANET was judged by 5 seconds, which counted its slowing down
+isolated pilot it is lenient by up to 10 seconds a silence. Until 11:00 UTC
+on 6 October 2026 FANET was judged by 5 seconds, which counted its slowing down
 at busy sites as lost signal. With the 10-second tolerance, a radio counts as
 without signal after a silence of 11 to 25 seconds. Sources whose interval is not
 known, radio or app, are left out of this measure; ADS-B stays out as
 everywhere else. The rule applies from 17:51 UTC on 5 October 2026, and the
 October 2026 figures for these questions count only the time since then.
-The airborne rule and FANET's interval changed on 6 October 2026, so those
+The airborne rule and FANET's interval changed at 11:00 UTC on 6 October
+2026, so those
 figures include the hours from 17:51 UTC on 5 October to that change under
 the earlier rules.
 The distance measure stays in the data and on the page for each source,
@@ -426,7 +428,7 @@ fly, above all where carriage cannot be enforced. For each month:
   the slower of the two speeds, plus 10 seconds, counts as time without
   signal. An app whose cadence is not known is left out of the judgement.
   This rule applies from 16:04 UTC on 5 October 2026, and the free-flight time
-  of the figure is counted from 6 October 2026, when it began to be counted
+  of the figure is counted from 11:00 UTC on 6 October 2026, when it began to be counted
   per aircraft (below). Until that moment a cell was judged by
   whether the apps' last position stayed within 300 m of the true one, which
   mostly measured where Naviter is used, since a fix a minute leaves an
@@ -434,7 +436,7 @@ fly, above all where carriage cannot be enforced. For each month:
 - The airborne time of paragliders and hang gliders is counted per aircraft,
   whatever systems carry it and radio included, so that pilots who carry no
   app count too, and attributed to the cell where each segment began. From
-  6 October 2026 a pilot heard on two systems counts once; until then the
+  11:00 UTC on 6 October 2026 a pilot heard on two systems counts once; until then the
   time was summed over every source and channel, which counted such pilots
   twice and gave them twice the weight, and those figures are no longer used.
 - The figure is the share of that time spent in covered cells, among the
