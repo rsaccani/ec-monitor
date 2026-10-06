@@ -214,15 +214,32 @@ on 6 October 2026 FANET was judged by 5 seconds, which counted its slowing down
 at busy sites as lost signal. With the 10-second tolerance, a radio counts as
 without signal after a silence of 11 to 25 seconds. Sources whose interval is not
 known, radio or app, are left out of this measure; ADS-B stays out as
-everywhere else. The rule applies from 17:51 UTC on 5 October 2026, and the
-October 2026 figures for these questions count only the time since then.
-The airborne rule and FANET's interval changed at 11:00 UTC on 6 October
-2026. The hours from 06:07:56 UTC that day, when the raw feed began to be
-recorded (section 9), were computed again from the recording under the new
-rules and the difference added, for positions in Europe, the only ones
-recorded. The October 2026 figures therefore include the hours from 17:51 UTC
-on 5 October to 06:07:56 UTC on 6 October, and outside Europe to 11:00 UTC,
-under the earlier rules.
+everywhere else.
+
+The radio channel is followed per aircraft: all the radio packets of one
+address, whatever system carries them, form one timeline, and a silence
+counts beyond the shortest interval among the systems heard from that
+address in the previous 20 minutes, which is the stricter choice. Many
+free-flight instruments alternate FLARM, FANET and ADS-L under one address,
+and summed system by system such an aircraft would weigh two or three times.
+On 6 October 2026, between 09:00 and 12:00 UTC, free flight by radio was
+without signal 47% of the time system by system and 45% per aircraft: 41% for
+aircraft sending two or more radio systems, 54% for those sending one, almost
+all FANET alone. Four fifths of that time were silences of one to twenty
+minutes, at every height. The figures per system stay in the data, and are
+what each system achieves alone. Two devices of one pilot
+under different addresses are still two aircraft. This applies from 13:17
+UTC on 6 October 2026, the hours from 06:07:56 computed from the raw
+recording.
+
+The rule applies from 17:51 UTC on 5 October 2026, and the
+airborne rule and FANET's interval changed at 11:00 UTC on 6 October 2026.
+The figures for these questions count only the time judged under the current
+rules, from 06:07:56 UTC on 6 October, when the raw feed began to be recorded
+(section 9). The hours up to 12:16 UTC that day (13:17 for radio followed
+per aircraft) were computed from the recording, for positions in Europe, the only ones recorded; from then the
+service counts them itself. The time judged under the earlier rules, from
+17:51 UTC on 5 October, stays in the database and is not used.
 The distance measure stays in the data and on the page for each source,
 where it describes what a map shows, cadence included.
 
@@ -430,10 +447,10 @@ fly, above all where carriage cannot be enforced. For each month:
   two fixes, only the part beyond the interval the app is expected to keep at
   the slower of the two speeds, plus 10 seconds, counts as time without
   signal. An app whose cadence is not known is left out of the judgement.
-  This rule applies from 16:04 UTC on 5 October 2026, and the free-flight time
-  of the figure is counted per aircraft (below) from 06:07:56 UTC on
-  6 October 2026, the hours before 11:00 UTC computed again from the raw
-  recording. Until 16:04 UTC on 5 October a cell was judged by
+  This rule applies from 16:04 UTC on 5 October 2026. The figure counts the
+  apps' time and the free-flight time (below) from 06:07:56 UTC on
+  6 October 2026 under the rules of section 2, the hours before 12:16 UTC
+  computed from the raw recording. Until 16:04 UTC on 5 October a cell was judged by
   whether the apps' last position stayed within 300 m of the true one, which
   mostly measured where Naviter is used, since a fix a minute leaves an
   aircraft behind on the map whatever the coverage.
