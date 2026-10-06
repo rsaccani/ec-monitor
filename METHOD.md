@@ -76,14 +76,16 @@ dropped on arrival, like a device marked in the OGN device database, from
 **Time** is the instant of the fix written in the packet. A packet whose fix
 is more than 5 minutes older than its arrival is ignored, since it would open
 a gap that never happened, and so is a packet older than the last one received
-from the same device. An app that regains coverage and sends its stored
+from the same device. A fix stamped more than 5 minutes after its arrival is
+read as belonging to the previous day, and is therefore ignored as stale. An
+app that regains coverage and sends its stored
 positions in a burst therefore counts as invisible for the minutes it was
 silent, which is intended: nobody could see the aircraft at the time.
 
 **Airborne.** Two consecutive positions of a device on a channel form a
 segment. A segment counts as airborne when the ground speed at both ends is
-at least 15 km/h for paragliders and hang gliders, 25 kt for gliders and
-40 kt for powered aircraft; for any other kind, when it is at least 10 km/h
+at least 8 kt (14.8 km/h; APRS carries whole knots) for paragliders and hang
+gliders, 25 kt for gliders and 40 kt for powered aircraft; for any other kind, when it is at least 10 km/h
 at either end. Until 11:00 UTC on 6 October 2026 the 10 km/h rule applied to every kind,
 and the raw feed replayed under both rules showed what it cost: a powered
 aircraft taxiing and a pilot packing up after landing were flying, and the
@@ -93,6 +95,12 @@ time under the old rule and 4% under the new one, while above 300 m the
 figures barely moved. A paraglider soaring a ridge in a strong wind can fall
 below 15 km/h over the ground and lose that stretch; a threshold of 10 km/h
 at both ends kept most of the time on the ground and recovered little flight.
+From 11:00 UTC to 17:45 UTC on 6 October 2026 the free-flight threshold
+was written as 15 km/h in knots, which only 9 kt (16.7 km/h) passed. The
+measures that count flying time (flying time itself, the distances of section
+2 and 5, the disappearances of section 4) hold the time before 06:07:56 UTC
+on 6 October 2026 under the 10 km/h rule: the raw feed was not recorded then
+(section 9), so it cannot be computed again.
 
 **New session.** A segment longer than 20 minutes is treated as a new session
 (the device was switched off, or the pilot drove to another site) by the
@@ -108,11 +116,11 @@ position of a paraglider faster than 100 km/h, of a hang glider faster than
 tracker set to that category, and another reporting 702 km/h.
 
 **ADS-B** is counted among the sources but left out of the measures of
-visibility, being almost entirely airliners.
+visibility and of flying time, being almost entirely airliners.
 
 **Flying time** of each kind of aircraft is measured once per aircraft. Every
 fix of the same 24-bit address joins one timeline, whichever source and
-channel it came by, and the airborne segments of that timeline are added up
+channel it came by except ADS-B, and the airborne segments of that timeline are added up
 with the rules above. A paraglider whose instrument sends FLARM, FANET and
 ADS-L under one address counts its time once, and so does a pilot whose phone
 app uses the address of the aircraft's own device. Two devices with different
@@ -125,7 +133,9 @@ FANET weather stations had added to that category was removed.
 systems are the sources it was heard by in the month, on either channel:
 FANET by radio and through an internet gateway is one system. Systems are
 grouped as radio, phone app or tracker, and platforms that only relay other
-sources are left out. An instrument that sends several protocols under one
+sources are left out, as are aircraft heard by ADS-B alone, almost all
+airliners (until 17:45 UTC on 6 October 2026 they were counted, and
+10,820 of them sat among the powered aircraft of October). An instrument that sends several protocols under one
 address therefore counts as one aircraft on several systems, and so does a
 phone app set up with the address of the radio device on board, which SafeSky
 asks its users to do. Two devices with different addresses on one aircraft
@@ -214,18 +224,26 @@ on 6 October 2026 FANET was judged by 5 seconds, which counted its slowing down
 at busy sites as lost signal. With the 10-second tolerance, a radio counts as
 without signal after a silence of 11 to 25 seconds. Sources whose interval is not
 known, radio or app, are left out of this measure; ADS-B stays out as
-everywhere else.
+everywhere else. So are the packets of a radio system forwarded by an
+internet gateway (FANET base stations, for one): this measure judges
+reception by the radio network, and their timing is the gateway's. On
+6 October 2026, between 09:00 and 13:00 UTC, they were 132 hours of free
+flight on FANET.
 
 The radio channel is followed per aircraft: all the radio packets of one
 address, whatever system carries them, form one timeline, and a silence
-counts beyond the shortest interval among the systems heard from that
-address in the previous 20 minutes, which is the stricter choice. Many
+counts beyond the longest interval among the systems heard from that address
+in the previous 20 minutes, so only when every system is late on its own
+interval: the per-system rule, applied to the aircraft. Until 17:45 UTC on
+6 October 2026 the shortest was used, which judged an instrument's FANET
+packets by FLARM's 1 second and counted FANET's designed interval as silence
+again. Many
 free-flight instruments alternate FLARM, FANET and ADS-L under one address,
 and summed system by system such an aircraft would weigh two or three times.
-On 6 October 2026, between 09:00 and 12:00 UTC, free flight by radio was
-without signal 47% of the time system by system and 45% per aircraft: 41% for
-aircraft sending two or more radio systems, 54% for those sending one, almost
-all FANET alone. Four fifths of that time were silences of one to twenty
+On 6 October 2026, between 09:00 and 13:00 UTC, free flight by radio was
+without signal 47% of the time system by system and 37% per aircraft: 32%
+for aircraft sending two or more radio systems, 54% for those sending one,
+almost all FANET alone. Four fifths of that time were silences of one to twenty
 minutes, at every height. The figures per system stay in the data, and are
 what each system achieves alone. Two devices of one pilot
 under different addresses are still two aircraft. This applies from 13:17
@@ -379,7 +397,10 @@ packets received would be spread evenly over the angle between the
 aircraft's heading and the direction of the receiver; where a body or an
 airframe shields the antenna, they go missing.
 
-For every radio packet received while circling (a turn rate of at least 2
+For every radio packet received while circling from an aircraft in flight
+(at the ground speed of the airborne rule for its kind, from 17:45 UTC on
+6 October 2026, since an aircraft turning while it taxis is not circling; a
+turn rate of at least 2
 half-turns per minute or, without one, a change of course of at least 6
 degrees a second since the previous packet, no more than 10 seconds earlier),
 the angle is recorded in twelve sectors of 30 degrees, by source, category
@@ -531,3 +552,11 @@ off once the measures have settled.
 - Random addresses, which change at power-up, can count one device several
   times; they are shown apart.
 - Positions are only as good as the fix that produced them.
+- One aircraft is one 24-bit address, while Naviter's ids are unique only
+  within Naviter: two Naviter users could in principle share an address with
+  each other or with a radio device.
+- The systems of one address may declare different categories; each measure
+  takes the category of the packet it is counting.
+- A restart of the service loses the totals not yet written (at most 15
+  minutes) and every silence that spans it; nothing is counted twice, and no
+  silence is invented.
