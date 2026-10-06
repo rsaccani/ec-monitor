@@ -217,9 +217,12 @@ known, radio or app, are left out of this measure; ADS-B stays out as
 everywhere else. The rule applies from 17:51 UTC on 5 October 2026, and the
 October 2026 figures for these questions count only the time since then.
 The airborne rule and FANET's interval changed at 11:00 UTC on 6 October
-2026, so those
-figures include the hours from 17:51 UTC on 5 October to that change under
-the earlier rules.
+2026. The hours from 06:07:56 UTC that day, when the raw feed began to be
+recorded (section 9), were computed again from the recording under the new
+rules and the difference added, for positions in Europe, the only ones
+recorded. The October 2026 figures therefore include the hours from 17:51 UTC
+on 5 October to 06:07:56 UTC on 6 October, and outside Europe to 11:00 UTC,
+under the earlier rules.
 The distance measure stays in the data and on the page for each source,
 where it describes what a map shows, cadence included.
 
@@ -428,8 +431,9 @@ fly, above all where carriage cannot be enforced. For each month:
   the slower of the two speeds, plus 10 seconds, counts as time without
   signal. An app whose cadence is not known is left out of the judgement.
   This rule applies from 16:04 UTC on 5 October 2026, and the free-flight time
-  of the figure is counted from 11:00 UTC on 6 October 2026, when it began to be counted
-  per aircraft (below). Until that moment a cell was judged by
+  of the figure is counted per aircraft (below) from 06:07:56 UTC on
+  6 October 2026, the hours before 11:00 UTC computed again from the raw
+  recording. Until 16:04 UTC on 5 October a cell was judged by
   whether the apps' last position stayed within 300 m of the true one, which
   mostly measured where Naviter is used, since a fix a minute leaves an
   aircraft behind on the map whatever the coverage.
