@@ -465,7 +465,18 @@ def id_info(text):
     return (w >> 10) & 0x0F, bool(w & 0x4000)
 
 
+# Radio followed per aircraft (METHOD.md, section 2): rows of the detail and
+# grid tables under this pseudo-source, kind "aircraft", hold sig_* only, so
+# that sums of flying time over all rows are not doubled. Many free-flight instruments alternate FLARM, FANET
+# and ADS-L under one address: summed system by system such an aircraft
+# weighs two or three times (6 October 2026, free flight: 47% without signal
+# system by system, 45% per aircraft).
+AIRCRAFT = "AIRCRAFT"
+
+
 def source_info(tocall):
+    if tocall == AIRCRAFT:
+        return ("Radio, any system", "aircraft")
     return SOURCES.get(tocall, (tocall, "other"))
 
 
@@ -499,6 +510,10 @@ class SourceTracker:
         # Flying time per aircraft, whatever source or channel each fix came
         # by: last fix per 24-bit address, and seconds per (month, category).
         self.addr_fix = {}
+        # Radio per aircraft: last radio fix per address, and when each radio
+        # system was last heard from it.
+        self.radio_fix = {}
+        self.radio_systems = {}
         self.hours = collections.defaultdict(lambda: [0.0, 0.0])
         self.hours_cache = (0, None)
         self.systems_cache = (0, None)
@@ -648,6 +663,8 @@ class SourceTracker:
         if calendar.timegm(now.timetuple()) - t > STALE_SECONDS:
             return                          # relayed late; would open a false gap
         self.count_hours(day[:7], src[-6:], category, t, lat, lon, speed)
+        if via == "radio" and tocall in RADIO_CADENCE:
+            self.count_radio_aircraft(day[:7], src[-6:], category, tocall, t, lat, lon, speed, alt_m)
         if station is not None and course is not None:
             self.record_pattern(day[:7], tocall, category, station, lat, lon, t, course, rot, prev, body)
         self.record_prediction(day[:7], tocall, category, key, (t, lat, lon, course, speed, rot))
@@ -777,6 +794,40 @@ class SourceTracker:
             pg[6] += seconds
             pg[8] += seconds
 
+    def count_radio_aircraft(self, month, address, category, tocall, t, lat, lon, speed, alt_m):
+        """Time without signal by radio for the aircraft, whichever system is heard.
+
+        One timeline per address over every radio system with a known
+        interval; a silence counts beyond the shortest interval among the
+        systems heard from that address in the last SESSION_BREAK, plus the
+        tolerance. The segment rules are those of the visibility measure.
+        """
+        heard = self.radio_systems.setdefault(address, {})
+        heard[tocall] = t
+        prev = self.radio_fix.get(address)
+        if prev is not None and t <= prev[0]:
+            return                          # already covered by another system
+        self.radio_fix[address] = (t, lat, lon, speed, alt_m)
+        if prev is None:
+            return
+        seconds = t - prev[0]
+        if seconds > SESSION_BREAK:
+            return
+        if _distance(prev[1], prev[2], lat, lon) > IMPLAUSIBLE_MS * max(seconds, 1):
+            return
+        if not flying(category, prev[3], speed):
+            return
+        interval = min(RADIO_CADENCE[s][2] for s, ts in heard.items() if t - ts <= SESSION_BREAK)
+        late = max(0.0, seconds - interval - CADENCE_TOLERANCE)
+        ground = self.terrain.elevation(prev[1], prev[2])
+        agl = prev[4] - ground if prev[4] is not None and ground is not None else None
+        det = self.detail[(month, AIRCRAFT, "radio", category, msl_band(prev[4]), agl_band(agl))]
+        det[40] += seconds
+        det[41] += late
+        cell = self.grid[(month, math.floor(prev[1] / CELL_DEG), math.floor(prev[2] / CELL_DEG), "aircraft", "radio")]
+        cell[8] += seconds
+        cell[9] += late
+
     def count_vanish(self, month, tocall, via, category, lat, lon, alt_m, silent_seconds):
         """One disappearance, at the height of the last position seen (METHOD.md)."""
         ground = self.terrain.elevation(lat, lon)
@@ -904,6 +955,10 @@ class SourceTracker:
             hours, self.hours = self.hours, collections.defaultdict(lambda: [0.0, 0.0])
             self.addr_fix = {k: v for k, v in list(self.addr_fix.items())
                              if time.time() - v[0] < SESSION_BREAK}
+            self.radio_fix = {k: v for k, v in list(self.radio_fix.items())
+                              if time.time() - v[0] < SESSION_BREAK}
+            self.radio_systems = {k: v for k, v in list(self.radio_systems.items())
+                                  if time.time() - max(v.values()) < SESSION_BREAK}
             self.history = {k: v for k, v in list(self.history.items())
                             if v and time.time() - v[-1][0] < HISTORY_SECONDS}
             self.scored_at = {k: v for k, v in list(self.scored_at.items())
