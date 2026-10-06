@@ -881,6 +881,7 @@ def bootstrap():
         Thread(target=tracker.writer_loop, daemon=True).start()
         Thread(target=tracker.visibility_loop, daemon=True).start()
         Thread(target=tracker.archive_loop, daemon=True).start()
+        Thread(target=tracker.warm_loop, daemon=True).start()
     Thread(target=tracker.prune_loop, daemon=True).start()
 
     Thread(target=ads_l_listener, daemon=True).start()

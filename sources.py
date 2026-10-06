@@ -496,7 +496,6 @@ class SourceTracker:
         self.seen_day = None
         self.writes = queue.Queue(maxsize=200000)
         self.stats_cache = (0, None)
-        self.lock = threading.Lock()
         # Visibility measure: last fix per (device, source, via), and totals.
         self.last_fix = {}
         self.totals = collections.defaultdict(lambda: [0.0] * N_TOTALS)
@@ -526,6 +525,12 @@ class SourceTracker:
         self.pattern_cache = (0, None)
         self.detail_cache = (0, None)
         self.grid_cache = {}
+        # One lock per statistic, so a slow one (the device counts) never holds
+        # up the others, and a thread-local flag with which warm_loop forces a
+        # recomputation while visitors keep reading the cached copy.
+        self._stat_locks = {}
+        self._stat_locks_guard = threading.Lock()
+        self._force = threading.local()
 
     # --- per packet ---------------------------------------------------------
 
@@ -1086,11 +1091,52 @@ class SourceTracker:
                 if conn is not None:
                     conn.close()
 
+    def stat_lock(self, name):
+        with self._stat_locks_guard:
+            return self._stat_locks.setdefault(name, threading.Lock())
+
+    def forcing(self):
+        return getattr(self._force, "on", False)
+
+    def warm_loop(self):
+        """Recompute every statistic before its cache expires.
+
+        Until 6 October 2026 a cache was rebuilt by the first request after it
+        expired, and since all statistics shared one lock that visitor waited
+        for all of them, the device counts alone taking about three seconds.
+        """
+        time.sleep(20)
+        while True:
+            self._force.on = True
+            started = time.time()
+            try:
+                now = datetime.datetime.utcnow()
+                previous = (now.replace(day=1) - datetime.timedelta(days=1)).strftime("%Y-%m")
+                for name, f in (("detail", self.detail_stats), ("prediction", self.prediction_stats),
+                                ("grid", lambda: self.grid_stats(now.strftime("%Y-%m"))),
+                                ("grid previous", lambda: self.grid_stats(previous)),
+                                ("hours", self.hours_stats), ("systems", self.systems_stats),
+                                ("pattern", self.pattern_stats), ("sources", self.monthly_stats),
+                                ("visibility", self.visibility_stats)):
+                    try:
+                        f()
+                    except Exception as e:      # one failing statistic must not stop the others
+                        logger.error(f"Warming {name} statistics: {e}")
+            finally:
+                self._force.on = False
+            logger.debug(f"Statistics warmed in {time.time() - started:.1f} s")
+            time.sleep(max(60, STATS_CACHE_SECONDS - 120 - (time.time() - started)))
+
     def visibility_stats(self, days=62):
         """Sums per day, source, via and category for the last `days` days."""
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.visibility_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("visibility"):
             stamp, cached = self.visibility_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1123,9 +1169,14 @@ class SourceTracker:
 
     def detail_stats(self):
         """Monthly totals per source, channel, category and height bands."""
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.detail_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("detail"):
             stamp, cached = self.detail_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1154,9 +1205,14 @@ class SourceTracker:
 
     def hours_stats(self):
         """Flying time per month and category, each aircraft counted once."""
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.hours_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("hours"):
             stamp, cached = self.hours_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1182,9 +1238,14 @@ class SourceTracker:
         leave this function, and combinations shared by fewer than
         SYSTEMS_MIN_COMBO aircraft are pooled so that no rare aircraft stands out.
         """
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.systems_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("systems"):
             stamp, cached = self.systems_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1242,9 +1303,14 @@ class SourceTracker:
 
     def pattern_stats(self):
         """Received radio packets while circling, by source, category, distance band and sector."""
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.pattern_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("pattern"):
             stamp, cached = self.pattern_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1264,9 +1330,14 @@ class SourceTracker:
 
     def prediction_stats(self):
         """Prediction errors by source, category, horizon, circling and predictor."""
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.prediction_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("prediction"):
             stamp, cached = self.prediction_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1291,9 +1362,14 @@ class SourceTracker:
     def grid_stats(self, month=None):
         """Per 0.25-degree cell, group and channel for one month (default: current)."""
         month = month or datetime.datetime.utcnow().strftime("%Y-%m")
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.grid_cache.get(month, (0, None))
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("grid:" + month):
             stamp, cached = self.grid_cache.get(month, (0, None))
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
@@ -1386,9 +1462,14 @@ class SourceTracker:
         the month, which shows whether a source's ids are stable: an app that
         hands out a new id per session will have almost none.
         """
-        with self.lock:
+        # Served without waiting while fresh; only the warm thread (or a cold
+        # start) computes, under a lock of this statistic alone.
+        stamp, cached = self.stats_cache
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("stats"):
             stamp, cached = self.stats_cache
-            if cached is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
                 return cached
             conn = self.connect_db()
             try:
