@@ -206,10 +206,10 @@ section 9, which is off unless `EC_RAW_DIR` is set (`recorder.py` documents ever
 ```
 EC_RAW_DIR=/home/rsa/ec-raw     # hourly files, compressed with zstd once the hour is over
 EC_RAW_DAYS=4                   # files older than this are deleted
-EC_RAW_KEEP=europe,no-jets      # or world; no-adsb drops every ADS-B packet
+EC_RAW_KEEP=europe,no-airliners # or world; no-adsb drops every ADS-B packet
 ```
 
-It needs `zstd` on the path. A day of Europe without jets is roughly 0.2 to 0.7 GB once compressed.
+It needs `zstd` on the path. A day of Europe without airliners is roughly 0.2 to 0.7 GB once compressed.
 
 Without a database, set `SKIP_STATS_DATABASE = True` at the top of `app.py`. The live map still works,
 and every statistics endpoint answers empty.

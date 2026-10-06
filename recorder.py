@@ -14,9 +14,15 @@ hour of uncompressed feed is on disk. Files older than EC_RAW_DAYS days are
 deleted.
 
 EC_RAW_KEEP is a comma-separated list:
-  europe   positions inside 35-72 N, 25 W-45 E only (default); world keeps all
-  no-jets  drop ADS-B packets from jet aircraft (default)
-  no-adsb  drop every ADS-B packet
+  europe        positions inside 35-72 N, 25 W-45 E only (default); world keeps all
+  no-airliners  drop ADS-B packets from jets, any ADS-B packet above
+                AIRLINER_FT or faster than AIRLINER_KT, and surface reports
+                (no altitude) (default): the aircraft type in ADS-B ids is
+                mostly "powered" or "unknown", airliners at FL360 included, so
+                the type alone lets most of them through, and at dawn half of
+                what remained was airliners taxiing
+  no-jets       drop ADS-B packets from jet aircraft only
+  no-adsb       drop every ADS-B packet
 Lines without a position (status lines) are kept wherever they come from.
 Packets whose id carries the no-track flag, and devices hidden by the OGN
 device database, are never recorded.
@@ -34,6 +40,11 @@ logger = logging.getLogger("ads_l_map")
 _position = re.compile(r"[/@]\d{6}h(\d{2})(\d{2}\.\d{2})([NS]).(\d{3})(\d{2}\.\d{2})([EW])")
 _id_field = re.compile(r" id([0-9A-Fa-f]{2})[0-9A-Fa-f]{6}")
 JET = 9                     # OGN aircraft type in the id field
+# Light aircraft with ADS-B Out fly below both; airliners above either.
+AIRLINER_FT = 15000
+AIRLINER_KT = 200
+_speed = re.compile(r".{27}(\d{3})/(\d{3})")      # course/speed after the symbol
+_altitude = re.compile(r"/A=(-?\d{5,6})")
 FLUSH_SECONDS = 1.0
 NAME = "%Y%m%d-%H"          # one file per UTC hour: <name>.aprs, then <name>.aprs.zst
 
@@ -43,8 +54,8 @@ def from_env(hidden):
     if not path:
         return None
     days = float(os.getenv("EC_RAW_DAYS", "4"))
-    keep = {k.strip() for k in os.getenv("EC_RAW_KEEP", "europe,no-jets").split(",") if k.strip()}
-    unknown = keep - {"europe", "world", "no-jets", "no-adsb"}
+    keep = {k.strip() for k in os.getenv("EC_RAW_KEEP", "europe,no-airliners").split(",") if k.strip()}
+    unknown = keep - {"europe", "world", "no-airliners", "no-jets", "no-adsb"}
     if unknown:
         raise ValueError(f"EC_RAW_KEEP: unknown {sorted(unknown)}")
     return Recorder(path, days, keep, hidden)
@@ -57,7 +68,8 @@ class Recorder:
         os.chmod(self.dir, 0o700)
         self.days = days
         self.europe = "world" not in keep
-        self.no_jets = "no-jets" in keep
+        self.no_airliners = "no-airliners" in keep
+        self.no_jets = "no-jets" in keep or self.no_airliners
         self.no_adsb = "no-adsb" in keep
         self.hidden = hidden
         self.hour = None
@@ -80,8 +92,13 @@ class Recorder:
                 return False                    # the device asks not to be tracked
             if tocall == "OGADSB" and self.no_jets and (b >> 2) & 0x0F == JET:
                 return False
-        if tocall == "OGADSB" and self.no_adsb:
-            return False
+        if tocall == "OGADSB":
+            if self.no_adsb:
+                return False
+            if self.no_airliners:
+                v, a = _speed.match(body), _altitude.search(body)
+                if a is None or int(a.group(1)) > AIRLINER_FT or (v and int(v.group(2)) > AIRLINER_KT):
+                    return False
         if self.europe:
             p = _position.match(body)
             if p:
