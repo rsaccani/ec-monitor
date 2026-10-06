@@ -456,9 +456,11 @@ nothing older than four days exists.
 
 The recording holds the lines of the OGN feed as they arrive, with their time
 of reception, limited to positions inside 35–72° N and 25° W–45° E, together
-with the receiving stations' own reports. ADS-B packets from jet aircraft are
-left out, and so is every packet from a device that asks not to be tracked,
-in its own id or in the OGN device database. The files stay on the server,
+with the receiving stations' own reports. ADS-B packets from airliners are
+left out: those that declare a jet, fly above 15,000 ft or faster than
+200 kt, or are reported on the ground, where an airliner taxis. So is every
+packet from a device that asks not to be tracked, in its own id or in the
+OGN device database. The files stay on the server,
 readable by the service account alone; each hour is compressed once it is
 over and deleted after four days. Only the aggregates of this method leave
 the server, as with the live feed. The recording is a setting of the service and is meant to be switched
