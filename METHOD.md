@@ -422,7 +422,8 @@ fly, above all where carriage cannot be enforced. For each month:
 Monthly lists of device addresses per source and channel, for counting
 devices; daily and monthly totals per source, channel, category, height band
 and cell for the measures above; reception counts by angle; prediction errors
-by bin. No track and no position of any aircraft is stored.
+by bin. Apart from the raw feed kept for four days, described below, no track
+and no position of any aircraft is stored.
 
 A device address can be traced to an aircraft and its pilot, so the lists of
 addresses are kept for the current and the previous month only. Once a month
@@ -433,6 +434,35 @@ previous month is kept whole so that the share of devices heard again from
 one month to the next can be measured; a source whose ids change often shows
 almost none. The service checks every six hours, so a month's addresses go
 within a few hours of the end of the following month.
+
+The plan was to keep nothing of the feed beyond the counts above, and the
+first weeks showed what that costs. Several measures had to be redefined once
+the data showed what they were really measuring. Question 2 first compared
+sources by the distance an aircraft flew between two packets, which mixed in
+its speed and judged each app by the interval its makers chose; on 5 October
+2026 it became the time without signal beyond each source's own cadence. On
+6 October the sectors of the reception pattern were turned by 15 degrees so
+that the nose falls in the middle of one. Every such change restarted its
+measure from zero, because counts already stored cannot be recomputed in a
+new way, and a feed this varied (a dozen systems, each with its own cadence,
+quirks and ways of failing) keeps producing cases that only real data
+reveal.
+
+From 6 October 2026 the service therefore keeps the feed it receives for four
+days, so that a new or corrected algorithm can be run on real data before it
+replaces the old one. It is a tool for the setting-up of the measures, and
+its size on disk is the price of that. It is not designed to retain data, and
+nothing older than four days exists.
+
+The recording holds the lines of the OGN feed as they arrive, with their time
+of reception, limited to positions inside 35–72° N and 25° W–45° E, together
+with the receiving stations' own reports. ADS-B packets from jet aircraft are
+left out, and so is every packet from a device that asks not to be tracked,
+in its own id or in the OGN device database. The files stay on the server,
+readable by the service account alone; each hour is compressed once it is
+over and deleted after four days. Only the aggregates of this method leave
+the server, as with the live feed. The recording is a setting of the service and is meant to be switched
+off once the measures have settled.
 
 ## 10. Known limits
 
