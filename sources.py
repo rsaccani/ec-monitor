@@ -65,6 +65,9 @@ SOURCES = {
     "OGNVVO": ("VarioVoice", "app"),
     "OGNMYC": ("MyCloudbase", "app"),
     "OGAIRM": ("AirMate", "app"),
+    # Not in tocalls.txt: ids "XCG…", paragliders over the internet, and XC
+    # Guide (xcguide.app) can send the pilot's position to OGN (2026-10-06).
+    "OGNXCG": ("XC Guide", "app"),
     "OGNMTK": ("Microtrak", "tracker"),
     "OGNMKT": ("Microtrak", "tracker"),
     "OGSPOT": ("SPOT", "tracker"),
@@ -73,6 +76,7 @@ SOURCES = {
     "OGFLYM": ("Flymaster", "tracker"),
     "OGNINRE": ("Garmin inReach", "tracker"),
     "OGNTTN": ("The Things Network", "tracker"),
+    "OGTTN3": ("The Things Network", "tracker"),   # TTN stack v3, not in tocalls.txt
     "OGNHEL": ("Helium", "tracker"),
     "OGAPIK": ("APIK", "tracker"),
     "OGNVOL": ("Volandoo", "platform"),
