@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS `monthly_visibility_detail` (
   `int_le64` double NOT NULL DEFAULT 0,
   `cad_air` double NOT NULL DEFAULT 0,
   `cad_late` double NOT NULL DEFAULT 0,
+  `sig_air` double NOT NULL DEFAULT 0,
+  `sig_late` double NOT NULL DEFAULT 0,
   PRIMARY KEY (`month`,`source`,`via`,`category`,`msl_band`,`agl_band`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -118,6 +120,8 @@ CREATE TABLE IF NOT EXISTS `monthly_visibility_grid` (
   `p0_1000` double NOT NULL DEFAULT 0,
   `cad_air` double NOT NULL DEFAULT 0,
   `cad_late` double NOT NULL DEFAULT 0,
+  `sig_air` double NOT NULL DEFAULT 0,
+  `sig_late` double NOT NULL DEFAULT 0,
   PRIMARY KEY (`month`,`lat_idx`,`lon_idx`,`grp`,`via`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 

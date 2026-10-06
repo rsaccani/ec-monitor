@@ -358,13 +358,18 @@ DETAIL_COLUMNS = (
     "vanish_2", "vanish_5", "vanish_20",
     "int_le2", "int_le4", "int_le8", "int_le16", "int_le32", "int_le64",
     "cad_air", "cad_late",
+    # Time without signal under the rules of 6 October 2026 (METHOD.md, 2):
+    # judged and late seconds, from 06:07:56 UTC that day (the hours before
+    # the deploy filled from the raw recording). cad_* keep everything since
+    # 17:51 UTC on 5 October under whichever rule applied, and are not read.
+    "sig_air", "sig_late",
 )
 INTERVAL_LIMITS = (2, 4, 8, 16, 32, 64)
 VANISH_MINUTES = (2, 5, 20)
 AGE_LIMITS = (3, 6, 15, 30)
 # Monthly totals per (month, cell, group, via).
 GRID_COLUMNS = ("segments", "air_seconds", "p0_300", "p1_300", "p1_1000", "p0_1000",
-                "cad_air", "cad_late")
+                "cad_air", "cad_late", "sig_air", "sig_late")
 
 
 def _upsert(table, keys, columns):
@@ -721,6 +726,8 @@ class SourceTracker:
             late = max(0.0, seconds - expected_interval(cadence, slow) - CADENCE_TOLERANCE)
             det[38] += seconds
             det[39] += late
+            det[40] += seconds
+            det[41] += late
         grp = "adsl" if kind == "adsl" else "radio" if kind == "other" and via == "radio" else LAYER_OF_KIND[kind]
         cell_key = (month, math.floor(plat / CELL_DEG), math.floor(plon / CELL_DEG), grp, via)
         cell = self.grid[cell_key]
@@ -733,6 +740,8 @@ class SourceTracker:
         if late is not None:
             cell[6] += seconds
             cell[7] += late
+            cell[8] += seconds
+            cell[9] += late
 
     def count_hours(self, month, address, category, t, lat, lon, speed):
         """Flying time per aircraft (METHOD.md): one address, all its sources.
@@ -766,6 +775,7 @@ class SourceTracker:
             pg[0] += 1
             pg[1] += seconds
             pg[6] += seconds
+            pg[8] += seconds
 
     def count_vanish(self, month, tocall, via, category, lat, lon, alt_m, silent_seconds):
         """One disappearance, at the height of the last position seen (METHOD.md)."""
