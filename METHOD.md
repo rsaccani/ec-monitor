@@ -338,7 +338,13 @@ half-turns per minute or, without one, a change of course of at least 6
 degrees a second since the previous packet, no more than 10 seconds earlier),
 the angle is recorded in twelve sectors of 30 degrees, by source, category
 and distance to the receiving station (0–5, 5–10, 10–20, 20–40, over 40 km),
-whose position comes from its own reports in the feed. The receiver's
+whose position comes from its own reports in the feed. The sectors are centred
+on the heading, the first from 15 degrees left of it to 15 degrees right, so
+the nose, the wings and the tail each fall in the middle of one. Until
+6 October 2026 the sectors began at the heading, the first from 0 to 30
+degrees; those counts are kept apart and never added to the new ones, and the
+page draws them, each at the centre of its sector, only until the new ones
+are enough for a chart. The receiver's
 signal-to-noise ratio, corrected for distance by the free-space loss (adding
 20·log10 of the distance in kilometres), is summed per sector, so the shadow
 can be read in decibels. While an aircraft circles, every receiver sees it

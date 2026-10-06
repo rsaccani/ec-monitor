@@ -139,7 +139,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/pattern`
 **Method:** GET
-**Description:** Radio packets received while the aircraft was circling, by source, aircraft category, distance to the receiving station (`dist_band` 0 = under 5 km, 1 = 5–10, 2 = 10–20, 3 = 20–40, 4 = over 40) and angle between the aircraft's course and the bearing to that station (`sector_deg`, 30-degree sectors). `snr_sum`/`snr_n` give the mean signal-to-noise ratio of those packets corrected for distance (free-space loss), so that the pattern can be read in decibels. Read as the radiation pattern of the installation in flight; see METHOD.md, "How the installation shields the signal".
+**Description:** Radio packets received while the aircraft was circling, by source, aircraft category, distance to the receiving station (`dist_band` 0 = under 5 km, 1 = 5–10, 2 = 10–20, 3 = 20–40, 4 = over 40) and angle between the aircraft's course and the bearing to that station (`sector_deg`, 30-degree sectors). Rows with `centred` true have sectors centred on the heading, so `sector_deg` 0 covers −15 to +15 degrees; those with `centred` false were recorded until 6 October 2026 with sectors beginning at it, so `sector_deg` 0 covers 0 to 30 degrees. The two sets must not be added together. `snr_sum`/`snr_n` give the mean signal-to-noise ratio of those packets corrected for distance (free-space loss), so that the pattern can be read in decibels. Read as the radiation pattern of the installation in flight; see METHOD.md, "How the installation shields the signal".
 
 ### `/conspicuity-monitor/api/prediction`
 **Method:** GET

@@ -348,6 +348,10 @@ DETAIL_SQL = _upsert("monthly_visibility_detail",
 # Reception pattern while circling (METHOD.md): received radio packets by the
 # angle between course and the bearing to the receiving station.
 PATTERN_SECTOR = 30
+# Sectors are centred on the heading (stored as 12-23, the first from -15 to
+# +15 degrees). Until 6 October 2026 they began at it (stored as 0-11, the
+# first from 0 to 30); those rows are kept apart and never added to the new.
+PATTERN_CENTRED = 12
 PATTERN_DIST_KM = (5, 10, 20, 40)        # band edges; above the last is the last band
 COURSE_CHANGE_DEG_S = 6.0
 PATTERN_SQL = _upsert("monthly_reception_pattern",
@@ -750,7 +754,8 @@ class SourceTracker:
         km = _distance(lat, lon, where[0], where[1]) / 1000
         band = sum(1 for edge in PATTERN_DIST_KM if km >= edge)
         relative = (_bearing(lat, lon, where[0], where[1]) - course) % 360
-        row = self.pattern[(month, tocall, category, band, int(relative // PATTERN_SECTOR))]
+        sector = int(((relative + PATTERN_SECTOR / 2) % 360) // PATTERN_SECTOR)
+        row = self.pattern[(month, tocall, category, band, PATTERN_CENTRED + sector)]
         row[0] += 1
         m = _snr.search(body)
         if m and km > 0.1:
@@ -1138,7 +1143,8 @@ class SourceTracker:
                 conn.close()
             out = [{"month": r[0], "source": r[1], "label": source_info(r[1])[0],
                     "category": None if r[2] == UNKNOWN_CATEGORY else int(r[2]),
-                    "dist_band": int(r[3]), "sector_deg": int(r[4]) * PATTERN_SECTOR,
+                    "dist_band": int(r[3]), "centred": int(r[4]) >= PATTERN_CENTRED,
+                    "sector_deg": int(r[4]) % PATTERN_CENTRED * PATTERN_SECTOR,
                     "packets": int(r[5]), "snr_sum": float(r[6]), "snr_n": int(r[7])} for r in rows]
             self.pattern_cache = (time.time(), out)
             return out
