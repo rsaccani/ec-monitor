@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 import os
 import subprocess
 
+import recorder
 import sources
 
 load_dotenv()
@@ -49,6 +50,7 @@ listener_started = False
 
 # Every other OGN source: monthly counts and the live layers (sources.py)
 tracker = None
+raw_recorder = None  # recorder.Recorder when EC_RAW_DIR is set
 
 # Database connection for statistics
 conn = None
@@ -438,6 +440,8 @@ def ads_l_listener():
                     line = line.strip()
                     if not line or line.startswith("#"):
                         continue
+                    if raw_recorder is not None:
+                        raw_recorder.write(line)
                     if tracker is not None:
                         tracker.handle(line)
                     if ">OGADSL" in line:
@@ -870,7 +874,8 @@ def bootstrap():
 
     conn = get_db_connection()
 
-    global tracker
+    global tracker, raw_recorder
+    raw_recorder = recorder.from_env(hidden)
     tracker = sources.SourceTracker(parse_aprs_line, lambda: get_db_connection(max_retries=1), hidden)
     if not SKIP_STATS_DATABASE:
         Thread(target=tracker.writer_loop, daemon=True).start()
