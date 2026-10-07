@@ -149,9 +149,24 @@ COUNTED_SQL = ("NOT (source IN ({}) AND category IS NULL)".format(", ".join(f"'{
 # marks them.
 GROUND_CATEGORIES = (14, 15)
 AIRCRAFT_CATEGORIES = frozenset(range(1, 14)) - {10}     # 10 is "unknown" in the OGN id
+# ADS-B's 0 is "not yet known": OGN's ADS-B decoder sends it until the
+# aircraft's emitter category has been received, so the first packet of most
+# ADS-B aircraft carries it. Of the October 2026 ADS-B rows also in the raw
+# recording, 1,654 were stored as 0 while most of the aircraft's packets
+# declared a powered aircraft (1,088), a helicopter (453) or a paraglider (113). From 7 October 2026 a later aircraft
+# category replaces it as it replaces 14 and 15 (METHOD.md, section 1).
+UNKNOWN_YET = {"OGADSB": 0}
+
+
+def replaceable(tocall, stored):
+    """True when a stored category gives way to a later aircraft category."""
+    return stored in GROUND_CATEGORIES or (stored is not None and UNKNOWN_YET.get(tocall) == stored)
+
+
 UPGRADE_CATEGORY_SQL = (
     "UPDATE monthly_sources SET category = %s "
-    "WHERE month = %s AND source = %s AND via = %s AND device_id = %s AND category IN (14, 15) "
+    "WHERE month = %s AND source = %s AND via = %s AND device_id = %s "
+    "AND (category IN (14, 15) OR (category = 0 AND source = 'OGADSB')) "
     f"AND NOT (category = {REBROADCAST_CATEGORY} AND LEFT(device_id, 3) = '{REBROADCAST_PREFIX}')")
 
 
@@ -729,8 +744,9 @@ class SourceTracker:
                 self.writes.put_nowait(("new", month, tocall, via, src, id_category, now))
             except queue.Full:
                 pass  # the writer is stuck; the next day retries
-        elif stored in GROUND_CATEGORIES and id_category in AIRCRAFT_CATEGORIES:
-            # Heard on the ground first, now flying (from 7 October 2026).
+        elif replaceable(tocall, stored) and id_category in AIRCRAFT_CATEGORIES:
+            # Heard on the ground first, or by ADS-B before its emitter
+            # category, now an aircraft (from 7 October 2026).
             self.seen[key] = id_category
             try:
                 self.writes.put_nowait(("category", month, tocall, via, src, id_category, now))
@@ -1772,33 +1788,52 @@ class SourceTracker:
                     "preference": preference, "gaggles": gaggles, "parked": parked}
         return self._cached("patterns", "patterns_cache", compute)
 
+    # Which devices declaring a drone are drones (nightly.py, METHOD.md 10.4).
+    DRONE_EVIDENCE = {1: "confirmed", 2: "uncertain", 3: "crewed_adsb_emitter", 4: "crewed_ddb_thermal",
+                      5: "stray", 6: "crewed_climb_extent"}
+
     def drones_stats(self):
-        """Drones per 1-degree cell, height and speed band, systems, extent and encounters."""
+        """Drones per 1-degree cell, height and speed band, systems, extent and encounters.
+
+        Every list is split by `evidence`, confirmed or uncertain; addresses
+        with crewed evidence, and those whose category 13 was a stray packet
+        among others, are in none of them and appear only in `classes`, with
+        how many and how long they flew, so the page can say how many were
+        set aside and on what grounds.
+        """
         def compute(cur):
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, SUM(air_seconds), SUM(aircraft)
-                               FROM daily_drone_cells GROUP BY 1, 2, 3""")
-            cells = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "air_seconds": float(r[3]),
-                      "drone_days": int(r[4])} for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), height_band, speed_band, SUM(air_seconds)
+            name = self.DRONE_EVIDENCE.get
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, lat_idx, lon_idx, SUM(air_seconds), SUM(aircraft)
+                               FROM daily_drone_cells GROUP BY 1, 2, 3, 4""")
+            cells = [{"month": r[0], "evidence": name(int(r[1])), "lat": int(r[2]), "lon": int(r[3]),
+                      "air_seconds": float(r[4]), "drone_days": int(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, height_band, speed_band, SUM(air_seconds)
+                               FROM daily_drones GROUP BY 1, 2, 3, 4""")
+            bands = [{"month": r[0], "evidence": name(int(r[1])),
+                      "height_band": None if r[2] == UNKNOWN_BAND else int(r[2]),
+                      "speed_band": int(r[3]), "air_seconds": float(r[4])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, systems, SUM(air_seconds)
                                FROM daily_drones GROUP BY 1, 2, 3""")
-            bands = [{"month": r[0], "height_band": None if r[1] == UNKNOWN_BAND else int(r[1]),
-                      "speed_band": int(r[2]), "air_seconds": float(r[3])} for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), systems, SUM(air_seconds)
-                               FROM daily_drones GROUP BY 1, 2""")
-            systems = [{"month": r[0], "systems": r[1], "air_seconds": float(r[2])} for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), extent_band, SUM(drones)
-                               FROM daily_drone_extent GROUP BY 1, 2""")
-            extent = [{"month": r[0], "extent_band": int(r[1]), "drone_days": int(r[2])} for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), drone_systems, other_category, other_systems,
+            systems = [{"month": r[0], "evidence": name(int(r[1])), "systems": r[2], "air_seconds": float(r[3])}
+                       for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, extent_band, SUM(drones)
+                               FROM daily_drone_extent GROUP BY 1, 2, 3""")
+            extent = [{"month": r[0], "evidence": name(int(r[1])), "extent_band": int(r[2]), "drone_days": int(r[3])}
+                      for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, drone_systems, other_category, other_systems,
                                   distance_band, shared_system, SUM(encounters)
-                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5, 6""")
-            encounters = [{"month": r[0], "drone_systems": r[1], "other_category": int(r[2]), "other_systems": r[3],
-                           "distance_band": int(r[4]), "shared_system": bool(r[5]), "encounters": int(r[6])}
-                          for r in cur.fetchall()]
+                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5, 6, 7""")
+            encounters = [{"month": r[0], "evidence": name(int(r[1])), "drone_systems": r[2],
+                           "other_category": int(r[3]), "other_systems": r[4], "distance_band": int(r[5]),
+                           "shared_system": bool(r[6]), "encounters": int(r[7])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, SUM(addresses), SUM(air_seconds)
+                               FROM daily_drone_classes GROUP BY 1, 2""")
+            classes = [{"month": r[0], "evidence": name(int(r[1])), "address_days": int(r[2]),
+                        "air_seconds": float(r[3])} for r in cur.fetchall()]
             return {"days": self._nightly_days(cur), "height_bands_m": [0, 50, 120, 300],
                     "speed_bands_kmh": [0, 20, 50, 100], "extent_bands_m": [0, 1000, 3000, 10000],
-                    "distance_bands_m": [0, 300, 600, 1000], "cells": cells, "bands": bands, "systems": systems,
-                    "extent": extent, "encounters": encounters}
+                    "distance_bands_m": [0, 300, 600, 1000], "classes": classes, "cells": cells, "bands": bands,
+                    "systems": systems, "extent": extent, "encounters": encounters}
         return self._cached("drones", "drones_cache", compute)
 
     def quality_stats(self, month=None):
@@ -1971,6 +2006,7 @@ class SourceTracker:
         inserts = [(m, s, v, d, c, n, n) for m, s, v, d, c, n in news]
         touches = [(n, m, s, v, d) for m, s, v, d, c, n in news]
         # An aircraft category replaces a stored ground one (GROUND_CATEGORIES),
+        # or ADS-B's "not yet known" 0 (UNKNOWN_YET),
         # whether the device was first heard on the ground today or on an
         # earlier day of the month. Last, so that a missing privilege cannot
         # hold up the two statements above.

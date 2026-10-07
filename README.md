@@ -154,7 +154,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/drones`
 **Method:** GET
-**Description:** Drones (category 13 and Remote ID), from `nightly.py`: airborne seconds and drone-days per month and 1-degree cell (`cells`), seconds by height band above ground and speed band (`bands`, edges in `height_bands_m` and `speed_bands_kmh`), by set of systems heard (`systems`), drones by the largest distance from the start of a session (`extent`), and encounters with crewed aircraft in flight by drone systems, other category and systems, closest distance band and whether the two share a system (`encounters`). METHOD.md section 10.4.
+**Description:** Drones (category 13 and Remote ID), from `nightly.py`: airborne seconds and drone-days per month and 1-degree cell (`cells`), seconds by height band above ground and speed band (`bands`, edges in `height_bands_m` and `speed_bands_kmh`), by set of systems heard (`systems`), drones by the largest distance from the start of a session (`extent`), and encounters with crewed aircraft in flight by drone systems, other category and systems, closest distance band and whether the two share a system (`encounters`). Every list carries `evidence`, `confirmed` or `uncertain`; devices declaring a drone with crewed evidence (ADS-B emitter category of a crewed aircraft, or a crewed type in the OGN device database and a thermal) and those whose category 13 was a stray packet among others are in none of them, and `classes` counts all five kinds with their airborne seconds. METHOD.md section 10.4.
 
 ### `/conspicuity-monitor/api/quality`
 **Method:** GET

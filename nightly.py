@@ -35,16 +35,20 @@ import argparse
 import array
 import calendar
 import collections
+import csv
+import io
 import datetime
 import json
 import logging
 import math
 import os
 import resource
+import re
 import statistics
 import subprocess
 import sys
 import time
+import urllib.request
 import zlib
 
 import pymysql
@@ -108,6 +112,51 @@ ACTIVE_DEG = 0.1                            # "near a drone": its 0.1-degree squ
 SWEEP_EVERY = 60                            # seconds of packet time between sweeps of the two indexes
 UNKNOWN_BAND = sources.UNKNOWN_BAND
 
+# Which devices declaring a drone are drones (METHOD.md 10.4, 7 October 2026).
+# A crewed aircraft set up by mistake as category 13 flies like a fixed-wing
+# drone, so the flight cannot decide; two declarations made apart from the
+# device's own setting can: the emitter category of an ADS-B transponder,
+# set by whoever installed it, and the aircraft type in the OGN device
+# database, which can be stale and so counts only together with a thermal.
+CONFIRMED, UNCERTAIN, CREWED_ADSB, CREWED_DDB, STRAY, CREWED_CLIMB = 1, 2, 3, 4, 5, 6
+EVIDENCE_NAMES = {CONFIRMED: "confirmed", UNCERTAIN: "uncertain", CREWED_ADSB: "crewed_adsb_emitter",
+                  CREWED_DDB: "crewed_ddb_thermal", STRAY: "stray", CREWED_CLIMB: "crewed_climb_extent"}
+CREWED_CLASSES = (CREWED_ADSB, CREWED_DDB, CREWED_CLIMB)
+SET_ASIDE = CREWED_CLASSES + (STRAY,)
+# A thermal (10.2) that gains this much height, by a device whose day covers
+# more than this distance, is a crewed glider or paraglider on a
+# cross-country even without a database entry: a drone loitering over a
+# point turns, but it does not climb in circles across a hundred kilometres
+# (7 October 2026).
+CLIMB_M, CLIMB_EXTENT_M = 100, 100000
+# Every measure takes, from 7 October 2026, the category an address declares
+# most often on that system that day (METHOD.md, section 10): a stray packet
+# no longer moves a segment, a thermal or a drone into another kind. On
+# 6 October 2026, 55 of the 145 addresses with a category 13 sent it in one
+# packet only, all their others declaring another kind, and the stray
+# categories of all systems came with the 65,536 m altitude and the 500 km/h
+# jumps 20 to 250 times as often as normal packets. FANET's switch between
+# paraglider or hang glider and static object is its ground mode and is kept
+# packet by packet. ADS-B's 0 ("not yet known") takes no part in the vote.
+FANET_GROUND = {6, 7, 15}
+# A receiver whose radio packets disagree with their address's majority this
+# often is flagged on the data-quality page; the median receiver was at
+# 0.01% on 6 and 7 October 2026, the worst two near 45%.
+RELAY_STRAY_SHARE, RELAY_STRAY_MIN = 0.02, 1000
+# For comparing the two rules only: NIGHTLY_PACKET_CATEGORY=1 makes the
+# measures take each packet's own category again, as before 7 October 2026.
+PACKET_CATEGORY = bool(os.getenv("NIGHTLY_PACKET_CATEGORY"))
+EMITTER = re.compile(r" ([A-D][0-7]):")
+CREWED_EMITTERS = {"A1", "A2", "A3", "A4", "A5", "A6", "A7", "B1", "B2", "B3", "B4"}
+UAV_EMITTER = "B6"
+# AIRCRAFT_TYPE of the DDB (download/?t=1): 1 glider or motor glider, 2 plane,
+# 3 ultralight, 4 helicopter, 5 drone, 6 other (paragliders, "Unknown",
+# ground stations). Checked against the models filed under each on
+# 7 October 2026 (ASK-21 in 1, Cessna 172 in 2, EC 135 in 4, DJI in 5).
+DDB_URL = "https://ddb.glidernet.org/download/?t=1"
+DDB_CREWED = {1, 2, 3, 4}
+DDB_DRONE = 5
+
 # --- 5. Data quality ----------------------------------------------------------
 LATE_S = 60
 AHEAD_S = 5
@@ -122,7 +171,7 @@ RELAY_LATE_SHARE, RELAY_LATE_MIN = 0.05, 100
 RELAY_GROUP_S = 20              # seconds after the first reception of a fix to wait for other receivers
 RELAY_SOURCES = {"OGFLR"}       # FLARM: the receiver converts ellipsoid height to MSL itself
 
-TABLES = ("daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles", "daily_parked",
+TABLES = ("daily_drone_classes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles", "daily_parked",
           "daily_drones", "daily_drone_cells", "daily_drone_extent", "daily_drone_encounters",
           "daily_quality", "nightly_runs")
 
@@ -193,6 +242,42 @@ def weighted_median(pairs):
     return None
 
 
+def fanet_ground(tocall, a, b):
+    return tocall == "OGNFNT" and {a, b} <= FANET_GROUND and 15 in (a, b)
+
+
+def load_ddb():
+    """(address -> AIRCRAFT_TYPE, addresses not to be tracked) from the OGN device database.
+
+    The owners' choices are honoured as app.py does: TRACKED=N drops the
+    device from every measure, IDENTIFIED=N keeps it but its type is not used.
+    Without the database (a failed download) every declared drone without an
+    ADS-B emitter category stays uncertain, and the log says so.
+    """
+    try:
+        text = urllib.request.urlopen(DDB_URL, timeout=120).read().decode("utf-8", "replace")
+    except OSError as e:
+        logger.error(f"OGN device database not loaded ({e}): no aircraft types this run")
+        return {}, set()
+    types, notrack = {}, set()
+    reader = csv.reader(io.StringIO(text))
+    header = [h.strip("#' ") for h in next(reader)]
+    col = {h: i for i, h in enumerate(header)}
+    for row in reader:
+        try:
+            dev = row[col["DEVICE_ID"]].strip("'")
+            if row[col["TRACKED"]].strip("'") == "N":
+                notrack.add(dev)
+                continue
+            if row[col["IDENTIFIED"]].strip("'") == "N":
+                continue
+            types[dev] = int(row[col["AIRCRAFT_TYPE"]].strip("'") or 0)
+        except (IndexError, KeyError, ValueError):
+            continue
+    logger.info(f"OGN device database: {len(types):,} types, {len(notrack):,} not to be tracked")
+    return types, notrack
+
+
 class CircleTrack:
     """One address on one system, while it may be circling."""
     __slots__ = ("cat", "last", "run", "run_s", "run_t0", "run_pos", "run_samples", "thermal", "thermals")
@@ -252,8 +337,17 @@ class ParkedRun:
 
 
 class Nightly:
-    def __init__(self, day):
+    def __init__(self, day, ddb=({}, set())):
         self.day = day
+        self.ddb_types, self.notrack = ddb
+        self.emitters = collections.defaultdict(set)    # address -> ADS-B emitter categories heard
+        self.declared = collections.defaultdict(set)    # address with a category 13 -> system labels
+        self.addr_cats = collections.defaultdict(collections.Counter)   # address -> declared category -> fixes
+        self.drone_hours = collections.defaultdict(float)   # (local day, hour, address) -> s
+        self._evidence = None
+        self.major, self.major13 = {}, set()      # (address, tocall) -> majority category; vote()
+        self.rx_cat = collections.Counter()       # receiver -> radio packets with a voted category
+        self.rx_cat_stray = collections.Counter()
         self.d0 = calendar.timegm(day.timetuple())
         self.d1 = self.d0 + 86400
         self.terrain = sources.Terrain(sources.DEM_PATH)
@@ -314,12 +408,46 @@ class Nightly:
                 f"relay pairs {len(self.relay_pairs):,} ({sum(len(v) for v in self.relay_pairs.values()):,}), "
                 f"device categories {len(self.categories):,}")
 
+    def vote(self, files):
+        """First pass: the category each address declares most often on each system.
+
+        Only the id field of each packet is read, so this costs a fraction
+        of the main pass. The same exclusions apply as there.
+        """
+        votes = collections.defaultdict(collections.Counter)
+        for path, stop in files:
+            if path is None:
+                continue
+            for epoch, line in read_lines(path, stop):
+                try:
+                    src, rest = line.split(">", 1)
+                    head, body = rest.split(":", 1)
+                except ValueError:
+                    continue
+                if not body.startswith("/") or body[26:27] in ("&", "_"):
+                    continue
+                raw = head.split(",", 1)[0]
+                if raw in sources.EXCLUDED or raw in ("OGNSDR", "OGNSXR"):
+                    continue
+                cat, no_track = sources.id_info(body)
+                if cat is None or no_track:
+                    continue
+                tocall = sources.same_system(raw, src)
+                if sources.rebroadcast(tocall, src, cat) or sources.UNKNOWN_YET.get(tocall) == cat:
+                    continue
+                votes[(src[-6:], tocall)][cat] += 1
+        self.major = {k: c.most_common(1)[0][0] for k, c in votes.items()}
+        self.major13 = {a for (a, _), m in self.major.items() if m == DRONE}
+        logger.info(f"Majority categories: {len(self.major):,} address-systems, {len(self.major13):,} addresses "
+                    f"declaring a drone on at least one system")
+
     def run(self, raw_dir, hours=range(24)):
         files = [(hour_path(raw_dir, self.day, h) if h in hours else None, None) for h in range(24)]
         missing = [h for h, (p, _) in enumerate(files) if p is None]
         nxt = hour_path(raw_dir, self.day + datetime.timedelta(days=1), 0)
         if nxt is not None:
             files.append((nxt, self.d1 + STALE + 1))
+        self.vote(files)
         for path, stop in files:
             if path is None:
                 continue
@@ -402,6 +530,8 @@ class Nightly:
         else:
             category = sources.SYMBOL_CATEGORY.get(symbol, sources.UNKNOWN_CATEGORY)
         address = src[-6:]
+        if address in self.notrack:
+            return                              # the owner asked OGN not to track it
 
         # Packet time, as sources.parse_fix: the clock of the day of arrival,
         # the previous day when more than 5 minutes ahead.
@@ -431,15 +561,24 @@ class Nightly:
                 q["with_course"] += 1
                 if course > 360:
                     q["heading_over_360"] += 1
-            if category in FREE_FLIGHT:
+            if category in FREE_FLIGHT:         # the packet's own category, before the vote
                 q["free_flight_fixes"] += 1
                 if sources.implausible(category, kt, alt_m):
                     q["free_flight_implausible"] += 1
+            m = self.major.get((address, tocall))
+            stray = (id_category is not None and m is not None and id_category != m
+                     and not fanet_ground(tocall, m, id_category) and sources.UNKNOWN_YET.get(tocall) != id_category)
+            if id_category is not None and m is not None:
+                q["categorised"] += 1
+                q["category_stray"] += stray
             if id_category is not None:
                 self.categories[(label, address)][id_category] += 1
             if via == "radio" and kind != "adsb":
                 rx = path[-1]
                 self.rx_relay[rx] += 1
+                if id_category is not None and m is not None:
+                    self.rx_cat[rx] += 1
+                    self.rx_cat_stray[rx] += stray
                 if delay > LATE_S:
                     self.rx_late[rx] += 1
                 if tocall in RELAY_SOURCES and alt_m is not None:
@@ -448,6 +587,18 @@ class Nightly:
         # --- the measures: fixes of this day, received in time ---------------
         if epoch - t > STALE or not (self.d0 <= t < self.d1):
             return
+        raw_category = category
+        m = self.major.get((address, tocall))
+        if (m is not None and tocall != REMOTE_ID and not fanet_ground(tocall, m, category)
+                and not PACKET_CATEGORY):
+            category = m                        # the day's majority on this system
+        if kind == "adsb":
+            # The emitter category, read before any filter of the measures: an
+            # ADS-B id often carries a free-flight category at airliner speed,
+            # and that fix is dropped as implausible a few lines down.
+            e = EMITTER.search(body)
+            if e:
+                self.emitters[address].add(e.group(1))
         if sources.implausible(category, kt, alt_m):
             # The device is sending, so no silence may run across this fix.
             self.last_fix.pop((src, tocall, via), None)
@@ -469,6 +620,10 @@ class Nightly:
                 if d > JUMP_MIN_M and d > sources.IMPLAUSIBLE_MS * max(t - prev[0], 1):
                     self.jumps[(label, address)] += 1
 
+        if category == DRONE or raw_category == DRONE:
+            self.declared[address].add(label)
+        if id_category is not None and kind != "adsb":
+            self.addr_cats[address][raw_category] += 1
         crewed_airborne = category in CREWED and (kt or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT)
         if category == DRONE:
             self.drone_fix(address, t, lat, lon, alt_m)
@@ -477,7 +632,7 @@ class Nightly:
         if kind == "adsb":
             return                              # ADS-B: only the other aircraft of an encounter
         self.timeline(address, category, t, lat, lon, kt, alt_m)
-        if category in CIRCLE_CATEGORIES and course:
+        if (category in CIRCLE_CATEGORIES or category == DRONE) and course:
             self.circle(address, tocall, category, t, course, kt, lat, lon, alt_m)
         if category in PARKED_CATEGORIES:
             self.park(address, label, category, t, lat, lon, alt_m)
@@ -502,9 +657,14 @@ class Nightly:
         if category in GROUND_CATEGORIES:
             return
         local = prev[0] + seconds / 2 + prev[2] * SOLAR_SECONDS_PER_DEGREE
-        k = (int(local // 86400), category, int(local % 86400 // 3600))
-        self.hours_air[k] += seconds
-        self.hours_ac[k].add(address)
+        if category == DRONE:
+            # Per address, so that a crewed aircraft declared a drone can be
+            # filed apart once the day's evidence is in (evidence()).
+            self.drone_hours[(int(local // 86400), int(local % 86400 // 3600), address)] += seconds
+        else:
+            k = (int(local // 86400), category, int(local % 86400 // 3600))
+            self.hours_air[k] += seconds
+            self.hours_ac[k].add(address)
         if category == DRONE:
             ground = self.terrain.elevation(prev[1], prev[2])
             agl = prev[4] - ground if prev[4] is not None and ground is not None else None
@@ -734,6 +894,63 @@ class Nightly:
         for tr in self.circles.values():
             tr.finish()
 
+    def evidence(self):
+        """address with a category 13 -> one of the classes of EVIDENCE_NAMES.
+
+        Evaluated once the whole day is in (METHOD.md 10.4). Remote ID is a
+        confirmed drone on its own. For the rest, an address whose majority
+        is 13 on none of its systems is stray; then crewed evidence: an ADS-B
+        emitter category of a crewed aircraft, a crewed type in the device
+        database together with at least one thermal flown that day (10.2),
+        or a thermal that gains CLIMB_M on a day covering more than
+        CLIMB_EXTENT_M, since a drone turns but does not climb in circles
+        across a cross-country. Then a drone is confirmed by the UAV emitter
+        category or by the database's drone type; anything else, including
+        conflicts the flight does not settle, is uncertain.
+        """
+        if self._evidence is not None:
+            return self._evidence
+        thermals = collections.Counter()
+        climbs = set()
+        self.max_climb = collections.Counter()
+        for (address, _), tr in self.circles.items():
+            if address in self.declared:
+                for x in tr.thermals:
+                    if not self.d0 <= x[1] < self.d1:
+                        continue
+                    thermals[address] += 1
+                    if x[7]:
+                        first, last = x[7][min(x[7])], x[7][max(x[7])]
+                        gain = unpack(last)[2] - unpack(first)[2]
+                        self.max_climb[address] = max(self.max_climb[address], gain)
+                        if gain >= CLIMB_M:
+                            climbs.add(address)
+        out = {}
+        remote_id = sources.source_info(REMOTE_ID)[0]
+        for address in self.declared:
+            if remote_id in self.declared[address]:
+                # Remote ID is broadcast by drones only, by regulation: a drone
+                # whatever else is known about it (from 7 October 2026).
+                out[address] = CONFIRMED
+                continue
+            if address not in self.major13:
+                out[address] = STRAY            # 13 was never the day's majority on any of its systems
+                continue
+            emitted = self.emitters.get(address, set())
+            ddb = self.ddb_types.get(address)
+            if emitted & CREWED_EMITTERS:
+                out[address] = CREWED_ADSB
+            elif ddb in DDB_CREWED and thermals[address]:
+                out[address] = CREWED_DDB
+            elif address in climbs and self.drone_extent.get(address, 0) > CLIMB_EXTENT_M:
+                out[address] = CREWED_CLIMB
+            elif UAV_EMITTER in emitted or ddb == DDB_DRONE:
+                out[address] = CONFIRMED
+            else:
+                out[address] = UNCERTAIN
+        self._evidence = out
+        return out
+
     def systems_of(self, address):
         """The systems an address was heard on, or the platforms if only they relayed it."""
         own = self.addr_systems.get(address)
@@ -750,15 +967,42 @@ class Nightly:
         out = {}
 
         # 1. hours
+        # Drone time by the day's evidence: a crewed aircraft declared a drone
+        # leaves the drone row and is filed as unknown, since neither its
+        # transponder nor the database names an OGN category.
+        ev = self.evidence()
+        dh = collections.defaultdict(lambda: [0.0, set()])
+        def main_other(address):
+            c = self.addr_cats.get(address, collections.Counter())
+            rest = [(n, k) for k, n in c.items() if k != DRONE]
+            return max(rest)[1] if rest else sources.UNKNOWN_CATEGORY
+        for (ln, hour, address), sec in self.drone_hours.items():
+            e = ev.get(address, UNCERTAIN)
+            cat = (sources.UNKNOWN_CATEGORY if e in CREWED_CLASSES
+                   else main_other(address) if e == STRAY else DRONE)
+            if cat in GROUND_CATEGORIES:
+                continue                        # 10.1 leaves ground support and static objects out
+            x = dh[(ln, cat, hour)]
+            x[0] += sec
+            x[1].add(address)
+        merged = {}
+        for k, sec in self.hours_air.items():
+            merged[k] = [sec, set(self.hours_ac[k])]
+        for k, (sec, who) in dh.items():
+            m = merged.setdefault(k, [0.0, set()])
+            m[0] += sec
+            m[1] |= who
         rows = []
-        for (ln, cat, hour), s in self.hours_air.items():
+        for (ln, cat, hour), (sec, who) in merged.items():
             local_date = datetime.date(1970, 1, 1) + datetime.timedelta(days=ln)
-            rows.append((day, local_date.isoformat(), cat, hour, round(s, 1), len(self.hours_ac[(ln, cat, hour)])))
+            rows.append((day, local_date.isoformat(), cat, hour, round(sec, 1), len(who)))
         out["daily_hours_solar"] = (("day", "local_date", "category", "solar_hour", "air_seconds", "aircraft"), rows)
 
         # 2. circling: one system per address, the one with most thermals that day
         best = {}
         for (address, tocall), tr in self.circles.items():
+            if tr.cat not in CIRCLE_CATEGORIES:
+                continue                        # tracked only as evidence for declared drones
             th = [x for x in tr.thermals if self.d0 <= x[1] < self.d1]
             if th and (address not in best or len(th) > len(best[address][1])):
                 best[address] = (tr.cat, th)
@@ -790,28 +1034,53 @@ class Nightly:
                                 for (label, cat), v in sorted(self.parked.items())])
 
         # 4. drones
+        # Crewed evidence takes an address out of every drone measure; the
+        # others carry their evidence (confirmed or uncertain) as a dimension.
+        def drone_class(address):
+            e = ev.get(address, UNCERTAIN)
+            return None if e in SET_ASIDE else e
         fine = collections.defaultdict(lambda: [0.0, set()])
         cells = collections.defaultdict(lambda: [0.0, set()])
-        for (la, lo, hb, sb, address), s in self.drone_air.items():
-            f = fine[(la, lo, hb, sb, self.systems_of(address))]
-            f[0] += s
+        classes = collections.defaultdict(lambda: [set(), 0.0])
+        for (la, lo, hb, sb, address), sec in self.drone_air.items():
+            classes[ev.get(address, UNCERTAIN)][1] += sec
+            e = drone_class(address)
+            if e is None:
+                continue
+            f = fine[(e, la, lo, hb, sb, self.systems_of(address))]
+            f[0] += sec
             f[1].add(address)
-            c = cells[(la, lo)]
-            c[0] += s
+            c = cells[(e, la, lo)]
+            c[0] += sec
             c[1].add(address)
-        out["daily_drones"] = (("day", "lat_idx", "lon_idx", "height_band", "speed_band", "systems", "air_seconds", "aircraft"),
+        for address in self.declared:
+            classes[ev.get(address, UNCERTAIN)][0].add(address)
+        out["daily_drones"] = (("day", "evidence", "lat_idx", "lon_idx", "height_band", "speed_band", "systems",
+                                "air_seconds", "aircraft"),
                                [(day,) + k + (round(v[0], 1), len(v[1])) for k, v in sorted(fine.items())])
-        out["daily_drone_cells"] = (("day", "lat_idx", "lon_idx", "air_seconds", "aircraft"),
+        out["daily_drone_cells"] = (("day", "evidence", "lat_idx", "lon_idx", "air_seconds", "aircraft"),
                                     [(day,) + k + (round(v[0], 1), len(v[1])) for k, v in sorted(cells.items())])
-        ext = collections.Counter(band(d, DRONE_EXTENT_EDGES) for d in self.drone_extent.values())
-        out["daily_drone_extent"] = (("day", "extent_band", "drones"), [(day, b, n) for b, n in sorted(ext.items())])
+        ext = collections.Counter()
+        for address, d in self.drone_extent.items():
+            e = drone_class(address)
+            if e is not None:
+                ext[(e, band(d, DRONE_EXTENT_EDGES))] += 1
+        out["daily_drone_extent"] = (("day", "evidence", "extent_band", "drones"),
+                                     [(day,) + k + (n,) for k, n in sorted(ext.items())])
         enc = collections.Counter()
         for drone, other, ocat, d in self.encounters:
+            e = drone_class(drone)
+            if e is None:
+                continue                        # the "drone" was a crewed aircraft
             ds, os_ = self.addr_systems.get(drone, set()), self.addr_systems.get(other, set())
-            enc[(self.systems_of(drone), ocat, self.systems_of(other), band(d, ENCOUNTER_BANDS), int(bool(ds & os_)))] += 1
-        out["daily_drone_encounters"] = (("day", "drone_systems", "other_category", "other_systems", "distance_band",
-                                          "shared_system", "encounters"),
+            enc[(e, self.systems_of(drone), ocat, self.systems_of(other), band(d, ENCOUNTER_BANDS),
+                 int(bool(ds & os_)))] += 1
+        out["daily_drone_encounters"] = (("day", "evidence", "drone_systems", "other_category", "other_systems",
+                                          "distance_band", "shared_system", "encounters"),
                                          [(day,) + k + (n,) for k, n in sorted(enc.items())])
+        out["daily_drone_classes"] = (("day", "evidence", "addresses", "air_seconds"),
+                                      [(day, e, len(v[0]), round(v[1], 1)) for e, v in sorted(classes.items())])
+        self.encounters_all = len(self.encounters)
 
         # 5. quality
         out["daily_quality"] = (("day", "scope", "name", "check_name", "count", "total", "value"), self.quality(day))
@@ -856,6 +1125,27 @@ class Nightly:
                 ground_mode[label] += 1                    # a landed pilot's instrument in ground-tracking mode
             elif len(cats) > 1:
                 cat_change[label] += 1
+        ev = self.evidence()
+        declared = collections.Counter()
+        dclass = collections.Counter()
+        for address, labels in self.declared.items():
+            conflict = ev[address] == UNCERTAIN and self.ddb_types.get(address) in DDB_CREWED
+            for label in labels:
+                declared[label] += 1
+                dclass[(label, ev[address])] += 1
+                if conflict:
+                    dclass[(label, "ddb_conflict")] += 1     # a crewed database type, and no thermal to settle it
+        for label in sorted(declared):
+            crewed = sum(dclass[(label, c)] for c in CREWED_CLASSES)
+            for name, n in (("declared_drone_stray", dclass[(label, STRAY)]),
+                            ("declared_drone_crewed", crewed),
+                            ("declared_drone_crewed_adsb_emitter", dclass[(label, CREWED_ADSB)]),
+                            ("declared_drone_crewed_ddb_thermal", dclass[(label, CREWED_DDB)]),
+                            ("declared_drone_crewed_climb_extent", dclass[(label, CREWED_CLIMB)]),
+                            ("declared_drone_uncertain", dclass[(label, UNCERTAIN)]),
+                            ("declared_drone_uncertain_ddb_crewed", dclass[(label, "ddb_conflict")]),
+                            ("declared_drone_confirmed", dclass[(label, CONFIRMED)])):
+                rows.append((day, "system", label, name, n, declared[label], None))
         addresses = collections.Counter(label for label, _ in self.addresses)
         jumped = collections.Counter(label for (label, _), n in self.jumps.items() if n >= JUMPS_PER_ADDRESS)
         for label, q in sorted(self.q.items()):
@@ -867,6 +1157,7 @@ class Nightly:
                 ("position_0_0", q["position_0_0"], q["positions"]),
                 ("no_timestamp", q["no_timestamp"], q["positions"]),
                 ("heading_over_360", q["heading_over_360"], q["with_course"]),
+                ("category_stray", q["category_stray"], q["categorised"]),
                 ("free_flight_implausible", q["free_flight_implausible"], q["free_flight_fixes"]),
                 ("address_jumps", jumped[label], addresses[label]),
                 ("category_change", cat_change[label], with_cat[label]),
@@ -902,6 +1193,14 @@ class Nightly:
             if late / n > RELAY_LATE_SHARE:
                 flagged["relay_late_60s"] += 1
                 rows.append((day, "receiver", name, "relay_late_60s", late, n, round(late / n, 4)))
+        for name, n in self.rx_cat.items():
+            if n < RELAY_STRAY_MIN:
+                continue
+            judged["relay_category_stray"] += 1
+            k = self.rx_cat_stray[name]
+            if k / n >= RELAY_STRAY_SHARE:
+                flagged["relay_category_stray"] += 1
+                rows.append((day, "receiver", name, "relay_category_stray", k, n, round(k / n, 4)))
         for name, (med, n) in self.relay_offsets().items():
             judged["relay_altitude_offset"] += 1
             if abs(med) > RELAY_OFFSET_M:
@@ -1031,6 +1330,11 @@ def print_dry_run(tables, run_row):
           f"lines {run_row[4]:,}, {run_row[5]:.0f} s")
     for table, (cols, rows) in tables.items():
         print(f"\n== {table}: {len(rows)} rows")
+        if table == "daily_hours_solar":
+            by = collections.Counter()
+            for r in rows:
+                by[r[2]] += r[4]
+            print("   hours by category: " + ", ".join(f"{c}: {v / 3600:.1f}" for c, v in sorted(by.items())))
         if table == "daily_circling_pilot":
             n = collections.Counter(min(r[3] + r[4], 10) for r in rows)
             print("   pilots by thermals (10 = 10 or more): " + ", ".join(f"{k}:{v}" for k, v in sorted(n.items())))
@@ -1070,7 +1374,7 @@ def main():
     if os.getenv("NIGHTLY_TRACE"):
         import tracemalloc
         tracemalloc.start()
-    n = Nightly(day)
+    n = Nightly(day, load_ddb())
     hours = range(24)
     if args.hours:
         first, _, last = args.hours.partition("-")
@@ -1080,10 +1384,21 @@ def main():
         logger.error(f"No recording for {day}")
         return 1
     tables = n.rows()
+    kept = sum(r[-1] for r in tables["daily_drone_encounters"][1])
+    logger.info(f"Drone encounters: {n.encounters_all} found, {kept} kept once crewed aircraft declared drones are set aside")
     run_row = (day.isoformat(), datetime.datetime.utcnow().replace(microsecond=0), read,
                ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1))
     if args.dry_run:
         print_dry_run(tables, run_row)
+        # The climb evidence, address by address under a salted hash.
+        import hashlib
+        import secrets
+        salt = secrets.token_hex(8)
+        ev = n.evidence()
+        print("\n== declared drones that circled: class, largest climb in a thermal (m), extent (km)")
+        for a, c in sorted(n.max_climb.items(), key=lambda x: -x[1]):
+            print(f"   {hashlib.sha1((salt + a).encode()).hexdigest()[:8]} {EVIDENCE_NAMES[ev[a]]:20s} "
+                  f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     else:
         write(day, tables, run_row)
         logger.info(f"{day}: {sum(len(r) for _, r in tables.values())} rows written from {read} hours "
