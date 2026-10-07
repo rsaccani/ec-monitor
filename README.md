@@ -159,7 +159,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/patterns`
 **Method:** GET
-**Description:** The nightly measures of how light aviation flies, described in [PATTERNS.md](PATTERNS.md), and the parked aircraft of METHOD.md section 10.3, computed by `nightly.py`, as several lists (`?format=csv` gives one CSV with a `part` column). `hours`: airborne seconds per month, weekday (0 = Monday) and local solar hour (UTC + longitude/15) of the local solar date, by category, with `aircraft_hours` (distinct aircraft per hour, summed); `dates` says how many local dates each weekday holds. `circling`: thermals, degrees and seconds to each side per month and category (1 glider, 6 hang glider, 7 paraglider). `preference`: the per-pilot test, over the current and the previous month and then for each archived month, for pilots with at least 5 and 10 thermals (observed against chance variance of the right-hand share, pilots at 80% or more on one side against the binomial expectation, a 10-bin histogram). `gaggles`: pairs of thermals flown together, same side or opposite, with the share expected if sides were chosen independently. `parked`: parked aircraft transmitting per month, system and category (`aircraft_days`, seconds, packets). `launches`, `launch_cells`, `tug_tows`: aerotows, winch launches and flights with no tow seen (PATTERNS.md section 7). `thermals`, `thermal_cells`, `mixed_thermals`, `agl_hours`, `circling_time`, `flights`, `wave`: PATTERNS.md sections 3 to 6 and 8. `cruise`, `helicopters`, `helicopter_cells`, `tug_time`: PATTERNS.md sections 9 to 11. Band edges are in `pattern_bands`. `days`: the days computed and their missing hours.
+**Description:** The nightly measures of how light aviation flies, described in [PATTERNS.md](PATTERNS.md), and the parked aircraft of METHOD.md section 10.3, computed by `nightly.py`, as several lists (`?format=csv` gives one CSV with a `part` column). `hours`: airborne seconds per month, weekday (0 = Monday) and local solar hour (UTC + longitude/15) of the local solar date, by category, with `aircraft_hours` (distinct aircraft per hour, summed); `dates` says how many local dates each weekday holds. `circling`: thermals, degrees and seconds to each side per month and category (1 glider, 6 hang glider, 7 paraglider). `preference`: the per-pilot test, over the current and the previous month and then for each archived month, for pilots with at least 5 and 10 thermals (observed against chance variance of the right-hand share, pilots at 80% or more on one side against the binomial expectation, a 10-bin histogram). `gaggles`: pairs of thermals flown together, same side or opposite, with the share expected if sides were chosen independently. `parked`: parked aircraft transmitting per month, system and category (`aircraft_days`, seconds, packets). `launches`, `launch_cells`, `tug_tows`: aerotows, winch launches and flights with no tow seen (PATTERNS.md section 7). `thermals`, `thermal_cells` (1°), `thermal_places` (the busiest and strongest 0.25° cells of the current and previous month, per kind, with bounds and the name of a place), `mixed_thermals`, `agl_hours`, `circling_time`, `flights`, `wave`: PATTERNS.md sections 3 to 6 and 8. `cruise`, `helicopters`, `helicopter_cells`, `tug_time`: PATTERNS.md sections 9 to 11. Band edges are in `pattern_bands`. `days`: the days computed and their missing hours.
 
 ### `/conspicuity-monitor/api/drones`
 **Method:** GET
@@ -276,6 +276,30 @@ minute, or if it logs a database write error in its first 30 seconds, the script
 commit out again and reloads that. Deploy right after a 15-minute write, since a reload loses what
 accumulated since the last one. Changes to `requirements.txt`, to the systemd unit or to the schema are
 not covered and are applied by hand, a schema change before the code that needs it.
+
+## Data from others
+
+`data/places-europe.tsv` names the thermal places of PATTERNS.md section 3. It is the GeoNames list of
+places with 5,000 or more inhabitants (`cities5000`, downloaded on 7 October 2026 from
+https://download.geonames.org/export/dump/), reduced to 34–72° N and 25° W–45° E and to name, country,
+latitude, longitude and population, with districts of cities and historical or abandoned places left out
+(20,263 places). GeoNames data are licensed under the
+[Creative Commons Attribution 4.0 License](https://creativecommons.org/licenses/by/4.0/), © GeoNames
+(https://www.geonames.org/).
+
+`data/fivl-sites.tsv`: flying sites of the FIVL windgram service, courtesy of FIVL (Federazione Italiana
+Volo Libero, https://www.fivl.it/): the 416 sites FIVL gave cumulus.it for its windgram forecasts, with
+id, name, latitude and longitude only.
+
+`data/osm-takeoffs.tsv` and `data/osm-airfields.tsv`: free-flight take-offs (`free_flying:site` naming a
+take-off or launch, or `sport=free_flying` with a name that is not a landing field's; 4,602) and aerodromes (`aeroway=aerodrome`, named,
+military ones left out; 6,634, with `icao` where present and `gliding` = 1 for the 228 tagged for gliding)
+within 34–72° N and 25° W–45° E, extracted from OpenStreetMap with one Overpass query on 7 October 2026
+(data as of 19:37 UTC). © OpenStreetMap contributors, available under the
+[Open Database License](https://opendatacommons.org/licenses/odbl/1-0/) (https://www.openstreetmap.org/copyright).
+
+These lists name the thermal places of PATTERNS.md section 3. The terrain model in `data/` is not in the
+repository (see Running it).
 
 ## License
 

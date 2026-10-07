@@ -127,9 +127,37 @@ the time between them, when that time is at least 20 seconds; a thermal
 sampled over less time gives no climb rate. It is the average of the
 thermal, in bands of under 0.5, 0.5–1, 1–1.5, 1.5–2, 2–3, 3–4 and over 4 m/s,
 by kind, by local solar hour of the middle of the thermal (section 1), by
-month, and by 1-degree cell. A cell is published only where at least 20
-thermals were flown in the month, so that a cell never stands for a
-handful of flights. The altitude is what each system reports (METHOD.md,
+month, and by cell. From 7 October 2026 thermals are kept in cells of a
+**quarter of a degree** (about 28 by 19 km in the Alps; 1 degree before),
+and given both as 1-degree cells and as **thermal places**: for the current
+and the previous month together, the busiest cells (most thermals) and the
+strongest (highest mean climb), per kind, among the cells with at least 20
+thermals in those two months, so that a cell never stands for a handful of
+flights.
+
+**Names.** A cell is named, for each kind, after **the site most of its
+thermals were flown from** (from the evening of 7 October 2026): every
+thermal is filed under the take-off of the flight it belongs to, matched to
+the nearest site of the FIVL windgram service, else to the nearest
+free-flight take-off in OpenStreetMap, within 2 km, for paragliders and
+hang gliders, and to the nearest aerodrome in OpenStreetMap within 3 km for
+gliders, and the cell takes the site with most thermals over the same two
+months as the ranking. Where no flight's take-off matches a site, the cell
+takes the site nearest its centre (for paragliders and hang gliders the
+FIVL site, else the OpenStreetMap take-off; for gliders the aerodrome,
+those tagged for gliding first, with its ICAO code in brackets when it has
+one), among those inside the cell or within 5 km of its edge. The first
+rule of the same evening used only the site nearest the centre, which named
+the cell of Meduno and Monte Valinis after another FIVL site. The names are given as each
+list gives them; FIVL's carry their province. A cell with no such site
+takes the most populous town or village of at least 5,000 people inside
+it, or the nearest within 25 km of its centre, from the GeoNames list of
+places (cities5000), as "Bassano del Grappa (IT)"; a cell with neither is
+shown by its coordinates. **A name labels the cell and is not a claim about
+where any thermal in it was flown**: a cell is some 28 by 19 km, a site
+names it because it is the nearest one to its centre, and the thermals may
+have been flown from another site, or over open country. The sources are
+credited in the README of the repository. The altitude is what each system reports (METHOD.md,
 section 1); an offset cancels in a difference, so the climb rate does not
 depend on the reference.
 
@@ -213,6 +241,59 @@ self-launch, self-launch, other, start not seen), from the launch found
 within 5 minutes before to 10 minutes after the flight began. A flight belongs to
 the day it began. An aircraft first heard in the air makes a flight whose
 start was not seen; its duration and distances are of the part seen.
+
+**Classes of flight** (from 7 October 2026, written before any of their
+data existed). A flight's landing is **seen** when a fix of it standing on
+the ground ends it (above). A flight that ends in silence is taken as
+landed at its last fix, an **inferred** landing, when that fix is less than
+**100 m** above the ground and lower than the aircraft was 30 to 60 seconds
+before: for a paraglider, a hang glider or a glider, a low and descending
+last position followed by silence is almost always a landing, the pilot
+switching off or the instrument losing the last receivers behind the
+ground. A powered aircraft also needs an aerodrome within **3 km** of that
+last fix, since a powered aircraft low and descending elsewhere may simply
+have flown out of coverage. Seen and inferred landings are counted apart,
+so that the share of inferred ones stays visible. A flight with neither is
+**end unseen**. Aircraft heard only by ADS-B are never seen standing: the
+recording leaves out ADS-B reports from the ground (METHOD.md, section 9),
+so their landings are inferred at best.
+
+For **paragliders, hang gliders and gliders**, the **glide range** is how
+far the aircraft could glide from its take-off without climbing: the
+take-off altitude minus the landing altitude, times a typical glide ratio
+of the kind (8 for a paraglider, 12 for a hang glider, 35 for a glider),
+plus a quarter for the lift found on the way. A glider's take-off altitude
+is its release height, or the top of its winch launch, above the ground at
+the launch site when a tow or a winch launch was found (section 7), else the
+altitude of its first airborne fix, like every flight of the other kinds.
+A flight that never went beyond the glide range from its take-off is
+**local**; one that went beyond it and landed within it is **out and
+return**; one that landed beyond it is **cross-country**. A flight without
+an altitude at either end is counted as such. For local and out-and-return
+flights the length is the largest distance from the take-off; for
+cross-country flights the straight line from take-off to landing; the path
+length is given for all. Both by kind and by the terrain class of section
+12. The glide range is a yardstick for sorting flights and makes no claim
+about how each was flown: a paraglider can climb and return without ever
+leaving its glide range, and a glider can land out within it.
+
+For **powered fixed-wing aircraft** (tow planes, powered aircraft and jets)
+the take-off and the landing are matched to the nearest OpenStreetMap
+aerodrome within **3 km**. A flight that landed where it took off is
+**local** if it never went more than **25 km** from it, **out and return**
+otherwise; one that landed at another aerodrome is **one way**; one whose
+take-off or landing matches no aerodrome is counted as **no airfield**. The
+take-off is the first airborne fix, a kilometre or two from the runway.
+
+**Routes.** The one-way flights of powered aircraft are counted per month
+by unordered pair of aerodromes (named as OpenStreetMap names them, with
+the ICAO code when present), with the flights and the distinct aircraft.
+A route is shown by name only when at least **5 distinct aircraft** flew it
+that month, and the rest are summed as "other routes": a route flown by
+one or two aircraft tells one person's movements. To count distinct
+aircraft the route of each address is kept for the current and the
+previous month, as other address lists are (METHOD.md, section 9), and
+then reduced to counts.
 
 ## 7. Launches
 
@@ -438,10 +519,13 @@ wide sits in mountains, a high plateau in plain and hills.
   (section 6); thermals of paragliders and hang gliders are given apart
   (section 3). In the evening, before publication: glider launches with
   no tow or winch found are read by their climb, and glider flights carry
-  their launch method (sections 6 and 7); paragliders and hang gliders
+  their launch method (sections 6 and 7); thermal cells of 0.25 degree
+  and named thermal places (section 3); paragliders and hang gliders
   are given apart in sections 4, 5 and 6 as well. Later the same evening:
   the terrain class (section 12), and flights of at least 2 minutes, with
-  the launches of shorter ones left out (sections 6 and 7). Sections 9 to 11, on powered aircraft
+  the launches of shorter ones left out (sections 6 and 7). Then thermal
+  places named by the take-off site of the flights that circled in them
+  (section 3), and classes of flight and routes (section 6). Sections 9 to 11, on powered aircraft
   and helicopters, added before any of their data existed; ADS-B is used
   in them, unlike in the sections above, for the pressure altitude and the
   emitter category. Circuits and touch-and-go, and cruising levels, written

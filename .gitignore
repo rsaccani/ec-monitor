@@ -211,5 +211,10 @@ CLAUDE.md
 # macOS
 .DS_Store
 
-# Terrain model and other large local data (see METHOD.md)
-data/
+# Terrain model and other large local data (see METHOD.md); the place and
+# site lists naming thermal cells are tracked (README, "Data from others").
+data/*
+!data/places-europe.tsv
+!data/fivl-sites.tsv
+!data/osm-takeoffs.tsv
+!data/osm-airfields.tsv

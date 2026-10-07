@@ -178,7 +178,7 @@ RELAY_SOURCES = {"OGFLR"}       # FLARM: the receiver converts ellipsoid height 
 FAMILIES = {
     "conspicuity": ("daily_drone_classes", "daily_drones", "daily_drone_cells", "daily_drone_extent",
                     "daily_drone_encounters", "daily_crewed_encounters", "daily_parked", "daily_quality"),
-    "patterns": ("daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
+    "patterns": ("daily_thermal_sites", "daily_flight_classes", "daily_routes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
                  "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
                  "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
                  "daily_cruise", "daily_helicopter_night"),
@@ -391,10 +391,33 @@ FREE_FLIGHT_KIND = {7: "paraglider", 6: "hang_glider"}
 # more "mountain"; "unknown" outside the terrain model. Chosen on 7 October
 # 2026 after the relief distribution of 6 October (PATTERNS.md, section 12).
 MOUNTAIN_RELIEF = 600
+# daily_thermals keeps its cells at 0.25 degree: lat_idx = floor(lat * 4)
+# (sources.THERMAL_CELLS_PER_DEG; 1 degree until 7 October 2026).
+THERMAL_CELLS_PER_DEG = sources.THERMAL_CELLS_PER_DEG
 # Flights shorter than this are not counted (PATTERNS.md, section 6): on
 # 6 October 2026, 493 glider flights whose start was not seen lasted a median
 # of 6 seconds, fragments at the edge of coverage.
 FLIGHT_MIN_S = 120
+# Flight classes (PATTERNS.md, section 6, 7 October 2026). Unpowered: the
+# glide range from the take-off is (take-off altitude - landing altitude) x
+# L/D x 1.25, with a typical glide ratio per kind and a quarter more for the
+# lift found on the way, so that a flight within it could have been a glide
+# home without climbing anywhere.
+GLIDE_RATIO = {7: 8, 6: 12, 1: 35}
+GLIDE_MARGIN = 1.25
+# Powered fixed-wing: airfields from data/osm-airfields.tsv, within 3 km of
+# the take-off and of the landing; local within 25 km of the departure.
+POWERED_FIXED = {2, 8, 9}
+AIRFIELD_MATCH_M = 3000
+START_SITE_M = 2000           # a free-flight take-off within this of a FIVL site or OSM take-off
+POWERED_LOCAL_M = 25000
+# A route is published only with this many distinct aircraft in the month:
+# one flown by one or two aircraft tells one person's movements.
+ROUTE_MIN_AIRCRAFT = 5
+# A landing inferred when a flight ends in silence (end_flight): the last fix
+# below 100 m over the ground and lower than 30 to 60 s before.
+INFER_AGL = 100
+INFER_BACK = (30, 60)
 PATTERN_KIND = {6: "free_flight", 7: "free_flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered",
                 3: "helicopter"}
 RADIUS_EDGES = (30, 50, 80, 120, 200)         # m
@@ -1122,7 +1145,7 @@ class Nightly:
         # A session whose flight lasts under FLIGHT_MIN_S, or which never made a
         # flight, is a fragment at the edge of coverage: not a launch either.
         flight_s = collections.defaultdict(list)
-        for address, cat, t0, lon0, sec, maxd, path, lat0 in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
             flight_s[address].append((t0, sec))
         self.launch_fragments = 0
         for address, cat, t, la, lo, agl in self.sessions:
@@ -1211,7 +1234,7 @@ class Nightly:
                 r = self.relief(x[3], x[4])
                 if r is not None:
                     hist[("thermals", THERMAL_KIND.get(cat))][min(30, int(r // 100))] += 1
-        for address, cat, t0, lon0, sec, maxd, path, lat0 in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
             if self.d0 <= t0 < self.d1:
                 r = self.relief(lat0, lon0)
                 if r is not None:
@@ -1254,13 +1277,15 @@ class Nightly:
                 if f is not None and not f[11] and t - f[3] <= sources.SESSION_BREAK:
                     ground = self.terrain.elevation(lat, lon)
                     if ground is not None and alt_m - ground <= FLIGHT_STOP_AGL:
-                        f[11] = True            # seen standing on the ground since its last airborne fix
+                        # Seen standing on the ground since its last airborne
+                        # fix: the landing, where and at what altitude.
+                        f[11] = (lat, lon, alt_m)
             return
         if category in GROUND_CATEGORIES:
             return
         local = prev[0] + seconds / 2 + prev[2] * SOLAR_SECONDS_PER_DEGREE
         if self.p:
-            self.pattern(self.pattern_segment, address, category, prev, t, lat, lon, kt, seconds, local)
+            self.pattern(self.pattern_segment, address, category, prev, t, lat, lon, kt, seconds, local, alt_m)
         if self.c and category == DRONE:
             ground = self.terrain.elevation(prev[1], prev[2])
             agl = prev[4] - ground if prev[4] is not None and ground is not None else None
@@ -1279,7 +1304,7 @@ class Nightly:
             self.failed["patterns"] = f"pass: {type(e).__name__}: {e}"[:200]
             self.p = False
 
-    def pattern_segment(self, address, category, prev, t, lat, lon, kt, seconds, local):
+    def pattern_segment(self, address, category, prev, t, lat, lon, kt, seconds, local, alt_m=None):
         """One airborne segment of the timeline, for PATTERNS.md sections 1, 4, 6, 10 and 11."""
         hour = int(local % 86400 // 3600)
         ground = self.terrain.elevation(prev[1], prev[2])
@@ -1301,7 +1326,8 @@ class Nightly:
             if category in CIRCLE_CATEGORIES:
                 self.addr_hour_air[(address, hour, terrain)] += seconds
         self.flight_segment(address, category, prev, t, lat, lon, seconds,
-                            prev[4] - ground if prev[4] is not None and ground is not None else None)
+                            prev[4] - ground if prev[4] is not None and ground is not None else None,
+                            alt_m, alt_m - ground if alt_m is not None and ground is not None else None)
         if category == DRONE:
             # Per address, so that a crewed aircraft declared a drone can be
             # filed apart once the day's evidence is in (evidence()).
@@ -1311,35 +1337,178 @@ class Nightly:
             self.hours_air[k] += seconds
             self.hours_ac[k].add(address)
 
-    def flight_segment(self, address, category, prev, t, lat, lon, seconds, agl=None):
+    def flight_segment(self, address, category, prev, t, lat, lon, seconds, agl=None, alt_now=None, agl_now=None):
         """Flights (PATTERNS.md, section 6): the airborne segments of one address,
         across silences the aircraft could have flown through (FLIGHT_MAX_GAP,
         FLIGHT_MAX_KMH), a new flight after a landing or a longer silence.
 
         f: [t0, lat0, lon0, last t, max distance, path, category, lon0, last lat,
-        last lon, height above ground at the last segment, seen stopped on the ground since]
+        last lon, height above ground at the last segment, the landing (lat, lon,
+        alt) once seen standing on the ground, altitude and height above ground
+        of the first airborne fix]
         """
         f = self.flight.get(address)
         low = lambda h: h is None or h <= LAUNCH_MAX_AGL
         if f is not None and f[11]:
-            self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1]))
+            self.end_flight(address, f)
             f = None
         if f is not None and prev[0] - f[3] > sources.SESSION_BREAK:
             gap = prev[0] - f[3]
             across = dist(f[8], f[9], prev[1], prev[2])
             if (gap > FLIGHT_MAX_GAP or low(f[10]) or low(agl)
                     or across > FLIGHT_MAX_KMH.get(category, FLIGHT_MAX_KMH_OTHER) / 3.6 * gap):
-                self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1]))
+                self.end_flight(address, f)
                 f = None
             else:
                 f[5] += across                  # the straight line across the silence: a lower bound
         if f is None:
             f = self.flight[address] = [prev[0], prev[1], prev[2], prev[0], 0.0, 0.0, category, prev[2],
-                                        prev[1], prev[2], agl, False]
+                                        prev[1], prev[2], agl, False, prev[4], agl, [], None]
         f[3] = t
         f[5] += dist(prev[1], prev[2], lat, lon)
         f[4] = max(f[4], dist(f[1], f[2], lat, lon))
         f[8], f[9], f[10] = lat, lon, agl
+        # For a landing inferred at the end (end_flight): the last fix, and
+        # its altitude every 10 s over the last 90 s.
+        f[15] = (alt_now, agl_now)
+        if alt_now is not None:
+            hist = f[14]
+            if not hist or t - hist[-1][0] >= 10:
+                hist.append((t, alt_now))
+                while hist and t - hist[0][0] > 90:
+                    hist.pop(0)
+
+    def end_flight(self, address, f):
+        """A flight is over: (address, category, t0, lon0, seconds, max distance,
+        path, lat0, start altitude, start height above ground, landing or None,
+        "seen", "inferred" or "none").
+
+        A landing is seen when the aircraft is heard standing on the ground. A
+        flight that ends in silence is taken as landed at its last fix when
+        that fix is below INFER_AGL above the ground and lower than the
+        aircraft was 30 to 60 s earlier (PATTERNS.md, section 6); a powered
+        aircraft also needs an aerodrome there, checked in flight_classes.
+        """
+        landing, how = f[11] or None, "seen" if f[11] else "none"
+        if landing is None and f[15] is not None and f[15][1] is not None and f[15][1] < INFER_AGL:
+            last_t, last_alt = f[3], f[15][0]
+            before = [a for t, a in f[14] if INFER_BACK[0] <= last_t - t <= INFER_BACK[1]]
+            if before and last_alt is not None and last_alt < max(before):
+                landing, how = (f[8], f[9], last_alt), "inferred"
+        self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1], f[12], f[13], landing, how))
+
+    def site_near(self, which, lat, lon, radius):
+        """The site of a list of sources._sites ("fivl", "takeoff", "airfield")
+        nearest a point within `radius` metres, as the list names it, or None."""
+        cache = self.__dict__.setdefault("_site_idx", {})
+        idx = cache.get(which)
+        if idx is None:
+            if sources._sites is None:
+                sources._load_sites()
+            idx = cache[which] = collections.defaultdict(list)
+            for slat, slon, name, gliding in sources._sites.get(which, ()):
+                idx[(int(slat // 0.05), int(slon // 0.05))].append((slat, slon, name))
+        best = None
+        cl, co = int(lat // 0.05), int(lon // 0.05)
+        for a in (-1, 0, 1):
+            for b in (-1, 0, 1):
+                for slat, slon, name in idx.get((cl + a, co + b), ()):
+                    d = dist(lat, lon, slat, slon)
+                    if d <= radius and (best is None or d < best[0]):
+                        best = (d, name)
+        return best[1] if best else None
+
+    def airfield_near(self, lat, lon):
+        """The OSM airfield nearest a point within AIRFIELD_MATCH_M, as "name (ICAO)", or None."""
+        return self.site_near("airfield", lat, lon, AIRFIELD_MATCH_M)
+
+    def start_site(self, cat, lat, lon):
+        """Where a glider or free-flight flight took off, by name: a FIVL site,
+        else an OSM take-off, within START_SITE_M (free flight); the nearest
+        OSM airfield within AIRFIELD_MATCH_M (gliders)."""
+        if cat == 1:
+            return self.airfield_near(lat, lon)
+        return self.site_near("fivl", lat, lon, START_SITE_M) or self.site_near("takeoff", lat, lon, START_SITE_M)
+
+    def thermal_sites(self, best):
+        """(kind, lat_idx, lon_idx, site) -> thermals: each thermal of the day
+        filed by the take-off site of the flight it was flown in, in its
+        0.25-degree cell, for naming thermal places (PATTERNS.md, section 3)."""
+        by_address = collections.defaultdict(list)
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
+            by_address[address].append((t0, t0 + sec, lat0, lon0, cat))
+        out = collections.Counter()
+        n = THERMAL_CELLS_PER_DEG
+        for address, (cat, th) in best.items():
+            kind = THERMAL_KIND.get(cat)
+            if kind is None:
+                continue
+            for x in th:
+                if not self.d0 <= x[1] < self.d1:
+                    continue
+                flight = next((f for f in by_address.get(address, ()) if f[0] - 60 <= x[1] <= f[1] + 60), None)
+                site = self.start_site(cat, flight[2], flight[3]) if flight else None
+                if site:
+                    out[(kind, math.floor(x[3] * n), math.floor(x[4] * n), site[:255])] += 1
+        return out
+
+    def flight_classes(self, kind_of):
+        """Flight classes of PATTERNS.md section 6: rows per kind, terrain, class
+        and length bands, and the routes of powered aircraft by address (kept
+        for the two months of METHOD.md section 9, then reduced to counts)."""
+        rows, routes = collections.Counter(), collections.Counter()
+        tow_agl = collections.defaultdict(list)
+        for towed, tug, cat, t0, t1, la, lo, rel in self.crewed.tows:
+            if rel is not None:
+                tow_agl[towed].append((t0, rel))
+        for address, t0, la, lo, top in self.winches:
+            tow_agl[address].append((t0, top))
+        for address, cat, t0, lon0, sec, maxd, path, lat0, alt0, agl0, landing, how in self.flights:
+            if not self.d0 <= t0 < self.d1 or sec < FLIGHT_MIN_S:
+                continue
+            if how == "inferred" and cat in POWERED_FIXED and self.airfield_near(landing[0], landing[1]) is None:
+                # Low and descending, but nowhere a powered aircraft lands: it
+                # may have left coverage low; its end stays unseen.
+                landing, how = None, "none"
+            kind = kind_of(cat, address)
+            terrain = self.terrain_of(lat0, lon0)
+            if cat in GLIDE_RATIO:
+                if landing is None:
+                    cls, d = "end_unseen", maxd
+                else:
+                    start = alt0
+                    if cat == 1:
+                        launched = [h for t, h in tow_agl.get(address, ()) if LAUNCH_MATCH[0] <= t0 - t <= LAUNCH_MATCH[1]]
+                        ground = self.terrain.elevation(lat0, lon0)
+                        if launched and ground is not None:
+                            start = ground + max(launched)   # the release, or the top of the winch launch
+                    if start is None or landing[2] is None:
+                        cls, d = "no_altitude", maxd
+                    else:
+                        reach = max(0.0, start - landing[2]) * GLIDE_RATIO[cat] * GLIDE_MARGIN
+                        home = dist(lat0, lon0, landing[0], landing[1])
+                        if home > reach:
+                            cls, d = "cross", home
+                        elif maxd > reach:
+                            cls, d = "out_and_return", maxd
+                        else:
+                            cls, d = "local", maxd
+            elif cat in POWERED_FIXED:
+                if landing is None:
+                    cls, d = "end_unseen", maxd
+                else:
+                    a, b = self.airfield_near(lat0, lon0), self.airfield_near(landing[0], landing[1])
+                    if a is None or b is None:
+                        cls, d = "no_airfield", maxd
+                    elif a == b:
+                        cls, d = ("local" if maxd <= POWERED_LOCAL_M else "out_and_return"), maxd
+                    else:
+                        cls, d = "one_way", dist(lat0, lon0, landing[0], landing[1])
+                        routes[(min(a, b), max(a, b), address)] += 1
+            else:
+                continue
+            rows[(kind, terrain, cls, how, band(d / 1000, FLIGHT_EXTENT_KM), band(path / 1000, FLIGHT_PATH_KM))] += 1
+        return rows, routes
 
     def wave_fix(self, address, t, lat, lon, alt, course):
         """Probably wave (PATTERNS.md): a glider climbing on average 1 m/s for 3 minutes
@@ -1600,7 +1769,7 @@ class Nightly:
             for ref, run in tr.runs.items():
                 self.close_level(address, self.addr_major.get(address), ref, run)
         for address, f in self.flight.items():
-            self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1]))
+            self.end_flight(address, f)
         self.flight = {}
 
     def evidence(self):
@@ -1756,6 +1925,8 @@ class Nightly:
                                   for cat, c in sorted(per_cat.items())])
         out["daily_circling_pilot"] = (("day", "address", "category", "right_hand", "left_hand"), pilots)
         out["daily_gaggles"] = (("day", "category_a", "category_b", "same_side", "opposite_side"), self.gaggles(day, thermals))
+        out["daily_thermal_sites"] = (("day", "kind", "lat_idx", "lon_idx", "site", "thermals"),
+                                      [(day,) + k + (v,) for k, v in sorted(self.thermal_sites(best).items())])
         out["daily_mixed_thermals"] = (("day", "kind_a", "kind_b", "vsep_band", "thermals"),
                                        [(day,) + k + (n,) for k, n in sorted(self.mixed.items())])
         # 7. launches (PATTERNS.md 7): before the flights, which carry their launch
@@ -1869,7 +2040,10 @@ class Nightly:
                 # turns the wind adds to the ground speed on one side what it takes
                 # on the other, so the mean speed is close to the airspeed.
                 radius = x[8] / math.radians(x[5]) if x[5] else None
-                r = therm[(tkind, terrain, hour, math.floor(x[3]), math.floor(x[4]), band(climb, CLIMB_EDGES),
+                # Cells of a quarter of a degree, about 28 by 19 km in the Alps,
+                # so that a thermal place can be named (from 7 October 2026).
+                r = therm[(tkind, terrain, hour, math.floor(x[3] * THERMAL_CELLS_PER_DEG),
+                           math.floor(x[4] * THERMAL_CELLS_PER_DEG), band(climb, CLIMB_EDGES),
                            band(radius, RADIUS_EDGES))]
                 r[0] += 1
                 if climb is not None:
@@ -1903,7 +2077,7 @@ class Nightly:
                                       [(day, k, tr, h, round(circ[(k, tr, h)], 1), round(air[(k, tr, h)], 1))
                                        for (k, tr, h) in sorted(set(circ) | set(air))])
         fl = collections.defaultdict(lambda: [0, 0.0, 0.0])
-        for address, cat, t0, lon0, sec, maxd, path, lat0 in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
             if not self.d0 <= t0 < self.d1 or sec < FLIGHT_MIN_S:
                 continue
             launch = self.flight_launch(address, t0) if cat == 1 else ""
@@ -1913,6 +2087,12 @@ class Nightly:
             f[0] += 1
             f[1] += sec
             f[2] += path
+        cls_rows, routes = self.flight_classes(kind_of)
+        out["daily_flight_classes"] = (("day", "kind", "terrain", "class", "landing", "distance_band", "path_band",
+                                        "flights"),
+                                       [(day,) + k + (n,) for k, n in sorted(cls_rows.items())])
+        out["daily_routes"] = (("day", "airfield_a", "airfield_b", "address", "flights"),
+                               [(day,) + k + (n,) for k, n in sorted(routes.items())])
         out["daily_flights"] = (("day", "kind", "terrain", "launch", "start_hour", "duration_band", "extent_band", "path_band",
                                  "flights", "seconds", "path_m"),
                                 [(day,) + k + (v[0], round(v[1], 1), round(v[2])) for k, v in sorted(fl.items())])
@@ -2263,6 +2443,20 @@ def print_dry_run(tables, run_row):
             for r in rows:
                 by[r[2]] += r[4]
             print("   hours by category: " + ", ".join(f"{c}: {v / 3600:.1f}" for c, v in sorted(by.items())))
+        if table == "daily_routes":
+            # Addresses: shown only as counts, and a route by name only with
+            # ROUTE_MIN_AIRCRAFT distinct aircraft (on a single day here).
+            pairs = collections.defaultdict(lambda: [0, set()])
+            for r in rows:
+                pairs[(r[1], r[2])][0] += r[4]
+                pairs[(r[1], r[2])][1].add(r[3])
+            shown = sorted(((len(v[1]), v[0], k) for k, v in pairs.items() if len(v[1]) >= ROUTE_MIN_AIRCRAFT),
+                           reverse=True)
+            print(f"   routes {len(pairs)}, flights {sum(v[0] for v in pairs.values())}; with "
+                  f"{ROUTE_MIN_AIRCRAFT}+ aircraft: {len(shown)}")
+            for n_ac, n_fl, (a, b) in shown[:15]:
+                print(f"   {n_ac:3d} aircraft {n_fl:3d} flights  {a} - {b}")
+            continue
         if table == "daily_circling_pilot":
             n = collections.Counter(min(r[3] + r[4], 10) for r in rows)
             print("   pilots by thermals (10 = 10 or more): " + ", ".join(f"{k}:{v}" for k, v in sorted(n.items())))
@@ -2334,7 +2528,7 @@ def main():
     if args.dry_run and "patterns" not in n.failed:
         # Flight medians per kind, for checking the rule; aggregates only.
         by = collections.defaultdict(list)
-        for address, cat, t0, lon0, sec, maxd, path, lat0 in n.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in n.flights:
             if n.d0 <= t0 < n.d1:
                 by[FREE_FLIGHT_KIND.get(cat) or (PATTERN_KIND.get(cat, "other") if cat != DRONE else "drone")].append(
                     (sec, maxd, path))

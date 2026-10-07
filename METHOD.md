@@ -553,6 +553,9 @@ need as well:
   by chance and the observed one, the aircraft at 80% or more on one side
   and the number chance would give), so that the test is still answered for
   the month. The thermals per aircraft and day are then deleted.
+- **Routes of powered aircraft** (PATTERNS.md, section 6, from 7 October
+  2026): the flights and distinct aircraft per pair of aerodromes and month.
+  The routes per address and day are then deleted.
 
 Months archived before 7 October 2026 were reduced without these, and have
 neither.

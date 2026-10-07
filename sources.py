@@ -531,9 +531,21 @@ SYSTEMS_MIN_COMBO = 5   # aircraft before a combination of systems is listed by 
 # this many thermals, and the bands of thermal counts kept for archived months.
 PREFERENCE_MIN_THERMALS = (5, 10)
 THERMAL_CELL_MIN = 20     # thermals in a month before a 1-degree cell of climb rates is published
+THERMAL_CELLS_PER_DEG = 4 # daily_thermals cells are 0.25 degree (PATTERNS.md, section 3)
+THERMAL_PLACES_TOP = 15   # entries in each ranking of thermal places, per kind
+PLACES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "places-europe.tsv")
+PLACE_NEAR_M = 25000      # a cell with no place inside takes the nearest within this of its centre
+# Flying sites name a cell first (PATTERNS.md, section 3, 7 October 2026):
+# the one nearest the cell's centre, inside the cell or within 5 km of its edge.
+SITE_EDGE_M = 5000
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+SITE_FILES = {"fivl": "fivl-sites.tsv", "takeoff": "osm-takeoffs.tsv", "airfield": "osm-airfields.tsv"}
+# Which lists name a cell for each kind, in order; the town of GeoNames last.
+SITE_ORDER = {"paraglider": ("fivl", "takeoff"), "hang_glider": ("fivl", "takeoff"), "glider": ("airfield",)}
 # An airfield or base with few aircraft could otherwise show one owner's
 # habits (PATTERNS.md, section 10): cells only with this much in the month.
 HELICOPTER_CELL_MIN = 10  # helicopter-days
+ROUTE_MIN_AIRCRAFT = 5    # distinct aircraft in a month before a route is named (PATTERNS.md, section 6)
 THERMAL_BANDS = (1, 5, 10, 20)
 # The thermal count taken for each band when an archived month's expected
 # histogram is rebuilt without the pilots' own counts: about the middle of
@@ -647,6 +659,109 @@ def source_info(tocall):
     if tocall == AIRCRAFT:
         return ("Radio, any system", "aircraft")
     return SOURCES.get(tocall, (tocall, "other"))
+
+
+_places = None          # (by 0.25-degree cell, all places), loaded on first use
+_sites = None           # list name -> [(lat, lon, name, gliding)]
+_place_names = {}       # (lat_idx, lon_idx, kind) -> name or None
+
+
+def _load_places():
+    """data/places-europe.tsv: GeoNames cities5000 within 34-72 N, 25 W-45 E
+    (name, country, lat, lon, population; CC BY 4.0), indexed by thermal cell."""
+    global _places
+    by_cell = collections.defaultdict(list)
+    try:
+        with open(PLACES_PATH, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                name, cc, lat, lon, pop = line.rstrip("\n").split("\t")
+                lat, lon = float(lat), float(lon)
+                by_cell[(math.floor(lat * THERMAL_CELLS_PER_DEG), math.floor(lon * THERMAL_CELLS_PER_DEG))].append(
+                    (int(pop), name, cc, lat, lon))
+    except OSError as e:
+        logger.error(f"No place names for thermal cells ({e})")
+    _places = by_cell
+
+
+def _load_sites():
+    """The flying-site lists of data/ (README, "Data from others"):
+    fivl-sites.tsv (id, name, lat, lon; courtesy of FIVL), osm-takeoffs.tsv
+    and osm-airfields.tsv (name, lat, lon, icao[, gliding]; ODbL). A missing
+    list is skipped, and the cells fall back to the next one."""
+    global _sites
+    _sites = {}
+    for key, fn in SITE_FILES.items():
+        rows = []
+        try:
+            with open(os.path.join(DATA_DIR, fn), encoding="utf-8") as f:
+                header = f.readline().lstrip("# ").rstrip("\n").split("\t")
+                col = {h: i for i, h in enumerate(header)}
+                for line in f:
+                    r = line.rstrip("\n").split("\t")
+                    name = r[col["name"]]
+                    icao = r[col["icao"]] if "icao" in col and len(r) > col["icao"] else ""
+                    if icao:
+                        name = f"{name} ({icao})"
+                    gliding = "gliding" in col and len(r) > col["gliding"] and r[col["gliding"]] == "1"
+                    rows.append((float(r[col["lat"]]), float(r[col["lon"]]), name, gliding))
+        except (OSError, KeyError, ValueError, IndexError) as e:
+            logger.error(f"Flying sites {fn} not loaded ({e})")
+        _sites[key] = rows
+
+
+def _nearest_site(sites, lat_idx, lon_idx, prefer_gliding=False):
+    """The site nearest the cell's centre among those inside the cell or within
+    SITE_EDGE_M of its edge; gliding-tagged airfields first when asked."""
+    n = THERMAL_CELLS_PER_DEG
+    south, north, west, east = lat_idx / n, (lat_idx + 1) / n, lon_idx / n, (lon_idx + 1) / n
+    pad_lat = SITE_EDGE_M / 111320
+    pad_lon = pad_lat / max(0.1, math.cos(math.radians((south + north) / 2)))
+    clat, clon = (south + north) / 2, (west + east) / 2
+    best = None
+    for lat, lon, name, gliding in sites:
+        if south - pad_lat <= lat <= north + pad_lat and west - pad_lon <= lon <= east + pad_lon:
+            key = (0 if gliding or not prefer_gliding else 1, _distance(clat, clon, lat, lon))
+            if best is None or key < best[0]:
+                best = (key, name)
+    return best[1] if best else None
+
+
+def place_name(lat_idx, lon_idx, kind=None):
+    """The name of a 0.25-degree cell for one kind of aircraft (PATTERNS.md,
+    section 3): a flying site of the kind's lists (SITE_ORDER), else the most
+    populous town inside the cell, else the nearest within PLACE_NEAR_M of its
+    centre, as "Bassano del Grappa (IT)"; None if there is none (the page then
+    shows coordinates). A site's name is given as its list gives it."""
+    key = (lat_idx, lon_idx, kind)
+    if key in _place_names:
+        return _place_names[key]
+    if _sites is None:
+        _load_sites()
+    for which in SITE_ORDER.get(kind, ()):
+        name = _nearest_site(_sites.get(which, ()), lat_idx, lon_idx, prefer_gliding=(which == "airfield"))
+        if name:
+            _place_names[key] = name
+            return name
+    if _places is None:
+        _load_places()
+    inside = _places.get((lat_idx, lon_idx))
+    best = max(inside) if inside else None
+    if best is None:
+        n = THERMAL_CELLS_PER_DEG
+        clat, clon = (lat_idx + 0.5) / n, (lon_idx + 0.5) / n
+        near = None
+        for dl in (-1, 0, 1):
+            for dc in (-2, -1, 0, 1, 2):
+                for p in _places.get((lat_idx + dl, lon_idx + dc), ()):
+                    d = _distance(clat, clon, p[3], p[4])
+                    if d <= PLACE_NEAR_M and (near is None or d < near[0]):
+                        near = (d, p)
+        best = near[1] if near else None
+    name = f"{best[1]} ({best[2]})" if best else None
+    _place_names[key] = name
+    return name
 
 
 class SourceTracker:
@@ -1326,6 +1441,12 @@ class SourceTracker:
                    GROUP BY a.month, a.src""",
                 self.archive_systems]),
             ("daily_circling_pilot", "day < CONCAT(%s, '-01')", [self.archive_circling]),
+            # Routes by address (PATTERNS.md, section 6), reduced to flights and
+            # distinct aircraft per route and month (from 7 October 2026).
+            ("daily_routes", "day < CONCAT(%s, '-01')", [
+                """INSERT INTO monthly_routes_summary (month, airfield_a, airfield_b, flights, aircraft)
+                   SELECT DATE_FORMAT(day, '%%Y-%%m'), airfield_a, airfield_b, SUM(flights), COUNT(DISTINCT address)
+                       FROM daily_routes WHERE day < CONCAT(%s, '-01') GROUP BY 1, 2, 3"""]),
         ]
         for table, where, summaries in steps:
             conn = None
@@ -1801,6 +1922,74 @@ class SourceTracker:
             out.append(cls.preference_row(x, p, [hist[b] for b in range(10)], x["expected_histogram"]))
         return out
 
+    def routes(self, cur):
+        """Routes of powered aircraft (PATTERNS.md, section 6): unordered pairs of
+        airfields, per month, with flights and distinct aircraft; a pair only
+        with ROUTE_MIN_AIRCRAFT aircraft that month, the rest as "other routes".
+        Months whose addresses are kept are counted from daily_routes; older
+        ones from monthly_routes_summary, which archive_once fills."""
+        cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), airfield_a, airfield_b, SUM(flights), COUNT(DISTINCT address)
+                           FROM daily_routes GROUP BY 1, 2, 3""")
+        rows = [(r[0], r[1], r[2], int(r[3]), int(r[4])) for r in cur.fetchall()]
+        cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), COUNT(DISTINCT address) FROM daily_routes GROUP BY 1""")
+        aircraft_all = {r[0]: int(r[1]) for r in cur.fetchall()}
+        live = {r[0] for r in rows}
+        cur.execute("SELECT month, airfield_a, airfield_b, flights, aircraft FROM monthly_routes_summary")
+        rows += [(r[0], r[1], r[2], int(r[3]), int(r[4])) for r in cur.fetchall() if r[0] not in live]
+        out = []
+        other = collections.defaultdict(lambda: [0, 0, 0])
+        for month, a, b, flights, aircraft in rows:
+            if aircraft >= ROUTE_MIN_AIRCRAFT:
+                out.append({"month": month, "airfield_a": a, "airfield_b": b, "flights": flights, "aircraft": aircraft})
+            else:
+                o = other[month]
+                o[0] += 1
+                o[1] += flights
+                o[2] += aircraft
+        for month, (n, flights, aircraft) in other.items():
+            out.append({"month": month, "airfield_a": "other routes", "airfield_b": None, "routes": n,
+                        "flights": flights, "aircraft_sum": aircraft})
+        out.sort(key=lambda r: (r["month"], -r["flights"]))
+        return {"min_aircraft": ROUTE_MIN_AIRCRAFT, "routes": out, "aircraft_on_routes": aircraft_all}
+
+    def thermal_places(self, cur):
+        """The busiest and the strongest thermal places of the current and the
+        previous month, per kind, among 0.25-degree cells with at least
+        THERMAL_CELL_MIN thermals in the window (PATTERNS.md, section 3)."""
+        now = datetime.datetime.utcnow().date()
+        since = (now.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
+        cur.execute(f"""SELECT kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum), SUM(climbs)
+                            FROM daily_thermals WHERE day >= %s AND kind IN ('glider', 'paraglider', 'hang_glider')
+                        GROUP BY 1, 2, 3 HAVING SUM(thermals) >= {THERMAL_CELL_MIN}""", (since,))
+        found = cur.fetchall()
+        # The site most of a cell's thermals were flown from (nightly.py,
+        # daily_thermal_sites); without one, the site nearest the cell's
+        # centre or the town (place_name).
+        cur.execute("""SELECT kind, lat_idx, lon_idx, site, SUM(thermals) FROM daily_thermal_sites
+                           WHERE day >= %s GROUP BY 1, 2, 3, 4""", (since,))
+        from_site = {}
+        for kind, la, lo, site, th in cur.fetchall():
+            key = (kind, int(la), int(lo))
+            if key not in from_site or int(th) > from_site[key][0]:
+                from_site[key] = (int(th), site)
+        cells = []
+        n = THERMAL_CELLS_PER_DEG
+        for kind, la, lo, th, csum, cn in found:
+            la, lo = int(la), int(lo)
+            site = from_site.get((kind, la, lo))
+            cells.append({"kind": kind, "south": la / n, "north": (la + 1) / n, "west": lo / n, "east": (lo + 1) / n,
+                          "name": site[1] if site else place_name(la, lo, kind),
+                          "named_by": "take-off" if site else "nearest", "thermals": int(th),
+                          "mean_climb": round(float(csum) / int(cn), 2) if cn else None})
+        out = {"from": since.isoformat(), "to": now.isoformat(), "min_thermals": THERMAL_CELL_MIN,
+               "busiest": [], "strongest": []}
+        for kind in ("glider", "paraglider", "hang_glider"):
+            mine = [c for c in cells if c["kind"] == kind]
+            out["busiest"] += sorted(mine, key=lambda c: -c["thermals"])[:THERMAL_PLACES_TOP]
+            out["strongest"] += sorted((c for c in mine if c["mean_climb"] is not None),
+                                       key=lambda c: -c["mean_climb"])[:THERMAL_PLACES_TOP]
+        return out
+
     @staticmethod
     def with_free_flight(rows, sums):
         """rows plus, for every row of a paraglider or hang glider, the same row
@@ -1926,11 +2115,15 @@ class SourceTracker:
             # Paragliders and hang gliders apart since 7 October 2026 (the kind
             # "free_flight" before), and also together, summed here.
             thermals = self.with_free_flight(thermals, ("thermals", "climb_sum", "climbs", "radius_sum"))
-            cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum),
-                                   SUM(climbs)
+            # 1-degree cells, aggregated from the 0.25-degree cells stored since
+            # 7 October 2026 (rows of 6 October were recomputed at 0.25).
+            n = THERMAL_CELLS_PER_DEG
+            cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), kind, FLOOR(lat_idx / {n}), FLOOR(lon_idx / {n}),
+                                   SUM(thermals), SUM(climb_sum), SUM(climbs)
                                 FROM daily_thermals GROUP BY 1, 2, 3, 4 HAVING SUM(thermals) >= {THERMAL_CELL_MIN}""")
             thermal_cells = [{"month": r[0], "kind": r[1], "lat": int(r[2]), "lon": int(r[3]), "thermals": int(r[4]),
                               "climb_sum": float(r[5]), "climbs": int(r[6])} for r in cur.fetchall()]
+            thermal_places = self.thermal_places(cur)
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind_a, kind_b, vsep_band, SUM(thermals)
                                FROM daily_mixed_thermals GROUP BY 1, 2, 3, 4""")
             mixed = [{"month": r[0], "kind_a": r[1], "kind_b": r[2], "vsep_band": int(r[3]), "thermals": int(r[4])}
@@ -1979,9 +2172,18 @@ class SourceTracker:
             agl = self.with_free_flight(agl, ("air_seconds",))
             circling_time = self.with_free_flight(circling_time, ("circling_seconds", "air_seconds"))
             flights = self.with_free_flight(flights, ("flights", "seconds", "path_m"))
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, terrain, class, landing, distance_band, path_band,
+                                  SUM(flights)
+                               FROM daily_flight_classes GROUP BY 1, 2, 3, 4, 5, 6, 7""")
+            flight_classes = [{"month": r[0], "kind": r[1], "terrain": r[2], "class": r[3], "landing": r[4],
+                               "distance_band": int(r[5]), "path_band": int(r[6]), "flights": int(r[7])}
+                              for r in cur.fetchall()]
+            routes = self.routes(cur)
             return {"days": self._nightly_days(cur), "hours": hours, "dates": dates, "circling": circling,
+                    "flight_classes": flight_classes, "routes": routes,
                     "preference": preference, "gaggles": gaggles, "parked": parked, "launches": launches,
-                    "thermals": thermals, "thermal_cells": thermal_cells, "mixed_thermals": mixed,
+                    "thermals": thermals, "thermal_cells": thermal_cells, "thermal_places": thermal_places,
+                    "mixed_thermals": mixed,
                     "agl_hours": agl, "circling_time": circling_time, "flights": flights, "wave": wave,
                     "cruise": cruise,
                     "helicopters": helicopters, "helicopter_cells": helicopter_cells, "tug_time": tug_time,
