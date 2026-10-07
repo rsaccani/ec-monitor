@@ -1747,6 +1747,23 @@ class SourceTracker:
             out.append(cls.preference_row(x, p, [hist[b] for b in range(10)], x["expected_histogram"]))
         return out
 
+    @staticmethod
+    def with_free_flight(rows, sums):
+        """rows plus, for every row of a paraglider or hang glider, the same row
+        summed over both under the kind free_flight."""
+        together = {}
+        for r in rows:
+            if r["kind"] not in ("paraglider", "hang_glider"):
+                continue
+            key = tuple((k, v) for k, v in r.items() if k != "kind" and k not in sums)
+            t = together.get(key)
+            if t is None:
+                t = together[key] = dict(r, kind="free_flight")
+            else:
+                for k in sums:
+                    t[k] += r[k]
+        return rows + list(together.values())
+
     def patterns_stats(self):
         """Flying time by local solar hour and weekday, circling direction, parked aircraft."""
         def compute(cur):
@@ -1825,12 +1842,12 @@ class SourceTracker:
                                FROM daily_parked GROUP BY 1, 2, 3""")
             parked = [{"month": r[0], "system": r[1], "category": int(r[2]), "aircraft_days": int(r[3]),
                        "seconds": float(r[4]), "packets": int(r[5])} for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), method, towed_kind, height_band, duration_band,
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), method, towed_kind, terrain, height_band, duration_band,
                                   SUM(launches)
-                               FROM daily_launches GROUP BY 1, 2, 3, 4, 5""")
-            launches = [{"month": r[0], "method": r[1], "towed_kind": r[2],
-                         "height_band": None if r[3] == UNKNOWN_BAND else int(r[3]),
-                         "duration_band": None if r[4] == UNKNOWN_BAND else int(r[4]), "launches": int(r[5])}
+                               FROM daily_launches GROUP BY 1, 2, 3, 4, 5, 6""")
+            launches = [{"month": r[0], "method": r[1], "towed_kind": r[2], "terrain": r[3] or None,
+                         "height_band": None if r[4] == UNKNOWN_BAND else int(r[4]),
+                         "duration_band": None if r[5] == UNKNOWN_BAND else int(r[5]), "launches": int(r[6])}
                         for r in cur.fetchall()]
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), method, lat_idx, lon_idx, SUM(launches)
                                FROM daily_launches GROUP BY 1, 2, 3, 4""")
@@ -1842,25 +1859,19 @@ class SourceTracker:
             # Thermals: by kind, solar hour and the two bands; cells only where at
             # least THERMAL_CELL_MIN thermals were flown in the month, so that a
             # cell never stands for a handful of identifiable flights.
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, solar_hour, climb_band, radius_band,
+            # terrain: plain (relief within 5 km under 600 m), mountain, unknown;
+            # empty before 7 October 2026 (PATTERNS.md, section 12).
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, terrain, solar_hour, climb_band, radius_band,
                                   SUM(thermals), SUM(climb_sum), SUM(climbs), SUM(radius_sum)
-                               FROM daily_thermals GROUP BY 1, 2, 3, 4, 5""")
-            thermals = [{"month": r[0], "kind": r[1], "solar_hour": int(r[2]),
-                         "climb_band": None if r[3] == UNKNOWN_BAND else int(r[3]),
-                         "radius_band": None if r[4] == UNKNOWN_BAND else int(r[4]), "thermals": int(r[5]),
-                         "climb_sum": float(r[6]), "climbs": int(r[7]), "radius_sum": float(r[8])}
+                               FROM daily_thermals GROUP BY 1, 2, 3, 4, 5, 6""")
+            thermals = [{"month": r[0], "kind": r[1], "terrain": r[2] or None, "solar_hour": int(r[3]),
+                         "climb_band": None if r[4] == UNKNOWN_BAND else int(r[4]),
+                         "radius_band": None if r[5] == UNKNOWN_BAND else int(r[5]), "thermals": int(r[6]),
+                         "climb_sum": float(r[7]), "climbs": int(r[8]), "radius_sum": float(r[9])}
                         for r in cur.fetchall()]
             # Paragliders and hang gliders apart since 7 October 2026 (the kind
             # "free_flight" before), and also together, summed here.
-            together = collections.defaultdict(lambda: [0, 0.0, 0, 0.0])
-            for t in thermals:
-                if t["kind"] in ("paraglider", "hang_glider"):
-                    k = (t["month"], t["solar_hour"], t["climb_band"], t["radius_band"])
-                    x = together[k]
-                    x[0] += t["thermals"]; x[1] += t["climb_sum"]; x[2] += t["climbs"]; x[3] += t["radius_sum"]
-            thermals += [{"month": m, "kind": "free_flight", "solar_hour": h, "climb_band": cb, "radius_band": rb,
-                          "thermals": x[0], "climb_sum": x[1], "climbs": x[2], "radius_sum": x[3]}
-                         for (m, h, cb, rb), x in together.items()]
+            thermals = self.with_free_flight(thermals, ("thermals", "climb_sum", "climbs", "radius_sum"))
             cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum),
                                    SUM(climbs)
                                 FROM daily_thermals GROUP BY 1, 2, 3, 4 HAVING SUM(thermals) >= {THERMAL_CELL_MIN}""")
@@ -1870,21 +1881,23 @@ class SourceTracker:
                                FROM daily_mixed_thermals GROUP BY 1, 2, 3, 4""")
             mixed = [{"month": r[0], "kind_a": r[1], "kind_b": r[2], "vsep_band": int(r[3]), "thermals": int(r[4])}
                      for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, solar_hour, agl_band, SUM(air_seconds)
-                               FROM daily_agl_hours GROUP BY 1, 2, 3, 4""")
-            agl = [{"month": r[0], "kind": r[1], "solar_hour": int(r[2]),
-                    "agl_band": None if r[3] == UNKNOWN_BAND else int(r[3]), "air_seconds": float(r[4])}
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, terrain, solar_hour, agl_band, SUM(air_seconds)
+                               FROM daily_agl_hours GROUP BY 1, 2, 3, 4, 5""")
+            agl = [{"month": r[0], "kind": r[1], "terrain": r[2] or None, "solar_hour": int(r[3]),
+                    "agl_band": None if r[4] == UNKNOWN_BAND else int(r[4]), "air_seconds": float(r[5])}
                    for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, solar_hour, SUM(circling_seconds), SUM(air_seconds)
-                               FROM daily_circling_time GROUP BY 1, 2, 3""")
-            circling_time = [{"month": r[0], "kind": r[1], "solar_hour": int(r[2]), "circling_seconds": float(r[3]),
-                              "air_seconds": float(r[4])} for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, start_hour, duration_band, extent_band, path_band,
-                                  SUM(flights), SUM(seconds), SUM(path_m)
-                               FROM daily_flights GROUP BY 1, 2, 3, 4, 5, 6""")
-            flights = [{"month": r[0], "kind": r[1], "start_hour": int(r[2]), "duration_band": int(r[3]),
-                        "extent_band": int(r[4]), "path_band": int(r[5]), "flights": int(r[6]),
-                        "seconds": float(r[7]), "path_m": float(r[8])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, terrain, solar_hour, SUM(circling_seconds),
+                                  SUM(air_seconds)
+                               FROM daily_circling_time GROUP BY 1, 2, 3, 4""")
+            circling_time = [{"month": r[0], "kind": r[1], "terrain": r[2] or None, "solar_hour": int(r[3]),
+                              "circling_seconds": float(r[4]), "air_seconds": float(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, terrain, launch, start_hour, duration_band,
+                                  extent_band, path_band, SUM(flights), SUM(seconds), SUM(path_m)
+                               FROM daily_flights GROUP BY 1, 2, 3, 4, 5, 6, 7, 8""")
+            flights = [{"month": r[0], "kind": r[1], "terrain": r[2] or None, "launch": r[3] or None,
+                        "start_hour": int(r[4]), "duration_band": int(r[5]), "extent_band": int(r[6]),
+                        "path_band": int(r[7]), "flights": int(r[8]), "seconds": float(r[9]), "path_m": float(r[10])}
+                       for r in cur.fetchall()]
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, SUM(climbs)
                                FROM daily_wave GROUP BY 1, 2, 3""")
             wave = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "climbs": int(r[3])} for r in cur.fetchall()]
@@ -1907,6 +1920,11 @@ class SourceTracker:
                                FROM daily_tug_time GROUP BY 1, 2""")
             tug_time = [{"month": r[0], "share_band": int(r[1]), "tug_days": int(r[2]), "tow_seconds": float(r[3]),
                          "air_seconds": float(r[4])} for r in cur.fetchall()]
+            # Paragliders and hang gliders apart since 7 October 2026, and
+            # together as free_flight, summed here as for the thermals.
+            agl = self.with_free_flight(agl, ("air_seconds",))
+            circling_time = self.with_free_flight(circling_time, ("circling_seconds", "air_seconds"))
+            flights = self.with_free_flight(flights, ("flights", "seconds", "path_m"))
             return {"days": self._nightly_days(cur), "hours": hours, "dates": dates, "circling": circling,
                     "preference": preference, "gaggles": gaggles, "parked": parked, "launches": launches,
                     "thermals": thermals, "thermal_cells": thermal_cells, "mixed_thermals": mixed,
