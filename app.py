@@ -605,6 +605,14 @@ def ads_l_stats():
     return respond(out, "ads-l-monthly")
 
 
+@app.route(API + "/heard")
+def get_heard():
+    """Distinct aircraft heard in the last hour on any system but ADS-B (sources.heard_stats)."""
+    if tracker is None:
+        return jsonify({})
+    return jsonify(tracker.heard_stats())
+
+
 @app.route(API + "/live")
 def get_live():
     """Positions from the other sources, for the map's layer selector.

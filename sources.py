@@ -272,6 +272,11 @@ LAYER_OF_KIND = {
 
 LIVE_MIN_INTERVAL = 4  # seconds between two position parses of one device
 LIVE_WINDOW = 15 * 60  # a device unheard for this long leaves the map
+# The main page's live count (heard_stats): aircraft heard in the last hour.
+HEARD_WINDOW = 60 * 60
+HEARD_CACHE_SECONDS = 5
+HEARD_KINDS = {2: "powered", 8: "powered", 9: "powered", 1: "glider", 6: "free_flight", 7: "free_flight",
+               3: "helicopter", 13: "drone"}
 STATS_CACHE_SECONDS = 600
 
 # --- Visibility measure (METHOD.md) -----------------------------------------
@@ -651,6 +656,8 @@ class SourceTracker:
         self.connect_db = connect_db
         self.live = {}            # device_id -> compact dict
         self.live_parsed_at = {}  # device_id -> monotonic time of last parse
+        self.heard = {}           # address -> [last time, {system: last time}, category]; hear()
+        self.heard_cache = (0, None)
         # (month, source, via, device_id) written today -> the category queued
         # with it. Reset every UTC day: a device seen again tomorrow gets its
         # daily last_seen update anyway, and keeping a whole month of worldwide
@@ -751,6 +758,8 @@ class SourceTracker:
             self._now = datetime.datetime.utcnow()
             self._month = self._now.strftime("%Y-%m")
         now, month = self._now, self._month
+        if kind != "adsb" and not rebroadcast(tocall, src, id_category):
+            self.hear(src[-6:], label, id_category, tick)
         day = now.day
         if day != self.seen_day:
             self.seen = {}
@@ -808,6 +817,51 @@ class SourceTracker:
             "_mono": t,
             "_raw": line,
         }
+
+    def hear(self, address, label, category, tick):
+        """Aircraft heard in the last HEARD_WINDOW, for the main page's live box
+        (from 7 October 2026): address -> [last time, {system: last time},
+        last category declared]. Pruned every minute in prune_loop."""
+        h = self.heard.get(address)
+        if h is None:
+            self.heard[address] = [tick, {label: tick}, category]
+            return
+        h[0] = tick
+        h[1][label] = tick
+        if category is not None:
+            h[2] = category
+
+    def heard_stats(self):
+        """Distinct aircraft heard in the last HEARD_WINDOW on any system but ADS-B.
+
+        One aircraft is one 24-bit address: it counts once in `aircraft`, once
+        per system in `by_system`, and in `by_kind` by the last category it
+        declared. The exclusions are those of the measures (handle): receivers
+        and synthetic packets, weather and FANET ground stations, positions
+        near 0,0, no-track devices and the OGN device database's hidden ones,
+        Meshtastic nodes without an aircraft category, PilotAware rebroadcasts.
+        """
+        stamp, cached = self.heard_cache
+        if cached is not None and time.time() - stamp < HEARD_CACHE_SECONDS:
+            return cached
+        cutoff = time.time() - HEARD_WINDOW
+        aircraft, by_system, by_kind = 0, collections.Counter(), collections.Counter()
+        for last, systems, category in list(self.heard.values()):
+            if last < cutoff:
+                continue
+            aircraft += 1
+            for label, t in list(systems.items()):
+                if t >= cutoff:
+                    by_system[label] += 1
+            by_kind[HEARD_KINDS.get(category, "other")] += 1
+        out = {"window_minutes": HEARD_WINDOW // 60, "aircraft": aircraft,
+               "by_system": dict(by_system.most_common()),
+               "by_kind": {k: by_kind.get(k, 0) for k in ("powered", "glider", "free_flight", "helicopter",
+                                                           "drone", "other")},
+               "adsl": by_system.get(source_info("OGADSL")[0], 0),
+               "as_of": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"}
+        self.heard_cache = (time.time(), out)
+        return out
 
     def measure(self, src, tocall, via, body, now, station=None, id_category=None):
         """Accumulate the visibility totals of METHOD.md for one packet."""
@@ -2162,6 +2216,10 @@ class SourceTracker:
             cutoff = time.monotonic() - LIVE_WINDOW
             self.live = {k: v for k, v in list(self.live.items()) if v["_mono"] > cutoff}
             self.live_parsed_at = {k: v for k, v in list(self.live_parsed_at.items()) if v > cutoff}
+            # The live count's window; a busy hour holds some 20,000 addresses.
+            # Systems are left to the read side, which skips the stale ones.
+            heard_cutoff = time.time() - HEARD_WINDOW
+            self.heard = {k: v for k, v in list(self.heard.items()) if v[0] >= heard_cutoff}
 
     def writer_loop(self):
         conn = None

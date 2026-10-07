@@ -53,7 +53,8 @@ aircraft model or registration. Devices are matched by their 24-bit address, wha
 gives them.
 
 **What is shown live.** The map shows the positions of the last 15 minutes (60 for ADS-L), with the
-last ten positions of each ADS-L device.
+last ten positions of each ADS-L device. The live count (`/heard`) is held in memory as the last time
+each address was heard on each system, for one hour, and leaves the service only as counts.
 
 **What is stored, and for how long.**
 
@@ -111,6 +112,10 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 ### `/conspicuity-monitor/api/adsl`
 **Method:** GET
 **Description:** The ADS-L devices heard in the last 60 minutes, with their last ten positions, as JSON.
+
+### `/conspicuity-monitor/api/heard`
+**Method:** GET
+**Description:** For the main page's live box (from 7 October 2026): how many distinct aircraft were heard in the last 60 minutes on any system except ADS-B, `{"window_minutes": 60, "aircraft": N, "by_system": {label: n}, "by_kind": {"powered", "glider", "free_flight", "helicopter", "drone", "other"}, "adsl": n, "as_of": ISO time}`. One aircraft is one 24-bit address, systems merged as everywhere (`same_system`): it counts once in `aircraft`, once per system in `by_system`, and in `by_kind` by the last category it declared. The exclusions are those of the measures: receivers and synthetic packets, weather and FANET ground stations, positions near 0,0, no-track devices and those hidden in the OGN device database, Meshtastic nodes without an aircraft category, PilotAware rebroadcasts. Counts only, never an address. Cached for 5 seconds in the service; in nginx it needs a location like `/adsl`'s (a few seconds of `proxy_cache`, the live rate limit), which is outside this repository.
 
 ### `/conspicuity-monitor/api/adsl/monthly`
 **Method:** GET
