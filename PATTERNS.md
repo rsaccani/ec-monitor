@@ -148,15 +148,17 @@ Airborne time by kind and local solar hour, in bands of height above the
 terrain model (METHOD.md, section 3): 0–50, 50–120, 120–300, 300–600,
 600–1,200, 1,200–2,000 and over 2,000 m. The 120 m edge is the ceiling of
 the open category of drones; 300 m is where mobile coverage is described as
-reliable. The kinds are those of section 1, with drones as kinds of their
-own, confirmed and uncertain apart (METHOD.md, section 10.1). Each airborne
+reliable. The kinds are those of section 1, with paragliders and hang
+gliders apart (and free flight as the two together), and drones as kinds of
+their own, confirmed and uncertain apart (METHOD.md, section 10.1). Each airborne
 segment is filed at the height and the hour of its first fix. The shares
 read as where in the sky each kind is at each hour of the day.
 
 ## 5. Circling and gliding
 
 The share of airborne time spent circling in thermals (section 2) by kind
-and local solar hour, for gliders and free flight: the seconds circling over
+and local solar hour, for gliders, paragliders and hang gliders (and free
+flight as the two together): the seconds circling over
 the airborne seconds, in the same hour, of the aircraft that flew at least
 one thermal that day. A thermal is seen only in fixes at most 5 seconds
 apart (section 2), so an aircraft heard only on a system that sends less
@@ -196,7 +198,19 @@ For each flight: its duration (under 10 minutes, 10–30, 30–60, 1–2 h,
 2–4 h, 4–8 h, over 8 h), its largest distance from where it began (under 1,
 1–5, 5–20, 20–50, 50–100, 100–300, over 300 km), the length of its path
 (under 5, 5–20, 20–50, 50–100, 100–300, 300–500, over 500 km), and the
-local solar hour of its first airborne fix, by kind. A flight belongs to
+local solar hour of its first airborne fix, by kind, with paragliders and
+hang gliders apart (and free flight as the two together), and by the terrain
+class of section 12 at its start.
+
+**A flight counts only if it lasts at least 2 minutes**, for every kind
+(from 7 October 2026). On 6 October 2026, 493 glider flights whose start was
+not seen lasted a median of 6 seconds: an aircraft heard for a fix or two
+at the edge of coverage, which is no flight anybody flew. A launch whose
+flight is such a fragment, or which never made a flight at all, is not
+counted either (section 7). Glider flights also
+carry the launch method of section 7 (aerotow, winch, aerotow or
+self-launch, self-launch, other, start not seen), from the launch found
+within 5 minutes before to 10 minutes after the flight began. A flight belongs to
 the day it began. An aircraft first heard in the air makes a flight whose
 start was not seen; its duration and distances are of the part seen.
 
@@ -249,13 +263,38 @@ gap, and is counted apart, as a **start not seen**, out of the launch split.
 The first count, without this rule, gave 2,153 glider launches on 6 October
 2026 against 1,745 glider flights: reappearances counted as launches.
 
+A start, whatever its method, counts only when the flight it begins lasts
+at least 2 minutes (section 6); a start heard for a few seconds and lost is
+a fragment, not a launch. Aerotows and winch launches found by their own
+rules are counted as found, since a tow and a cable climb are evidence of a
+launch in themselves.
+
 **No tow seen.** A launch seen within 150 m of the ground with neither an
-aerotow nor a winch launch found from 5 minutes before to 10 minutes after. The
-class mixes several things and says nothing about any one of them:
-self-launching and motor gliders, bungee and foot launches, hang gliders
-launched from a slope, launches flown outside coverage, and aircraft that
-come into coverage already aloft. It is published for completeness and is
-not a count of any launch method.
+aerotow nor a winch launch found from 5 minutes before to 10 minutes after.
+For hang gliders the class stays as it is: it mixes foot launches from a
+slope, aerotows whose tug is not heard and launches flown outside coverage,
+and says nothing about any one of them.
+
+**A glider launch read by its climb** (from the evening of 7 October 2026).
+For a glider, the climb over the first **150 m** gained after the launch
+decides:
+
+- **6 m/s or more**: a winch launch the winch rule missed, mostly because
+  the aircraft came into coverage partway through the launch. Nothing else
+  a glider does climbs that fast that low; an aerotow climbs at 2 to 4 m/s.
+- **1 to 5 m/s, straight (turning under 3 degrees a second on average) at
+  90 to 150 km/h**: an **aerotow or a self-launch, not distinguishable**.
+  The tug may not be heard (it carries nothing the network hears, or is
+  just out of coverage), and a self-launching motorglider climbs at the same
+  rates and speeds. It counts as a **self-launch** only with independent
+  evidence: the OGN device database names the aircraft as a self-launching
+  motorglider (Stemme, Arcus M, DG-808, DG-400, ASH 26 E, ASH 31 Mi,
+  ASG 32 Mi, Antares, Taurus, Silent, Dimona, Falke, SF 25, Sinus),
+  honouring the owner's choice not to be identified. The list is short on
+  purpose: a model name also used by pure gliders would take them in, and a
+  self-launcher missing from it stays "aerotow or self-launch".
+- **Anything else**, including a launch that has not gained 150 m within
+  10 minutes: **other**.
 
 What the rules miss: a tow whose two aircraft are not both heard, a winch
 launch whose fixes are too sparse to show the climb, and a tug or glider
@@ -319,6 +358,38 @@ From the aerotows of section 7: how many tows each tug flew that day (1,
 durations of its tows over its airborne time that day: under 25%, 25–50%,
 50–75%, over 75%), as counts of tugs, never by address.
 
+## 12. Plain and mountains
+
+Thermals (section 3), height above the ground by hour (section 4),
+circling and gliding (section 5), flights (section 6) and launches
+(section 7) are also given by **terrain class**: **plain and hills** where
+the highest minus the lowest ground within **5 km** is under **600 m**,
+**mountains** from 600 m, from the terrain model of METHOD.md section 3.
+Thermals take the class of the point where they end, flights and launches
+of where they begin, airborne time of each segment's first fix.
+
+The threshold was chosen on 7 October 2026 after looking at the relief
+around every flight start and thermal of one October day, 6 October 2026,
+in steps of 100 m. The medians were about 100 m for the starts of powered
+aircraft, 200 m for gliders and helicopters, 900 m for hang gliders and
+1,000 m for paragliders; around thermals, 300 m for gliders, 900 m for
+paragliders and 1,000 m for hang gliders. The share under 600 m was 89% of
+glider starts, 88% of powered, 73% of helicopter, 35% of hang glider and 21%
+of paraglider starts; 80% of glider thermals and 19% of paraglider ones.
+Between 500 and 700 m every kind had a dip (glider starts: 106 between 400
+and 500 m, 15 and 21 in the two steps from 500 to 700, 46 and 75 at 800 to
+1,000), which is where the line was drawn. That day included the fragments
+section 6 now leaves out. **The threshold is to be checked again against a
+summer month**, when the Alps fly differently and lowland thermals are
+stronger.
+
+The class describes the ground within 5 km of the aircraft, nothing more.
+It does not say which lift was flown: a glider in the foothills can climb
+in a thermal over flat ground 4 km from a 700 m slope and be filed under
+mountains, and a pilot ridge soaring a 400 m hill is under plain and hills.
+Nor does it follow regions: a valley floor in the Alps a few kilometres
+wide sits in mountains, a high plateau in plain and hills.
+
 ## Limits
 
 - Everything here is what the OGN network hears. An aircraft that carries
@@ -365,7 +436,12 @@ durations of its tows over its airborne time that day: under 25%, 25–50%,
   ground, the rest counted as starts not seen (section 7); flights go on
   across silences the aircraft could have flown through, up to 2 hours
   (section 6); thermals of paragliders and hang gliders are given apart
-  (section 3). Sections 9 to 11, on powered aircraft
+  (section 3). In the evening, before publication: glider launches with
+  no tow or winch found are read by their climb, and glider flights carry
+  their launch method (sections 6 and 7); paragliders and hang gliders
+  are given apart in sections 4, 5 and 6 as well. Later the same evening:
+  the terrain class (section 12), and flights of at least 2 minutes, with
+  the launches of shorter ones left out (sections 6 and 7). Sections 9 to 11, on powered aircraft
   and helicopters, added before any of their data existed; ADS-B is used
   in them, unlike in the sections above, for the pressure altitude and the
   emitter category. Circuits and touch-and-go, and cruising levels, written
