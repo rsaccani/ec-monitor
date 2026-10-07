@@ -85,6 +85,12 @@ October FANET rows up to that day were static objects. From 7 October 2026 a
 later aircraft category replaces a stored ground support or static object
 category, also on a row written earlier in the month once the device is
 heard again; rows of devices not heard again keep the category they had.
+From the same day ADS-B's category 0 is treated the same way. OGN's ADS-B
+decoder sends 0 until the aircraft's emitter category has been received, so
+it means "not yet known" there, and the first packet of most ADS-B aircraft
+carries it: of the October 2026 ADS-B rows also in the raw recording, 1,654
+were stored as 0 while most of the aircraft's packets declared a powered
+aircraft, a helicopter or a paraglider.
 Drone Remote ID, decoded by some OGN receivers and forwarded under its own
 source, is counted as a radio system from 7 October 2026, and its devices as
 drones whatever their id declares.
@@ -609,6 +615,23 @@ the same sources and exclusions, the time written in the fix, the 5-minute
 rules for stale and future fixes, the airborne speeds per kind, the
 implausible segments and fixes, one timeline per 24-bit address for flying
 time. Devices whose owners asked not to be tracked are never recorded.
+
+One rule differs from the live measures. These take the category of every
+packet; the nightly measures take, from 7 October 2026, the category the
+address declares most often on that system that day, ADS-B's 0 left out of
+the vote. The raw recording of 6 and 7 October 2026 showed why: 0.22% of
+FLARM packets and 1.3% of PilotAware's declared another category than the
+rest of their address's packets, half of them came through ten receivers of
+nearly two thousand, and they carried the 65,536 m altitude 250 times and
+the 500 km/h jumps 20 times as often as the other packets. Where the same
+fix reached the feed through several receivers, the others carried the
+usual category in seven cases out of ten. So a stray packet is a reception
+fault far more often than a change of aircraft, and following it would move
+a segment, a thermal or a drone into another kind. FANET's switch between
+paraglider or hang glider and static object is its ground mode, a real
+change, and is kept packet by packet. In the live measures the strays moved
+0.09% of the flying time to another kind on those days, and 1% to 3% of the
+time of drones.
 ADS-B stays out of every flight measure, and appears only as the other
 aircraft in the drone encounters of 10.4, where an aircraft with ADS-B Out is
 exactly what a drone pilot should know about.
@@ -721,11 +744,75 @@ The question: how much do drones fly where light aircraft fly, how low and
 how fast, how far from their pilots, and how often they come close to a
 crewed aircraft.
 
-A drone is a device declaring category 13 (unmanned aircraft) on any source,
-or any device on Remote ID. Its flying time follows the timeline of 10.1
-with the airborne rule for kinds without a speed of their own (section 1: at
-least 10 km/h at either end of a segment), so a hovering drone counts only
-while it moves, and the time is a lower bound.
+A device declaring category 13 (unmanned aircraft) on any source, or any
+device on Remote ID, **declares a drone**. Its flying time follows the
+timeline of 10.1 with the airborne rule for kinds without a speed of their
+own (section 1: at least 10 km/h at either end of a segment), so a hovering
+drone counts only while it moves, and the time is a lower bound.
+
+**Which declared drones are drones** (from 7 October 2026, before any figure
+of this question was published). The category is a setting of the device,
+and the first day of data showed crewed aircraft among the addresses that
+sent it: of 145 addresses with a category 13 on 6 October 2026, 13 were also
+heard on ADS-B with the emitter category of a crewed aircraft, and others
+were in the OGN device database as an ASK-21, a Cessna 172, a DR-400 and the
+like. On that day all 11 of the 13 that sent a category 13 in time to be
+used turned out to be strays (below); the rule that follows exists for the
+crewed aircraft whose device is set to drone for good. How they fly cannot
+separate them, since a fixed-wing drone flies like a light aircraft: speed,
+height and a take-off roll decide nothing. Two
+declarations made apart from the device's setting can. The ADS-B emitter
+category is set in the transponder by whoever installed it, and does not
+depend on how the FLARM or other device was configured. The aircraft type
+in the OGN device database is entered by the owner, and can be stale: a
+FLARM moved from a glider to a drone keeps the glider's entry until somebody
+changes it. Since the device setting can be wrong and the database entry
+can be old, neither decides alone, and the flight breaks a tie between them
+only in one way: a thermal (two full turns to one side, as in 10.2), which a
+drone does not fly.
+
+An address declares a drone for the day only when 13 is its majority
+category (section 10) on at least one of its systems. On 6 October 2026,
+55 of the 145 addresses that sent category 13 at all sent it in one packet
+only, every other packet of theirs declaring another kind of aircraft, and
+11 more in 2 to 9 packets: packets decoded wrongly, not devices set up as
+drones. Such an address is **stray**, counted on the data-quality page and
+nowhere in this question; under the majority rule its time is filed in 10.1
+under its usual category. (The first version of this test, the same day,
+required category 13 in at least half of the address's packets over all
+its systems.) Each address that
+does declare a drone is classed once the whole day is in:
+
+- **Crewed** when its ADS-B packets carry the emitter category of a crewed
+  aircraft (A1 to A7, B1 to B4), or when the database gives it a crewed type
+  (glider, plane, ultralight, helicopter) and it flew at least one thermal
+  that day, or when, without a database type, it flew a thermal that gained
+  at least 100 m on a day whose largest distance from the start of a
+  session (below) exceeds 100 km (added the same day): a drone loitering
+  over a point turns, but it does not climb in circles on a cross-country
+  of a hundred kilometres, which is what a glider or a paraglider does. It is left out of every measure of this question, and counted
+  per system on the data-quality page (10.5), by which evidence.
+- **Confirmed drone** when its ADS-B emitter category is B6 (unmanned
+  aircraft), or when the database gives it the drone type. A device heard on
+  Remote ID is a confirmed drone on its own, before every other test: it is
+  the broadcast identification the EU rules define for drones (Regulation
+  (EU) 2019/945), sent by drones and their add-on modules, and a crewed
+  aircraft has no reason to carry one (decided on 7 October 2026; the
+  first version of this rule, the same day, left Remote ID without a
+  database entry uncertain).
+- **Uncertain** otherwise: no ADS-B emitter category (an ICAO address
+  without one included) and no database type, or a database type that
+  disagrees with the device and a flight with no thermal to settle it.
+  Uncertain drones stay in the question, counted apart from the confirmed
+  ones.
+
+The stray test comes before all of this, so a crewed aircraft that sent a
+single category 13 counts as stray. Crewed evidence is read next, so an
+address with evidence of both kinds counts as crewed. A crewed aircraft's
+flying time is filed in 10.1 under unknown category rather than as a drone,
+since neither the transponder nor the database gives an OGN category. The database is honoured as everywhere: a device whose owner asked
+not to be tracked is left out, and the type of one not to be identified is
+not used.
 
 Each airborne segment is filed by the **1-degree cell** where it began
 (about 110 by 77 km at the latitude of the Alps; a finer map of so few
@@ -788,6 +875,15 @@ Per system:
   instrument switching between paraglider or hang glider and static object
   is its ground-tracking mode after a landing, counted under a check of its
   own.
+- **Devices declaring a drone** (10.4), of the addresses that sent
+  category 13 on the system: those where it was a stray packet, those with
+  crewed evidence, in all and by evidence (ADS-B emitter category, database
+  type with a thermal, climbing thermal on a long day), those confirmed, and
+  those left uncertain, with how many of these have a crewed database type
+  and no thermal.
+- **Stray categories**: packets declaring another category than their
+  address's majority on the system that day (section 10), of the packets
+  declaring one; ground mode and ADS-B's 0 are not strays.
 
 Per receiver, from its own position reports and from the radio packets it
 forwards (the receiver is the last element of the packet's path; ADS-B is
@@ -801,6 +897,11 @@ left out):
   the terrain model under it.
 - **Late**: more than 5% of the packets it forwards (at least 100) more than
   60 seconds late.
+- **Stray categories**: 2% or more of the radio packets it forwards (at
+  least 1,000 with a category) declare another category than their
+  address's majority. The median receiver was at 0.01% on 6 and 7 October
+  2026 and the worst two near 45%; 2% is two hundred times the median and
+  still catches a station whose strays are a minority of its traffic.
 - **Altitude offset**: FLARM devices send their height above the ellipsoid
   and the receiver converts it to height above sea level. For every FLARM
   fix heard by two or more receivers, the altitudes they forward are
@@ -842,5 +943,11 @@ Receivers are listed only when flagged, beside how many were judged.
   55 m above sea level in Europe; if that is what arrives, a drone looks that
   much higher than it is, which moves it across the 50 m band of section
   10.4 and makes the vertical margin of an encounter smaller in effect.
+- The live service still files a crewed aircraft declared as a drone under
+  drones in the monthly flying time (section 1, `monthly_hours`); only the
+  nightly measures of section 10 set it aside.
+- A declared drone heard by no ADS-B and with no database entry stays
+  uncertain however it flies: the method does not judge identity from
+  flight, except for a thermal against a crewed database entry.
 - The nightly measures need the raw recording: a day the service was stopped
   for has its missing hours missing for good.
