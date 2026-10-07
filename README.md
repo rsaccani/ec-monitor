@@ -59,6 +59,9 @@ last ten positions of each ADS-L device.
 | Device addresses (`monthly_devices`, `monthly_sources`), with the first and last time each was heard in the month | the current and the previous month; then reduced to counts and deleted |
 | Counts of devices per month, address type, category, source and channel (`*_summary`) | indefinitely |
 | Totals of the measures per day, month, source, category, height band and 0.25-degree cell | indefinitely |
+| The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | four days |
+| Thermals to each side per device address and day (`daily_circling_pilot`, `nightly.py`) | the current and the previous month; then reduced to counts and deleted |
+| The nightly totals (`daily_*`: hours, circling, gaggles, parked aircraft, drones, data quality) | indefinitely |
 
 A device address is personal data in the sense of the GDPR, since it can be traced to an aircraft and
 its pilot. That is why addresses are kept only as long as the counts need them: every six hours the
@@ -115,7 +118,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/sources`
 **Method:** GET
-**Description:** Distinct devices per month for every OGN source (the APRS tocall, see `tocalls.txt` in glidernet/ogn-aprs-protocol), split by `via`: `radio` when a ground receiver heard the packet (it carries the receiver's dB and kHz figures, and ADS-B always counts as radio), `net` when an app or platform injected it over the internet. `multi_day` counts devices heard on two different days of the month, which shows whether a source keeps stable ids. Cached for 10 minutes.
+**Description:** Distinct devices per month for every OGN source (the APRS tocall, see `tocalls.txt` in glidernet/ogn-aprs-protocol), split by `via`: `radio` when a ground receiver heard the packet (it carries the receiver's dB and kHz figures, and ADS-B always counts as radio), `net` when an app or platform injected it over the internet. `multi_day` counts devices heard on two different days of the month, which shows whether a source keeps stable ids. For months already archived, `return` gives per source how many of the month's devices were heard again the month after (kept from 7 October 2026). Cached for 10 minutes.
 
 ### `/conspicuity-monitor/api/visibility`
 **Method:** GET
@@ -144,6 +147,26 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 ### `/conspicuity-monitor/api/prediction`
 **Method:** GET
 **Description:** Errors of four predictions of where an aircraft will be 5, 10 and 20 s ahead (straight line, arc from a turn rate the receiver derives from two positions, arc from the transmitted turn rate, last point), by source, category, horizon and circling or straight flight, as counts in error bins (`b0`… with the edges in `bins_m`) plus `n` and `error_sum`. `derived_paired` and `transmitted_paired` hold the same predictions restricted to instants where both exist, which is what the turn-rate comparison reads. See METHOD.md, "Predicting a few seconds ahead".
+
+### `/conspicuity-monitor/api/patterns`
+**Method:** GET
+**Description:** The nightly patterns of METHOD.md section 10, computed by `nightly.py`, as several lists (`?format=csv` gives one CSV with a `part` column). `hours`: airborne seconds per month, weekday (0 = Monday) and local solar hour (UTC + longitude/15) of the local solar date, by category, with `aircraft_hours` (distinct aircraft per hour, summed); `dates` says how many local dates each weekday holds. `circling`: thermals, degrees and seconds to each side per month and category (1 glider, 6 hang glider, 7 paraglider). `preference`: the per-pilot test, over the current and the previous month and then for each archived month, for pilots with at least 5 and 10 thermals (observed against chance variance of the right-hand share, pilots at 80% or more on one side against the binomial expectation, a 10-bin histogram). `gaggles`: pairs of thermals flown together, same side or opposite, with the share expected if sides were chosen independently. `parked`: parked aircraft transmitting per month, system and category (`aircraft_days`, seconds, packets). `days`: the days computed and their missing hours.
+
+### `/conspicuity-monitor/api/drones`
+**Method:** GET
+**Description:** Drones (category 13 and Remote ID), from `nightly.py`: airborne seconds and drone-days per month and 1-degree cell (`cells`), seconds by height band above ground and speed band (`bands`, edges in `height_bands_m` and `speed_bands_kmh`), by set of systems heard (`systems`), drones by the largest distance from the start of a session (`extent`), and encounters with crewed aircraft in flight by drone systems, other category and systems, closest distance band and whether the two share a system (`encounters`). METHOD.md section 10.4.
+
+### `/conspicuity-monitor/api/quality`
+**Method:** GET
+**Description:** Data-quality findings of METHOD.md section 10.5 for the last 7 days and the current month: per system, each check's count over its total; per OGN receiver, the receivers flagged, on how many days, with the measured value averaged over those days; and per check the receiver-days flagged among those judged (`receivers_summary`). Individual devices never appear.
+
+### `/conspicuity-monitor/api/snapshots`
+**Method:** GET
+**Description:** The monthly snapshots on record (METHOD.md section 9): for each month and endpoint, the commit of METHOD.md and of the code in force when it was taken, the date and the size of the JSON. Taken by `nightly.py` the night the last day of a month is computed, from the same functions the endpoints call, so each is the data the page showed for that month under the rules of the time.
+
+### `/conspicuity-monitor/api/snapshot?month=YYYY-MM&endpoint=name`
+**Method:** GET
+**Description:** One snapshot, as the JSON that endpoint published (`endpoint` is a name from `/snapshots`, e.g. `visibility/grid`). Same licence as the other data. 404 when there is none.
 
 ### `/conspicuity-monitor/api/method`
 **Method:** GET
@@ -191,6 +214,11 @@ GRANT UPDATE ON ads_l.monthly_reception_pattern TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_prediction TO 'ads_user'@'localhost';
 GRANT UPDATE ON ads_l.monthly_hours TO 'ads_user'@'localhost';
 ```
+
+The tables of the nightly measures, the `DELETE` that lets `nightly.py` replace a day, and
+`UPDATE (category)` on `monthly_sources` (a later aircraft category replacing a ground one) are in
+[schema/2026-10-07-nightly.sql](schema/2026-10-07-nightly.sql); how the nightly runs is in
+[deploy/README.md](deploy/README.md).
 
 The service connects to `localhost` over TCP, port 3306, and reads the user and password from a `.env`
 file beside `app.py`, which should be readable only by the user the service runs as:

@@ -1,0 +1,29 @@
+# The nightly measures (nightly.py, METHOD.md section 10), as a systemd unit
+# pair: the alternative to the crontab line in deploy/README.md. Install as
+# root:
+#   install -m 644 ec-monitor-nightly.service ec-monitor-nightly.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ec-monitor-nightly.timer
+# Try it once by hand before trusting it unattended:
+#   systemctl start ec-monitor-nightly.service; tail ~rsa/ec-nightly/nightly.log
+[Unit]
+Description=EC monitor: nightly measures from the raw recording
+After=mariadb.service
+
+[Service]
+Type=oneshot
+User=rsa
+Group=rsa
+WorkingDirectory=/home/rsa/ads-l-map
+# A unit starts with no HOME (the midnight reset of 4 October 2026 failed on
+# that). nightly.py finds .env by its own path and needs none, but anything
+# it calls should find the right one.
+Environment=HOME=/home/rsa
+Environment=PYTHONUNBUFFERED=1
+Nice=19
+IOSchedulingClass=idle
+# The service shares the host's 2 GB; the batch measured under 500 MB.
+MemoryMax=700M
+# flock: never two runs at once, should one overrun into the next.
+ExecStart=/usr/bin/flock -n /home/rsa/ec-nightly/lock /usr/bin/python3 /home/rsa/ads-l-map/nightly.py
+StandardOutput=append:/home/rsa/ec-nightly/nightly.log
+StandardError=append:/home/rsa/ec-nightly/nightly.log

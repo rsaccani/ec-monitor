@@ -27,8 +27,10 @@ import os
 import struct
 import queue
 import re
+import statistics
 import threading
 import time
+import zlib
 
 import pymysql
 
@@ -53,6 +55,10 @@ SOURCES = {
     "OGSTUX": ("Stratux", "radio"),
     "OGAVZ": ("Aviaze", "radio"),
     "OGBSTOP": ("BirdStop", "radio"),
+    # Drone Remote ID (ASTM F3411 / EN 4709-002 over Bluetooth or Wi-Fi),
+    # decoded by some OGN receivers and forwarded with "rid" in the comment;
+    # not in tocalls.txt. Seen on the raw recording on 7 October 2026.
+    "OGNMAV": ("Remote ID", "radio"),
     "OGNSKY": ("SafeSky", "app"),
     "OGNAVI": ("Naviter", "app"),
     "OGLT24": ("LiveTrack24", "app"),
@@ -86,6 +92,10 @@ SOURCES = {
     "OGNFNO": ("Neurone", "platform"),
 }
 
+# Remote ID is broadcast by drones only, so its devices are drones whatever
+# the category in their id (7 October 2026).
+REMOTE_ID, DRONE_CATEGORY = "OGNMAV", 13
+
 # Not aircraft: receivers announcing their own position, and delayed or
 # synthesised copies of packets already counted elsewhere.
 EXCLUDED = {"OGNSDR", "OGNSXR", "OGNDELAY", "OGMLAT", "OGNDVS"}
@@ -103,8 +113,46 @@ GENERIC_TOCALL = {("APRS", "PAW"): "OGPAW"}
 # Meshtastic is a mesh network for people on the ground; OGN receivers decode
 # it too. A node counts only when it declares an aircraft type in its id.
 AIRCRAFT_ONLY = {"OGMSHT"}
-# The same rule in SQL, for rows written before it applied.
-COUNTED_SQL = "NOT (source IN ({}) AND category IS NULL)".format(", ".join(f"'{s}'" for s in AIRCRAFT_ONLY))
+
+# PilotAware ground stations also rebroadcast the FLARM aircraft they hear,
+# under the PilotAware prefix PAW with the address of the FLARM device, the
+# symbol /z and category 14 (ground support). In October 2026, 560 of the
+# 1,463 PilotAware ids were such rows, their address also heard on FLARM, so
+# they made PilotAware look a third larger than it is. From 7 October 2026
+# they are not counted as PilotAware devices (METHOD.md, section 1); the
+# FLARM device is counted under FLARM. A genuine PilotAware ground vehicle,
+# also category 14, is lost with them, and is not an aircraft either.
+REBROADCAST_PREFIX, REBROADCAST_CATEGORY = "PAW", 14
+REBROADCAST_SOURCES = ("APRS", "OGPAW", "OGNPAW")
+
+
+def rebroadcast(tocall, device_id, category):
+    """True for a PilotAware station's copy of a FLARM aircraft."""
+    return (category == REBROADCAST_CATEGORY and device_id.startswith(REBROADCAST_PREFIX)
+            and tocall in REBROADCAST_SOURCES)
+
+
+# The two rules in SQL, applied whenever devices are counted, so rows written
+# before a rule applied are filtered too. COALESCE: a NULL category would make
+# the second clause NULL and drop the row.
+COUNTED_SQL = ("NOT (source IN ({}) AND category IS NULL)".format(", ".join(f"'{s}'" for s in AIRCRAFT_ONLY))
+               + " AND NOT (LEFT(device_id, 3) = '{}' AND COALESCE(category, 255) = {} AND source IN ({}))".format(
+                   REBROADCAST_PREFIX, REBROADCAST_CATEGORY, ", ".join(f"'{s}'" for s in REBROADCAST_SOURCES)))
+
+# FANET instruments switch to ground tracking once the pilot has landed and
+# then send category 15 (static object); some trackers send 14 on the ground.
+# A device's category in monthly_sources is the one of its first packet of the
+# month, so a pilot first heard after landing was filed as a static object:
+# 3,070 of the 9,096 FANET rows of October to the 7th were. From 7 October
+# 2026 a later aircraft category replaces a stored 14 or 15 (METHOD.md,
+# section 1), except on the PilotAware rebroadcasts above, whose 14 is what
+# marks them.
+GROUND_CATEGORIES = (14, 15)
+AIRCRAFT_CATEGORIES = frozenset(range(1, 14)) - {10}     # 10 is "unknown" in the OGN id
+UPGRADE_CATEGORY_SQL = (
+    "UPDATE monthly_sources SET category = %s "
+    "WHERE month = %s AND source = %s AND via = %s AND device_id = %s AND category IN (14, 15) "
+    f"AND NOT (category = {REBROADCAST_CATEGORY} AND LEFT(device_id, 3) = '{REBROADCAST_PREFIX}')")
 
 
 def same_system(tocall, device_id):
@@ -117,6 +165,83 @@ SAME_SYSTEM_SQL = ("CASE " + " ".join(f"WHEN source = '{a}' AND LEFT(device_id, 
                                       for (a, p), b in GENERIC_TOCALL.items())
                    + " " + " ".join(f"WHEN source = '{a}' THEN '{b}'" for a, b in SAME_SYSTEM.items())
                    + " ELSE source END")
+
+# Names of the aircraft categories carried in bits 2-5 of the first byte of
+# the OGN "idXXYYYYYY" field (bits 0-1 are the address type, 6 no-track, 7
+# stealth). Moved here from app.py on 7 October 2026 with the ADS-L monthly
+# counts, so that nightly.py can take the monthly snapshots without app.py.
+CATEGORY_NAMES = {
+    0: "Unknown", 1: "Glider", 2: "Tow plane", 3: "Helicopter", 4: "Skydiver", 5: "Drop plane",
+    6: "Hang glider", 7: "Paraglider", 8: "Powered aircraft", 9: "Jet aircraft", 10: "Unknown",
+    11: "Balloon", 12: "Airship", 13: "Drone", 14: "Unknown", 15: "Static object",
+}
+# Address type, from the callsign prefix OGN gives each beacon. Random addresses
+# change at every power-up or more often, so one device can count several times.
+ADDRESS_PREFIXES = {"ICA": "icao", "FLR": "flarm", "OGN": "ogn", "RND": "random",
+                    "PAW": "pilotaware", "FNT": "fanet"}
+
+
+def adsl_monthly_stats(connect_db):
+    """ADS-L devices per month, oldest month last, every month on record.
+
+    `devices` is the total distinct addresses, unchanged for older clients.
+    `addresses` splits it by address type, `categories` by aircraft category
+    (recorded only since the column was added; `categorised` says how many rows
+    have one) and `partial` marks the current UTC month.
+    """
+    db = connect_db()
+    try:
+        with db.cursor() as cur:
+            # Older months live only as counts in monthly_devices_summary
+            # (archive_loop), with 255 for "no category recorded".
+            cur.execute("""
+                SELECT month, LEFT(device_id, 3), COUNT(*)
+                    FROM monthly_devices
+                GROUP BY month, LEFT(device_id, 3)
+                UNION ALL
+                SELECT month, prefix, SUM(devices)
+                    FROM monthly_devices_summary
+                GROUP BY month, prefix
+            """)
+            by_prefix = cur.fetchall()
+            cur.execute("""
+                SELECT month, category, COUNT(*)
+                    FROM monthly_devices
+                WHERE category IS NOT NULL
+                GROUP BY month, category
+                UNION ALL
+                SELECT month, category, SUM(devices)
+                    FROM monthly_devices_summary
+                WHERE category <> 255
+                GROUP BY month, category
+            """)
+            by_category = cur.fetchall()
+    finally:
+        db.close()
+    months = {}
+    # COUNT(*) united with SUM() comes back as DECIMAL, which jsonify would
+    # turn into strings: hence the int().
+    for month, prefix, n in by_prefix:
+        n = int(n)
+        m = months.setdefault(month, {"month": month, "devices": 0, "addresses": {},
+                                      "categories": {}, "categorised": 0})
+        kind = ADDRESS_PREFIXES.get(prefix, "other")
+        m["devices"] += n
+        m["addresses"][kind] = m["addresses"].get(kind, 0) + n
+    for month, code, n in by_category:
+        n = int(n)
+        m = months.get(month)
+        if m is None:
+            continue
+        name = CATEGORY_NAMES.get(code, "Unknown")
+        m["categories"][name] = m["categories"].get(name, 0) + n
+        m["categorised"] += n
+    current = datetime.datetime.utcnow().strftime("%Y-%m")
+    out = sorted(months.values(), key=lambda m: m["month"], reverse=True)
+    for m in out:
+        m["partial"] = m["month"] == current
+    return out
+
 
 # Map layers, by kind. ADS-B stays off the map: about 1,400 aircraft at any
 # moment, mostly airliners, would bury everything else and weigh on the poll.
@@ -382,6 +507,10 @@ def _upsert(table, keys, columns):
 
 
 SYSTEMS_MIN_COMBO = 5   # aircraft before a combination of systems is listed by name
+# The per-pilot circling test (METHOD.md, section 10.2): pilots with at least
+# this many thermals, and the bands of thermal counts kept for archived months.
+PREFERENCE_MIN_THERMALS = (5, 10)
+THERMAL_BANDS = (1, 5, 10, 20)
 HOURS_SQL = _upsert("monthly_hours", ["month", "category"], ["segments", "air_seconds"])
 DETAIL_SQL = _upsert("monthly_visibility_detail",
                      ("month", "source", "via", "category", "msl_band", "agl_band"), DETAIL_COLUMNS)
@@ -489,10 +618,11 @@ class SourceTracker:
         self.connect_db = connect_db
         self.live = {}            # device_id -> compact dict
         self.live_parsed_at = {}  # device_id -> monotonic time of last parse
-        # (month, source, via, device_id) written today. Reset every UTC day: a
-        # device seen again tomorrow gets its daily last_seen update anyway, and
-        # keeping a whole month of worldwide ADS-B here grew without bound.
-        self.seen = set()
+        # (month, source, via, device_id) written today -> the category queued
+        # with it. Reset every UTC day: a device seen again tomorrow gets its
+        # daily last_seen update anyway, and keeping a whole month of worldwide
+        # ADS-B here grew without bound.
+        self.seen = {}
         self.seen_day = None
         self.writes = queue.Queue(maxsize=200000)
         self.stats_cache = (0, None)
@@ -525,6 +655,12 @@ class SourceTracker:
         self.pattern_cache = (0, None)
         self.detail_cache = (0, None)
         self.grid_cache = {}
+        # The nightly measures (nightly.py), read from their own tables.
+        self.patterns_cache = (0, None)
+        self.drones_cache = (0, None)
+        self.quality_cache = (0, None)
+        self.snapshots_cache = (0, None)
+        self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
         # One lock per statistic, so a slow one (the device counts) never holds
         # up the others, and a thread-local flag with which warm_loop forces a
         # recomputation while visitors keep reading the cached copy.
@@ -568,6 +704,8 @@ class SourceTracker:
             return              # the device itself asks not to be tracked
         if id_category is None and tocall in AIRCRAFT_ONLY:
             return              # a node on the ground, not an aircraft
+        if tocall == REMOTE_ID:
+            id_category = DRONE_CATEGORY    # whatever the id declares (from 7 October 2026)
         label, kind = source_info(tocall)
         via = "radio" if kind == "adsb" or _radio_meta.search(body) else "net"
 
@@ -581,16 +719,23 @@ class SourceTracker:
         now, month = self._now, self._month
         day = now.day
         if day != self.seen_day:
-            self.seen = set()
+            self.seen = {}
             self.seen_day = day
         key = (month, tocall, via, src)
-        if key not in self.seen:
-            category = id_category
-            self.seen.add(key)
+        stored = self.seen.get(key, False)
+        if stored is False:
+            self.seen[key] = id_category
             try:
-                self.writes.put_nowait((month, tocall, via, src, category, now))
+                self.writes.put_nowait(("new", month, tocall, via, src, id_category, now))
             except queue.Full:
                 pass  # the writer is stuck; the next day retries
+        elif stored in GROUND_CATEGORIES and id_category in AIRCRAFT_CATEGORIES:
+            # Heard on the ground first, now flying (from 7 October 2026).
+            self.seen[key] = id_category
+            try:
+                self.writes.put_nowait(("category", month, tocall, via, src, id_category, now))
+            except queue.Full:
+                pass
 
         if kind != "adsb":
             self.measure(src, tocall, via, body, now, path[-1] if via == "radio" else None, id_category)
@@ -1039,7 +1184,11 @@ class SourceTracker:
         month is over its counts no longer change. So every month older than
         the previous one is reduced to counts in the *_summary tables and its
         addresses are deleted, in one transaction per table. The previous month
-        is kept whole for the month-to-month return of device ids.
+        is kept whole for the month-to-month return of device ids, and for the
+        per-pilot circling test, which reads the two months together. From
+        7 October 2026 the per-pilot thermals of nightly.py are archived the
+        same way, and each reduction also keeps what the figures that need
+        addresses publish (archive_once).
         """
         time.sleep(60)
         while True:
@@ -1047,39 +1196,70 @@ class SourceTracker:
             time.sleep(ARCHIVE_EVERY)
 
     def archive_once(self):
-        """One pass of archive_loop."""
+        """One pass of archive_loop.
+
+        Each table older than keep_from is reduced, in one transaction with
+        the deletion of its addresses, by every step listed for it: SQL run
+        with keep_from as its parameters, or a method given the cursor. From
+        7 October 2026 the reductions also keep what the figures that need
+        addresses would publish: systems per aircraft, the return of devices
+        from one month to the next, and the per-pilot circling test.
+        """
         today = datetime.datetime.utcnow().date().replace(day=1)
         keep_from = (today - datetime.timedelta(days=1)).strftime("%Y-%m")
+        older = "month < %s"
         steps = [
-            ("monthly_devices",
-             """INSERT INTO monthly_devices_summary (month, prefix, category, devices)
-                SELECT month, LEFT(device_id, 3), COALESCE(category, 255), COUNT(*)
-                    FROM monthly_devices WHERE month < %s
-                GROUP BY month, LEFT(device_id, 3), COALESCE(category, 255)"""),
-            ("monthly_sources",
-             f"""INSERT INTO monthly_sources_summary (month, source, via, category, devices, multi_day)
-                SELECT month, src, via, cat, COUNT(*), SUM(DATE(last_seen) > DATE(first_seen))
-                    FROM (SELECT month, {SAME_SYSTEM_SQL} AS src, via, device_id,
-                                 MIN(COALESCE(category, 255)) AS cat,
-                                 MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
-                              FROM monthly_sources WHERE month < %s AND {COUNTED_SQL} GROUP BY 1, 2, 3, 4) d
-                GROUP BY month, src, via, cat"""),
+            ("monthly_devices", older, [
+                """INSERT INTO monthly_devices_summary (month, prefix, category, devices)
+                   SELECT month, LEFT(device_id, 3), COALESCE(category, 255), COUNT(*)
+                       FROM monthly_devices WHERE month < %s
+                   GROUP BY month, LEFT(device_id, 3), COALESCE(category, 255)"""]),
+            ("monthly_sources", older, [
+                f"""INSERT INTO monthly_sources_summary (month, source, via, category, devices, multi_day)
+                   SELECT month, src, via, cat, COUNT(*), SUM(DATE(last_seen) > DATE(first_seen))
+                       FROM (SELECT month, {SAME_SYSTEM_SQL} AS src, via, device_id,
+                                    MIN(COALESCE(category, 255)) AS cat,
+                                    MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen
+                                 FROM monthly_sources WHERE month < %s AND {COUNTED_SQL} GROUP BY 1, 2, 3, 4) d
+                   GROUP BY month, src, via, cat""",
+                # Return: of the devices of a month, how many were heard again
+                # the month after, per source whatever the channel. The month
+                # after is the previous month at worst, so it is still whole.
+                f"""INSERT INTO monthly_return_summary (month, source, devices, returned)
+                   SELECT a.month, a.src, COUNT(*), SUM(b.device_id IS NOT NULL)
+                       FROM (SELECT DISTINCT month, {SAME_SYSTEM_SQL} AS src, device_id
+                                 FROM monthly_sources WHERE month < %s AND {COUNTED_SQL}) a
+                       LEFT JOIN (SELECT DISTINCT month, {SAME_SYSTEM_SQL} AS src, device_id
+                                      FROM monthly_sources WHERE {COUNTED_SQL}) b
+                         ON b.src = a.src AND b.device_id = a.device_id
+                        AND b.month = DATE_FORMAT(STR_TO_DATE(CONCAT(a.month, '-01'), '%%Y-%%m-%%d')
+                                                  + INTERVAL 1 MONTH, '%%Y-%%m')
+                   GROUP BY a.month, a.src""",
+                self.archive_systems]),
+            ("daily_circling_pilot", "day < CONCAT(%s, '-01')", [self.archive_circling]),
         ]
-        for table, summarise in steps:
+        for table, where, summaries in steps:
             conn = None
             try:
                 conn = self.connect_db()
                 conn.begin()
                 with conn.cursor() as cur:
-                    cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT month) FROM {table} WHERE month < %s", (keep_from,))
+                    month = "DATE_FORMAT(day, '%%Y-%%m')" if table.startswith("daily_") else "month"
+                    cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT {month}) FROM {table} WHERE {where}", (keep_from,))
                     n, months = cur.fetchone()
                     if n:
-                        cur.execute(summarise, (keep_from,))
-                        cur.execute(f"DELETE FROM {table} WHERE month < %s", (keep_from,))
+                        for summarise in summaries:
+                            if callable(summarise):
+                                summarise(cur, keep_from)
+                            else:
+                                cur.execute(summarise, (keep_from,) * summarise.count("%s"))
+                        cur.execute(f"DELETE FROM {table} WHERE {where}", (keep_from,))
                 conn.commit()
                 if n:
                     logger.info(f"Archived {table}: {n} addresses of {months} month(s) before {keep_from} reduced to counts")
                     self.stats_cache = (0, None)
+                    self.systems_cache = (0, None)
+                    self.patterns_cache = (0, None)
             except pymysql.MySQLError as e:
                 logger.error(f"Error archiving {table}: {e}")
                 if conn is not None:
@@ -1090,6 +1270,48 @@ class SourceTracker:
             finally:
                 if conn is not None:
                     conn.close()
+
+    def archive_systems(self, cur, keep_from):
+        """Systems per aircraft of the months being archived, as systems_stats publishes them."""
+        cur.execute(f"SELECT month, source, device_id, category FROM monthly_sources "
+                    f"WHERE month < %s AND {COUNTED_SQL}", (keep_from,))
+        for g in self.systems_groups(cur.fetchall()):
+            cat = UNKNOWN_CATEGORY if g["category"] is None else g["category"]
+            cur.execute("""INSERT INTO monthly_systems_summary
+                               (month, category, one, two, three_or_more, radio_and_phone, phone_only,
+                                other_combinations, adsl, adsl_with_flarm, adsl_with_fanet, adsl_only)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (g["month"], cat, g["one"], g["two"], g["three_or_more"], g["radio_and_phone"],
+                         g["phone_only"], g["other_combinations"], g["adsl"], g["adsl_with_flarm"],
+                         g["adsl_with_fanet"], g["adsl_only"]))
+            for c in g["combinations"]:
+                cur.execute("INSERT INTO monthly_systems_combo_summary (month, category, systems, aircraft) "
+                            "VALUES (%s, %s, %s, %s)", (g["month"], cat, c["systems"][:255], c["aircraft"]))
+
+    def archive_circling(self, cur, keep_from):
+        """The per-pilot circling figures of the months being archived, without addresses."""
+        cur.execute("""SELECT DATE_FORMAT(day, '%%Y-%%m'), category, SUM(right_hand + left_hand), SUM(right_hand)
+                           FROM daily_circling_pilot WHERE day < CONCAT(%s, '-01')
+                       GROUP BY 1, address, 2""", (keep_from,))
+        groups = collections.defaultdict(list)
+        for month, cat, n, r in cur.fetchall():
+            groups[(month, int(cat))].append((int(n), int(r)))
+        for (month, cat), pilots in groups.items():
+            bins = collections.Counter((sum(1 for e in THERMAL_BANDS if n >= e) - 1, min(9, int(r / n * 10)))
+                                       for n, r in pilots if n)
+            for (b, decile), k in bins.items():
+                cur.execute("INSERT INTO monthly_circling_pilot_summary "
+                            "(month, category, thermal_band, share_decile, pilots) VALUES (%s, %s, %s, %s, %s)",
+                            (month, cat, b, decile, k))
+            p = self.pooled_right(pilots)
+            for x in self.preference_sums(pilots, p):
+                cur.execute("""INSERT INTO monthly_circling_preference
+                                   (month, category, min_thermals, pilots, thermals, right_hand, chance_var_sum,
+                                    share_sum, share_sq_sum, right_80, left_80, expected_80)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (month, cat, x["min_thermals"], x["pilots"], sum(n for n, _ in pilots),
+                             sum(r for _, r in pilots), x["chance_var_sum"], x["share_sum"], x["share_sq_sum"],
+                             x["right_80"], x["left_80"], x["expected_80"]))
 
     def stat_lock(self, name):
         with self._stat_locks_guard:
@@ -1117,7 +1339,9 @@ class SourceTracker:
                                 ("grid previous", lambda: self.grid_stats(previous)),
                                 ("hours", self.hours_stats), ("systems", self.systems_stats),
                                 ("pattern", self.pattern_stats), ("sources", self.monthly_stats),
-                                ("visibility", self.visibility_stats)):
+                                ("visibility", self.visibility_stats), ("patterns", self.patterns_stats),
+                                ("drones", self.drones_stats), ("quality", self.quality_stats),
+                                ("snapshots", self.snapshots_stats)):
                     try:
                         f()
                     except Exception as e:      # one failing statistic must not stop the others
@@ -1252,54 +1476,82 @@ class SourceTracker:
                 with conn.cursor() as cur:
                     cur.execute(f"SELECT month, source, device_id, category FROM monthly_sources WHERE {COUNTED_SQL}")
                     rows = cur.fetchall()
+                    # Months whose addresses are gone, as archive_systems kept them.
+                    cur.execute("""SELECT month, category, one, two, three_or_more, radio_and_phone, phone_only,
+                                          other_combinations, adsl, adsl_with_flarm, adsl_with_fanet, adsl_only
+                                       FROM monthly_systems_summary""")
+                    archived = cur.fetchall()
+                    cur.execute("SELECT month, category, systems, aircraft FROM monthly_systems_combo_summary "
+                                "ORDER BY aircraft DESC")
+                    combos = collections.defaultdict(list)
+                    for month, cat, systems, n in cur.fetchall():
+                        combos[(month, int(cat))].append({"systems": systems, "aircraft": int(n)})
             finally:
                 conn.close()
-            systems = collections.defaultdict(set)
-            category = {}
-            for month, tocall, device_id, cat in rows:
-                addr = device_id[-6:]
-                label, kind = source_info(same_system(tocall, device_id))
-                if kind == "platform":
+            out = self.systems_groups(rows)
+            live = {g["month"] for g in out}
+            for r in archived:
+                if r[0] in live:
                     continue
-                cls = "phone" if kind == "app" else "tracker" if kind == "tracker" else "radio"
-                systems[(month, addr)].add((label, cls))
-                if cat is not None and cat != UNKNOWN_CATEGORY and (month, addr) not in category:
-                    category[(month, addr)] = int(cat)
-            groups = {}
-            for key, sys in systems.items():
-                if {x[0] for x in sys} == {"ADS-B"}:
-                    continue    # heard by ADS-B alone: almost all airliners, left out as everywhere else
-                month = key[0]
-                cat = category.get(key)
-                g = groups.setdefault((month, cat), {"n": [0, 0, 0], "radio_phone": 0, "phone_only": 0,
-                                                     "combos": collections.Counter(), "adsl": [0, 0, 0, 0]})
-                names = sorted({x[0] for x in sys})
-                classes = {x[1] for x in sys}
-                g["n"][min(len(names), 3) - 1] += 1
-                if "phone" in classes and "radio" in classes:
-                    g["radio_phone"] += 1
-                elif classes == {"phone"}:
-                    g["phone_only"] += 1
-                if len(names) > 1:
-                    g["combos"][" + ".join(names)] += 1
-                if "ADS-L" in names:
-                    a = g["adsl"]
-                    a[0] += 1
-                    a[1] += "FLARM" in names
-                    a[2] += "FANET" in names
-                    a[3] += len(names) == 1
-            out = []
-            for (month, cat), g in sorted(groups.items(), key=lambda x: (x[0][0], x[0][1] if x[0][1] is not None else -1)):
-                combos = [{"systems": k, "aircraft": v} for k, v in g["combos"].most_common() if v >= SYSTEMS_MIN_COMBO]
-                pooled = sum(v for v in g["combos"].values() if v < SYSTEMS_MIN_COMBO)
-                out.append({"month": month, "category": cat,
-                            "one": g["n"][0], "two": g["n"][1], "three_or_more": g["n"][2],
-                            "radio_and_phone": g["radio_phone"], "phone_only": g["phone_only"],
-                            "combinations": combos, "other_combinations": pooled,
-                            "adsl": g["adsl"][0], "adsl_with_flarm": g["adsl"][1],
-                            "adsl_with_fanet": g["adsl"][2], "adsl_only": g["adsl"][3]})
+                cat = int(r[1])
+                out.append({"month": r[0], "category": None if cat == UNKNOWN_CATEGORY else cat,
+                            "one": int(r[2]), "two": int(r[3]), "three_or_more": int(r[4]),
+                            "radio_and_phone": int(r[5]), "phone_only": int(r[6]),
+                            "combinations": combos.get((r[0], cat), []), "other_combinations": int(r[7]),
+                            "adsl": int(r[8]), "adsl_with_flarm": int(r[9]), "adsl_with_fanet": int(r[10]),
+                            "adsl_only": int(r[11])})
+            out.sort(key=lambda g: (g["month"], g["category"] if g["category"] is not None else -1))
             self.systems_cache = (time.time(), out)
             return out
+
+    @staticmethod
+    def systems_groups(rows):
+        """Systems per aircraft from (month, source, device_id, category) rows; counts only."""
+        systems = collections.defaultdict(set)
+        category = {}
+        for month, tocall, device_id, cat in rows:
+            addr = device_id[-6:]
+            label, kind = source_info(same_system(tocall, device_id))
+            if kind == "platform":
+                continue
+            cls = "phone" if kind == "app" else "tracker" if kind == "tracker" else "radio"
+            systems[(month, addr)].add((label, cls))
+            if cat is not None and cat != UNKNOWN_CATEGORY and (month, addr) not in category:
+                category[(month, addr)] = int(cat)
+        groups = {}
+        for key, sys in systems.items():
+            if {x[0] for x in sys} == {"ADS-B"}:
+                continue    # heard by ADS-B alone: almost all airliners, left out as everywhere else
+            month = key[0]
+            cat = category.get(key)
+            g = groups.setdefault((month, cat), {"n": [0, 0, 0], "radio_phone": 0, "phone_only": 0,
+                                                 "combos": collections.Counter(), "adsl": [0, 0, 0, 0]})
+            names = sorted({x[0] for x in sys})
+            classes = {x[1] for x in sys}
+            g["n"][min(len(names), 3) - 1] += 1
+            if "phone" in classes and "radio" in classes:
+                g["radio_phone"] += 1
+            elif classes == {"phone"}:
+                g["phone_only"] += 1
+            if len(names) > 1:
+                g["combos"][" + ".join(names)] += 1
+            if "ADS-L" in names:
+                a = g["adsl"]
+                a[0] += 1
+                a[1] += "FLARM" in names
+                a[2] += "FANET" in names
+                a[3] += len(names) == 1
+        out = []
+        for (month, cat), g in sorted(groups.items(), key=lambda x: (x[0][0], x[0][1] if x[0][1] is not None else -1)):
+            combos = [{"systems": k, "aircraft": v} for k, v in g["combos"].most_common() if v >= SYSTEMS_MIN_COMBO]
+            pooled = sum(v for v in g["combos"].values() if v < SYSTEMS_MIN_COMBO)
+            out.append({"month": month, "category": cat,
+                        "one": g["n"][0], "two": g["n"][1], "three_or_more": g["n"][2],
+                        "radio_and_phone": g["radio_phone"], "phone_only": g["phone_only"],
+                        "combinations": combos, "other_combinations": pooled,
+                        "adsl": g["adsl"][0], "adsl_with_flarm": g["adsl"][1],
+                        "adsl_with_fanet": g["adsl"][2], "adsl_only": g["adsl"][3]})
+        return out
 
     def pattern_stats(self):
         """Received radio packets while circling, by source, category, distance band and sector."""
@@ -1358,6 +1610,300 @@ class SourceTracker:
                 out.append(d)
             self.prediction_cache = (time.time(), out)
             return out
+
+    # --- the nightly measures (nightly.py, METHOD.md section 10) ------------
+
+    def _cached(self, name, attr, compute):
+        """The cache and lock pattern of the statistics above, for one more."""
+        stamp, cached = getattr(self, attr)
+        if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock(name):
+            stamp, cached = getattr(self, attr)
+            if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
+                return cached
+            conn = self.connect_db()
+            try:
+                with conn.cursor() as cur:
+                    out = compute(cur)
+            finally:
+                conn.close()
+            setattr(self, attr, (time.time(), out))
+            return out
+
+    @staticmethod
+    def _nightly_days(cur):
+        cur.execute("SELECT day, hours_read, hours_missing FROM nightly_runs ORDER BY day")
+        return [{"day": r[0].isoformat(), "hours_read": int(r[1]),
+                 "hours_missing": [int(h) for h in r[2].split(",") if h]} for r in cur.fetchall()]
+
+    @staticmethod
+    def pooled_right(pilots):
+        """The share of right-hand thermals among all of these pilots' thermals."""
+        total = sum(n for n, _ in pilots)
+        return sum(r for _, r in pilots) / total if total else None
+
+    @staticmethod
+    def preference_sums(pilots, p):
+        """The sums the per-pilot test is made of (METHOD.md, section 10.2).
+
+        `pilots` is a list of (thermals, right-hand thermals), `p` the share of
+        right-hand thermals in the population. If every pilot chose each side
+        with probability p, the right-hand share of a pilot with n thermals
+        would vary by p(1-p)/n; an observed variance larger than that, and
+        more pilots at 80% or more on one side than the binomial expects,
+        point to personal preference (or to gaggles, which a pilot follows).
+        Kept as sums so that an archived month, whose addresses are gone,
+        still gives the same figures (archive_circling).
+        """
+        out = []
+        for nmin in PREFERENCE_MIN_THERMALS:
+            sel = [(n, r) for n, r in pilots if n >= nmin]
+            x = {"min_thermals": nmin, "pilots": len(sel), "chance_var_sum": 0.0, "share_sum": 0.0,
+                 "share_sq_sum": 0.0, "right_80": 0, "left_80": 0, "expected_80": 0.0}
+            for n, r in sel:
+                share = r / n
+                x["share_sum"] += share
+                x["share_sq_sum"] += share * share
+                x["right_80"] += share >= 0.8
+                x["left_80"] += share <= 0.2
+                if p is not None:
+                    x["chance_var_sum"] += p * (1 - p) / n
+                    x["expected_80"] += sum(math.comb(n, j) * p ** j * (1 - p) ** (n - j)
+                                            for j in range(n + 1) if j / n >= 0.8 or j / n <= 0.2)
+            out.append(x)
+        return out
+
+    @staticmethod
+    def preference_row(x, p, histogram):
+        """The published row of one preference test, from its sums."""
+        n = x["pilots"]
+        row = {"min_thermals": x["min_thermals"], "pilots": n, "p_right": round(p, 4) if p is not None else None,
+               "observed_var": None, "chance_var": None, "ratio": None,
+               "right_80": None, "left_80": None, "expected_80": None, "histogram": None}
+        if n >= 5 and p is not None and 0 < p < 1:
+            mean = x["share_sum"] / n
+            obs = max(0.0, x["share_sq_sum"] / n - mean * mean)
+            chance = x["chance_var_sum"] / n
+            row.update(observed_var=round(obs, 5), chance_var=round(chance, 5),
+                       ratio=round(obs / chance, 2) if chance else None,
+                       right_80=int(x["right_80"]), left_80=int(x["left_80"]),
+                       expected_80=round(x["expected_80"], 1), histogram=histogram)
+        return row
+
+    @classmethod
+    def preference_test(cls, pilots, p):
+        """The published rows of the test for a list of (thermals, right-hand thermals)."""
+        out = []
+        for x in cls.preference_sums(pilots, p):
+            hist = collections.Counter(min(9, int(r / n * 10)) for n, r in pilots if n >= x["min_thermals"])
+            out.append(cls.preference_row(x, p, [hist[b] for b in range(10)]))
+        return out
+
+    def patterns_stats(self):
+        """Flying time by local solar hour and weekday, circling direction, parked aircraft."""
+        def compute(cur):
+            cur.execute("""SELECT DATE_FORMAT(local_date, '%Y-%m'), WEEKDAY(local_date), solar_hour, category,
+                                  SUM(air_seconds), SUM(aircraft)
+                               FROM daily_hours_solar GROUP BY 1, 2, 3, 4""")
+            hours = [{"month": r[0], "weekday": int(r[1]), "solar_hour": int(r[2]),
+                      "category": None if r[3] == UNKNOWN_CATEGORY else int(r[3]),
+                      "air_seconds": float(r[4]), "aircraft_hours": int(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(local_date, '%Y-%m'), WEEKDAY(local_date), COUNT(DISTINCT local_date)
+                               FROM daily_hours_solar GROUP BY 1, 2""")
+            dates = [{"month": r[0], "weekday": int(r[1]), "dates": int(r[2])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), category, SUM(thermals_right), SUM(thermals_left),
+                                  SUM(degrees_right), SUM(degrees_left), SUM(seconds_right), SUM(seconds_left),
+                                  SUM(aircraft)
+                               FROM daily_circling GROUP BY 1, 2""")
+            circling = [{"month": r[0], "category": int(r[1]), "thermals_right": int(r[2]), "thermals_left": int(r[3]),
+                         "degrees_right": float(r[4]), "degrees_left": float(r[5]),
+                         "seconds_right": float(r[6]), "seconds_left": float(r[7]), "aircraft_days": int(r[8])}
+                        for r in cur.fetchall()]
+            p_month = {(c["month"], c["category"]): c["thermals_right"] / (c["thermals_right"] + c["thermals_left"])
+                       for c in circling if c["thermals_right"] + c["thermals_left"]}
+            # The per-pilot test over the months whose addresses are kept.
+            now = datetime.datetime.utcnow().date()
+            since = (now.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
+            cur.execute("""SELECT category, SUM(right_hand + left_hand), SUM(right_hand)
+                               FROM daily_circling_pilot WHERE day >= %s GROUP BY address, category""", (since,))
+            by_cat = collections.defaultdict(list)
+            for cat, n, r in cur.fetchall():
+                by_cat[int(cat)].append((int(n), int(r)))
+            preference = []
+            for cat, pilots in sorted(by_cat.items()):
+                p = self.pooled_right(pilots)
+                for row in self.preference_test(pilots, p):
+                    preference.append(dict({"from": since.isoformat(), "to": now.isoformat(), "category": cat}, **row))
+            # Archived months: the same test month by month, from the sums
+            # kept when their addresses were deleted (archive_circling).
+            cur.execute("""SELECT month, category, thermal_band, share_decile, pilots
+                               FROM monthly_circling_pilot_summary""")
+            deciles = collections.defaultdict(lambda: [0] * 10)
+            for month, cat, b, decile, k in cur.fetchall():
+                for nmin in PREFERENCE_MIN_THERMALS:
+                    if THERMAL_BANDS[int(b)] >= nmin:
+                        deciles[(month, int(cat), nmin)][int(decile)] += int(k)
+            cur.execute("""SELECT month, category, min_thermals, pilots, thermals, right_hand, chance_var_sum,
+                                  share_sum, share_sq_sum, right_80, left_80, expected_80
+                               FROM monthly_circling_preference ORDER BY month, category, min_thermals""")
+            for r in cur.fetchall():
+                x = dict(zip(("min_thermals", "pilots"), (int(r[2]), int(r[3]))),
+                         chance_var_sum=float(r[6]), share_sum=float(r[7]), share_sq_sum=float(r[8]),
+                         right_80=int(r[9]), left_80=int(r[10]), expected_80=float(r[11]))
+                p = int(r[5]) / int(r[4]) if r[4] else None
+                row = self.preference_row(x, p, deciles.get((r[0], int(r[1]), int(r[2]))))
+                preference.append(dict({"from": r[0] + "-01", "to": r[0], "category": int(r[1])}, **row))
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), category_a, category_b, SUM(same_side), SUM(opposite_side)
+                               FROM daily_gaggles GROUP BY 1, 2, 3""")
+            gaggles = []
+            for month, a, b, same, opp in cur.fetchall():
+                pa, pb = p_month.get((month, int(a))), p_month.get((month, int(b)))
+                # Two pilots choosing a side independently agree with this probability.
+                expected = pa * pb + (1 - pa) * (1 - pb) if pa is not None and pb is not None else None
+                gaggles.append({"month": month, "category_a": int(a), "category_b": int(b), "same_side": int(same),
+                                "opposite_side": int(opp),
+                                "same_share_by_chance": round(expected, 4) if expected is not None else None})
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), system_name, category, SUM(aircraft), SUM(seconds), SUM(packets)
+                               FROM daily_parked GROUP BY 1, 2, 3""")
+            parked = [{"month": r[0], "system": r[1], "category": int(r[2]), "aircraft_days": int(r[3]),
+                       "seconds": float(r[4]), "packets": int(r[5])} for r in cur.fetchall()]
+            return {"days": self._nightly_days(cur), "hours": hours, "dates": dates, "circling": circling,
+                    "preference": preference, "gaggles": gaggles, "parked": parked}
+        return self._cached("patterns", "patterns_cache", compute)
+
+    def drones_stats(self):
+        """Drones per 1-degree cell, height and speed band, systems, extent and encounters."""
+        def compute(cur):
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, SUM(air_seconds), SUM(aircraft)
+                               FROM daily_drone_cells GROUP BY 1, 2, 3""")
+            cells = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "air_seconds": float(r[3]),
+                      "drone_days": int(r[4])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), height_band, speed_band, SUM(air_seconds)
+                               FROM daily_drones GROUP BY 1, 2, 3""")
+            bands = [{"month": r[0], "height_band": None if r[1] == UNKNOWN_BAND else int(r[1]),
+                      "speed_band": int(r[2]), "air_seconds": float(r[3])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), systems, SUM(air_seconds)
+                               FROM daily_drones GROUP BY 1, 2""")
+            systems = [{"month": r[0], "systems": r[1], "air_seconds": float(r[2])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), extent_band, SUM(drones)
+                               FROM daily_drone_extent GROUP BY 1, 2""")
+            extent = [{"month": r[0], "extent_band": int(r[1]), "drone_days": int(r[2])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), drone_systems, other_category, other_systems,
+                                  distance_band, shared_system, SUM(encounters)
+                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5, 6""")
+            encounters = [{"month": r[0], "drone_systems": r[1], "other_category": int(r[2]), "other_systems": r[3],
+                           "distance_band": int(r[4]), "shared_system": bool(r[5]), "encounters": int(r[6])}
+                          for r in cur.fetchall()]
+            return {"days": self._nightly_days(cur), "height_bands_m": [0, 50, 120, 300],
+                    "speed_bands_kmh": [0, 20, 50, 100], "extent_bands_m": [0, 1000, 3000, 10000],
+                    "distance_bands_m": [0, 300, 600, 1000], "cells": cells, "bands": bands, "systems": systems,
+                    "extent": extent, "encounters": encounters}
+        return self._cached("drones", "drones_cache", compute)
+
+    def quality_stats(self, month=None):
+        """Data-quality findings per system and per OGN receiver, last 7 days and this month.
+
+        With `month` (YYYY-MM, for the monthly snapshot), the last 7 days and
+        the whole of that month instead, uncached.
+        """
+        def compute(cur):
+            if month:
+                first = month + "-01"
+                windows = (("last_7_days", f"day > LAST_DAY('{first}') - INTERVAL 7 DAY AND day <= LAST_DAY('{first}')"),
+                           ("this_month", f"day >= '{first}' AND day <= LAST_DAY('{first}')"))
+            else:
+                windows = (("last_7_days", "day >= CURDATE() - INTERVAL 7 DAY"),
+                           ("this_month", "day >= DATE_FORMAT(CURDATE(), '%Y-%m-01')"))
+            systems, receivers, summary = [], [], []
+            for label, where in windows:
+                cur.execute(f"""SELECT name, check_name, SUM(count), SUM(total) FROM daily_quality
+                                    WHERE scope = 'system' AND {where} GROUP BY 1, 2""")
+                systems += [{"window": label, "system": r[0], "check": r[1], "count": int(r[2]), "total": int(r[3])}
+                            for r in cur.fetchall()]
+                cur.execute(f"""SELECT name, check_name, COUNT(*), SUM(count), SUM(total), AVG(value), MAX(day)
+                                    FROM daily_quality
+                                    WHERE scope = 'receiver' AND name <> '*' AND {where} GROUP BY 1, 2""")
+                receivers += [{"window": label, "receiver": r[0], "check": r[1], "days_flagged": int(r[2]),
+                               "count": int(r[3]), "total": int(r[4]),
+                               "value": round(float(r[5]), 4) if r[5] is not None else None,
+                               "last_flagged": r[6].isoformat()} for r in cur.fetchall()]
+                cur.execute(f"""SELECT check_name, SUM(count), SUM(total), COUNT(*) FROM daily_quality
+                                    WHERE scope = 'receiver' AND name = '*' AND {where} GROUP BY 1""")
+                summary += [{"window": label, "check": r[0], "receiver_days_flagged": int(r[1]),
+                             "receiver_days_judged": int(r[2]), "days": int(r[3])} for r in cur.fetchall()]
+            return {"days": self._nightly_days(cur), "systems": systems, "receivers": receivers,
+                    "receivers_summary": summary}
+        if month:
+            if not re.fullmatch(r"\d{4}-\d{2}", month):
+                raise ValueError(month)
+            conn = self.connect_db()
+            try:
+                with conn.cursor() as cur:
+                    return compute(cur)
+            finally:
+                conn.close()
+        return self._cached("quality", "quality_cache", compute)
+
+    # --- monthly snapshots (METHOD.md, section 9) ---------------------------
+
+    SNAPSHOT_ENDPOINTS = ("adsl/monthly", "sources", "hours", "systems", "visibility", "visibility/detail",
+                          "visibility/grid", "pattern", "prediction", "patterns", "drones", "quality")
+
+    def snapshot_bodies(self, month):
+        """What every statistics endpoint publishes, for the snapshot of `month`.
+
+        The same functions the endpoints call, so a snapshot is the page's
+        data as it stood the night after the month ended; the grid and the
+        data-quality windows are those of that month. adsl/monthly needs only
+        the database; the rest are read through this tracker, whose caches are
+        empty in nightly.py, so nothing is stale.
+        """
+        calls = (
+            ("adsl/monthly", lambda: adsl_monthly_stats(self.connect_db)),
+            ("sources", self.monthly_stats), ("hours", self.hours_stats), ("systems", self.systems_stats),
+            ("visibility", self.visibility_stats), ("visibility/detail", self.detail_stats),
+            ("visibility/grid", lambda: self.grid_stats(month)), ("pattern", self.pattern_stats),
+            ("prediction", self.prediction_stats), ("patterns", self.patterns_stats),
+            ("drones", self.drones_stats), ("quality", lambda: self.quality_stats(month)),
+        )
+        out = {}
+        for name, f in calls:
+            try:
+                out[name] = f()
+            except Exception as e:      # one failing statistic must not cost the others their snapshot
+                logger.error(f"Snapshot {month} {name}: {e}")
+        return out
+
+    def snapshots_stats(self):
+        """The monthly snapshots on record: month, endpoint, METHOD.md commit, date, size."""
+        def compute(cur):
+            cur.execute("SELECT month, endpoint, method_commit, deployed_commit, created_at, bytes "
+                        "FROM monthly_snapshot ORDER BY month, endpoint")
+            return [{"month": r[0], "endpoint": r[1], "method_commit": r[2], "deployed_commit": r[3],
+                     "created_at": r[4].isoformat(), "bytes": int(r[5])} for r in cur.fetchall()]
+        return self._cached("snapshots", "snapshots_cache", compute)
+
+    def snapshot_body(self, month, endpoint):
+        """One snapshot as the JSON text it was stored as, or None."""
+        key = (month, endpoint)
+        stamp, body = self.snapshot_cache.get(key, (0, None))
+        if body is not None and time.time() - stamp < STATS_CACHE_SECONDS:
+            return body
+        conn = self.connect_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT body FROM monthly_snapshot WHERE month = %s AND endpoint = %s", key)
+                r = cur.fetchone()
+        finally:
+            conn.close()
+        if r is None:
+            return None
+        body = zlib.decompress(r[0]).decode("utf-8")
+        if len(self.snapshot_cache) > 50:
+            self.snapshot_cache.clear()
+        self.snapshot_cache[key] = (time.time(), body)
+        return body
 
     def grid_stats(self, month=None):
         """Per 0.25-degree cell, group and channel for one month (default: current)."""
@@ -1421,8 +1967,14 @@ class SourceTracker:
     def write_batch(conn, batch):
         # INSERT IGNORE for a new device, then last_seen for every row: after
         # a restart `seen` is empty, and the row may well exist already.
-        inserts = [(m, s, v, d, c, n, n) for m, s, v, d, c, n in batch]
-        touches = [(n, m, s, v, d) for m, s, v, d, c, n in batch]
+        news = [x[1:] for x in batch if x[0] == "new"]
+        inserts = [(m, s, v, d, c, n, n) for m, s, v, d, c, n in news]
+        touches = [(n, m, s, v, d) for m, s, v, d, c, n in news]
+        # An aircraft category replaces a stored ground one (GROUND_CATEGORIES),
+        # whether the device was first heard on the ground today or on an
+        # earlier day of the month. Last, so that a missing privilege cannot
+        # hold up the two statements above.
+        upgrades = [(c, m, s, v, d) for _, m, s, v, d, c, n in batch if c in AIRCRAFT_CATEGORIES]
         with conn.cursor() as cur:
             cur.executemany(
                 """INSERT IGNORE INTO monthly_sources
@@ -1435,6 +1987,8 @@ class SourceTracker:
                    WHERE month = %s AND source = %s AND via = %s AND device_id = %s""",
                 touches,
             )
+            if upgrades:
+                cur.executemany(UPGRADE_CATEGORY_SQL, upgrades)
 
     # --- read side ----------------------------------------------------------
 
@@ -1500,6 +2054,13 @@ class SourceTracker:
                             FROM monthly_sources_summary
                     """)
                     cat_rows = cur.fetchall()
+                    # Of a month's devices, how many were heard again the month
+                    # after, kept when the month was archived (from 7 October 2026).
+                    cur.execute("SELECT month, source, devices, returned FROM monthly_return_summary")
+                    returns = collections.defaultdict(list)
+                    for month, tocall, n, back in cur.fetchall():
+                        returns[month].append({"source": tocall, "label": source_info(tocall)[0],
+                                               "devices": int(n), "heard_next_month": int(back)})
             finally:
                 conn.close()
             current = datetime.datetime.utcnow().strftime("%Y-%m")
@@ -1519,7 +2080,7 @@ class SourceTracker:
                     "devices": int(n), "multi_day": int(multi or 0),
                 })
             out = [{"month": m, "partial": m == current, "sources": months[m],
-                    "by_category": by_cat.get(m, [])}
+                    "by_category": by_cat.get(m, []), "return": returns.get(m, [])}
                    for m in sorted(months, reverse=True)]
             self.stats_cache = (time.time(), out)
             return out

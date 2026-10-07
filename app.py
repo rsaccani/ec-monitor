@@ -72,29 +72,8 @@ DEVICE_TYPE_URL = "https://ddb.glidernet.org/download/"
 
 # ---  SUPPORT FUNCTIONS ---
 
-# Aircraft category carried in bits 2-5 of the first byte of the OGN "idXXYYYYYY"
-# field (bits 0-1 are the address type, 6 no-track, 7 stealth).
-AIRCRAFT_CATEGORIES = {
-    0: "Unknown",
-    1: "Glider",
-    2: "Tow plane",
-    3: "Helicopter",
-    4: "Skydiver",
-    5: "Drop plane",
-    6: "Hang glider",
-    7: "Paraglider",
-    8: "Powered aircraft",
-    9: "Jet aircraft",
-    10: "Unknown",
-    11: "Balloon",
-    12: "Airship",
-    13: "Drone",
-    14: "Unknown",
-    15: "Static object",
-}
-
-
-
+# Names of the aircraft categories in the OGN id (sources.CATEGORY_NAMES).
+AIRCRAFT_CATEGORIES = sources.CATEGORY_NAMES
 
 
 def get_aircraft_type_description(symbol1, symbol2):
@@ -152,8 +131,8 @@ def get_db_connection(max_retries=30, retry_delay=10):
     raise Exception("Cannot connect to database after many attempts.")
 
 
-# (month, device_id) pairs whose category is already in the database.
-categorised_seen = set()
+# (month, device_id) -> the category last written to the database.
+categorised_seen = {}
 
 # Errors that repeat identically on every attempt, so retrying only stalls the
 # listener: access denied (1044, 1045), command or column denied (1142, 1143),
@@ -186,19 +165,26 @@ def record_monthly_device(device_id, device_type, category=None):
                     # the first time the device is heard again. A separate
                     # UPDATE, because ON DUPLICATE KEY UPDATE needs the UPDATE
                     # privilege on every inserted column, and ads_user has it
-                    # on `category` only. Once per device and month.
+                    # on `category` only. Once per device and month, and once
+                    # more when a device first heard on the ground (category
+                    # 14 or 15, sources.GROUND_CATEGORIES) declares an aircraft,
+                    # which then replaces it (from 7 October 2026).
                     key = (month, device_id)
-                    if category is not None and key not in categorised_seen:
+                    written = categorised_seen.get(key, False)
+                    upgrade = category in sources.AIRCRAFT_CATEGORIES
+                    if category is not None and (written is False or
+                                                 (upgrade and written in sources.GROUND_CATEGORIES)):
                         cur.execute(
                             """
                             UPDATE monthly_devices SET category = %s
-                            WHERE month = %s AND device_id = %s AND category IS NULL
+                            WHERE month = %s AND device_id = %s
+                              AND (category IS NULL OR (%s AND category IN (14, 15)))
                             """,
-                            (category, month, device_id),
+                            (category, month, device_id, upgrade),
                         )
                         if len(categorised_seen) > 200000:
                             categorised_seen.clear()
-                        categorised_seen.add(key)
+                        categorised_seen[key] = category
                 break  # Se tutto va bene, esci dal loop
         except pymysql.MySQLError as e:
             main_logger.error(
@@ -603,83 +589,19 @@ def get_ads_l():
     return jsonify(out)
 
 
-# Address type, from the callsign prefix OGN gives each beacon. Random addresses
-# change at every power-up or more often, so one device can count several times.
-ADDRESS_PREFIXES = {"ICA": "icao", "FLR": "flarm", "OGN": "ogn", "RND": "random",
-                    "PAW": "pilotaware", "FNT": "fanet"}
-
-
 @app.route(API + "/adsl/monthly")
 def ads_l_stats():
-    """Per-month counts, oldest month last (as before), every month on record.
-
-    `devices` is the total distinct addresses, unchanged for older clients.
-    `addresses` splits it by address type, `categories` by aircraft category
-    (recorded only since the column was added; `categorised` says how many rows
-    have one) and `partial` marks the current UTC month.
-    """
+    """ADS-L devices per month, by address type and category (sources.adsl_monthly_stats)."""
     # A connection of its own: pymysql connections are not thread-safe, and
     # sharing the listener's one corrupted it whenever a page view coincided
     # with a write.
     if SKIP_STATS_DATABASE:
         return "[]"
     try:
-        db = get_db_connection(max_retries=1)
+        out = sources.adsl_monthly_stats(lambda: get_db_connection(max_retries=1))
     except Exception as e:
-        main_logger.error(f"Stats: no database connection: {e}")
+        main_logger.error(f"Error reading the ADS-L monthly counts: {e}")
         return "[]"
-    try:
-        with db.cursor() as cur:
-            # Older months live only as counts in monthly_devices_summary
-            # (sources.archive_loop), with 255 for "no category recorded".
-            cur.execute("""
-                SELECT month, LEFT(device_id, 3), COUNT(*)
-                    FROM monthly_devices
-                GROUP BY month, LEFT(device_id, 3)
-                UNION ALL
-                SELECT month, prefix, SUM(devices)
-                    FROM monthly_devices_summary
-                GROUP BY month, prefix
-            """)
-            by_prefix = cur.fetchall()
-            cur.execute("""
-                SELECT month, category, COUNT(*)
-                    FROM monthly_devices
-                WHERE category IS NOT NULL
-                GROUP BY month, category
-                UNION ALL
-                SELECT month, category, SUM(devices)
-                    FROM monthly_devices_summary
-                WHERE category <> 255
-                GROUP BY month, category
-            """)
-            by_category = cur.fetchall()
-    finally:
-        db.close()
-
-    months = {}
-    # COUNT(*) united with SUM() comes back as DECIMAL, which jsonify would
-    # turn into strings: hence the int().
-    for month, prefix, n in by_prefix:
-        n = int(n)
-        m = months.setdefault(month, {"month": month, "devices": 0, "addresses": {},
-                                      "categories": {}, "categorised": 0})
-        kind = ADDRESS_PREFIXES.get(prefix, "other")
-        m["devices"] += n
-        m["addresses"][kind] = m["addresses"].get(kind, 0) + n
-    for month, code, n in by_category:
-        n = int(n)
-        m = months.get(month)
-        if m is None:
-            continue
-        name = AIRCRAFT_CATEGORIES.get(code, "Unknown")
-        m["categories"][name] = m["categories"].get(name, 0) + n
-        m["categorised"] += n
-
-    current = datetime.datetime.utcnow().strftime("%Y-%m")
-    out = sorted(months.values(), key=lambda m: m["month"], reverse=True)
-    for m in out:
-        m["partial"] = m["month"] == current
     return respond(out, "ads-l-monthly")
 
 
@@ -810,6 +732,81 @@ def get_prediction():
     except pymysql.MySQLError as e:
         main_logger.error(f"Error reading monthly_prediction: {e}")
         return jsonify([])
+
+
+def respond_parts(out, name):
+    """A statistic made of several lists: JSON as it is, or one CSV with a `part` column."""
+    if request.args.get("format") != "csv":
+        return jsonify(out)
+    return respond([dict({"part": part}, **row) for part, rows in out.items() for row in rows], name)
+
+
+@app.route(API + "/patterns")
+def get_patterns():
+    """Flying time by solar hour and weekday, circling direction, parked aircraft (METHOD.md, section 10)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        return respond_parts(tracker.patterns_stats(), "patterns")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading the nightly patterns: {e}")
+        return jsonify({})
+
+
+@app.route(API + "/drones")
+def get_drones():
+    """Drones by cell, height, speed, systems and extent, and their encounters (METHOD.md, section 10)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        return respond_parts(tracker.drones_stats(), "drones")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading the nightly drone tables: {e}")
+        return jsonify({})
+
+
+@app.route(API + "/quality")
+def get_quality():
+    """Data-quality findings per system and per OGN receiver (METHOD.md, section 10)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        return respond_parts(tracker.quality_stats(), "data-quality")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_quality: {e}")
+        return jsonify({})
+
+
+@app.route(API + "/snapshots")
+def get_snapshots():
+    """The monthly snapshots on record (METHOD.md, section 9), each a download of /snapshot."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify([])
+    try:
+        return respond(tracker.snapshots_stats(), "snapshots")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading monthly_snapshot: {e}")
+        return jsonify([])
+
+
+@app.route(API + "/snapshot")
+def get_snapshot():
+    """?month=YYYY-MM&endpoint=name: what that endpoint published the night after the month ended."""
+    month, endpoint = request.args.get("month", ""), request.args.get("endpoint", "")
+    if not re.fullmatch(r"\d{4}-\d{2}", month) or endpoint not in sources.SourceTracker.SNAPSHOT_ENDPOINTS:
+        return jsonify({"error": "month=YYYY-MM and endpoint=one of /snapshots"}), 400
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({"error": "no database"}), 503
+    try:
+        body = tracker.snapshot_body(month, endpoint)
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading monthly_snapshot: {e}")
+        return jsonify({"error": "not available"}), 503
+    if body is None:
+        return jsonify({"error": "no such snapshot"}), 404
+    name = f"ec-monitor-{month}-{endpoint.replace('/', '-')}.json"
+    return app.response_class(body, mimetype="application/json",
+                              headers={"Content-Disposition": f'inline; filename="{name}"'})
 
 
 _method_cache = (0, None)
