@@ -16,9 +16,15 @@ The rules of METHOD.md apply throughout: the same sources and exclusions,
 the owners' choices in the OGN device database, the time written in the
 fix, the airborne speeds per kind (section 1), the implausible fixes, one
 aircraft one 24-bit address, the day's majority category (section 10), and
-ADS-B left out of every measure here. Only aggregates are kept and
+ADS-B left out of every measure of sections 1 to 8 (sections 9 to 11
+use it, for powered aircraft and helicopters). Only aggregates are kept and
 published. As there, a rule is published before its data, and every later
 change is dated here and in the log at the end.
+
+The measures here are computed each night at 01:30 UTC by the same run as
+those of METHOD.md (section 10 there), and written after them in a
+transaction of their own, so a failure here never touches the conspicuity
+figures, nor theirs these (from 7 October 2026).
 
 ## 1. When each kind of aircraft flies
 
@@ -97,7 +103,9 @@ above it may explain.
 ## 3. Thermals: radius, strength, and thermals shared by different kinds
 
 The thermals are those of section 2, one system per aircraft, for gliders,
-hang gliders and paragliders.
+hang gliders and paragliders, each kind apart (paragliders and hang gliders
+circle at different radii and speeds), with free flight also given as the
+two together.
 
 **Radius.** The radius of a circle is its circumference divided by 2π, and
 over whole turns the circumference is the distance flown along the circles.
@@ -164,17 +172,33 @@ section 6).
 
 ## 6. Flights
 
-A flight is the airborne time of one address between silences or ground
-stops longer than 20 minutes, the session of METHOD.md section 1. For each:
-its duration (under 10 minutes, 10–30, 30–60, 1–2 h, 2–4 h, 4–8 h, over
-8 h), its largest distance from where it began (under 1, 1–5, 5–20, 20–50,
-50–100, 100–300, over 300 km), the length of its path (under 5, 5–20, 20–50,
-50–100, 100–300, 300–500, over 500 km), and the local solar hour of its
-first airborne fix, by kind. A flight belongs to the day it began. An
-aircraft that leaves coverage for more than 20 minutes makes two flights,
-and a pilot who lands and takes off again within 20 minutes makes one: the
-counts are of what the network sees, which for free flight in the mountains
-is shorter than what was flown.
+A flight is the airborne time of one aircraft from the time it is first
+heard airborne to the time it lands or is lost for good. Unlike the
+20-minute session of METHOD.md section 1, which stays as it is for flying
+time, a flight goes on across a silence of any length up to **2 hours**
+when the aircraft was airborne on both sides, more than **150 m** above the
+ground on both sides, and the distance between the two sides could be
+flown in the time at the fastest its kind flies (70 km/h for a paraglider,
+120 for a hang glider, 280 for a glider, 350 for a powered aircraft, 900
+for a jet, 300 for a helicopter, 150 for a drone): a glider out of coverage
+for half an hour behind a ridge is one flight. A silence that ends or
+begins near the ground (a landing), a fix of the aircraft standing on the
+ground (at most 3 kt, within 30 m of the terrain model) after its last
+airborne one (a stop on the field, a relaunch on the hill), a silence
+longer than 2 hours, or a distance too long for the time ends the flight.
+Slow flight low over a ridge does not end it: a paraglider soaring into the
+wind can hold almost still over the ground without landing. The standing-still rule applies to gliders, free flight and
+fixed-wing powered aircraft only; a helicopter or a drone hovering low
+looks the same as one that has landed, so theirs end only on a silence. The path across a silence is counted as the straight line
+between its two sides, so path lengths are a lower bound.
+
+For each flight: its duration (under 10 minutes, 10–30, 30–60, 1–2 h,
+2–4 h, 4–8 h, over 8 h), its largest distance from where it began (under 1,
+1–5, 5–20, 20–50, 50–100, 100–300, over 300 km), the length of its path
+(under 5, 5–20, 20–50, 50–100, 100–300, 300–500, over 500 km), and the
+local solar hour of its first airborne fix, by kind. A flight belongs to
+the day it began. An aircraft first heard in the air makes a flight whose
+start was not seen; its duration and distances are of the part seen.
 
 ## 7. Launches
 
@@ -215,9 +239,18 @@ seconds and no climb rate the second count still found 996. The top of the launc
 seconds after it began, in bands of under 300, 300–400, 400–500, 500–700 and
 over 700 m.
 
-**No tow seen.** A flight of a glider or hang glider, begun when it is first
-heard airborne after more than 20 minutes unheard, with neither an aerotow
-nor a winch launch found from 5 minutes before to 10 minutes after. The
+**Where a launch is seen at all.** A glider or hang glider first heard
+airborne after more than 20 minutes unheard counts as a launch only when
+that first airborne fix is within **150 m** of the ground: a winch launch's
+first seconds, an aerotow's first minute, a paraglider just off its hill,
+and well above the error of the terrain model. One first heard higher up
+was joined in the air, coming back into coverage or into the feed after a
+gap, and is counted apart, as a **start not seen**, out of the launch split.
+The first count, without this rule, gave 2,153 glider launches on 6 October
+2026 against 1,745 glider flights: reappearances counted as launches.
+
+**No tow seen.** A launch seen within 150 m of the ground with neither an
+aerotow nor a winch launch found from 5 minutes before to 10 minutes after. The
 class mixes several things and says nothing about any one of them:
 self-launching and motor gliders, bungee and foot launches, hang gliders
 launched from a slope, launches flown outside coverage, and aircraft that
@@ -248,6 +281,44 @@ ridge or a convergence climbs in straight lines too, and above high ground
 2,500 m is not much. That is why these are labelled "probably wave" and
 never wave, and why only the count per cell is published.
 
+## 9. Cruise speed and altitude
+
+For powered aircraft (tow planes, powered aircraft and jets) and
+helicopters, by the day's majority category, every system included,
+ADS-B among them. A **level segment** is a stretch of at least
+**2 minutes** in which the altitude stays within **150 ft** of where it
+began, with no silence over 30 seconds, beginning at least 300 m above the
+ground: an aircraft in cruise. The level segments, by kind
+(powered aircraft, helicopters), by ADS-B emitter category where the
+address has one (A1 light aircraft, B4 ultralight, A7 rotorcraft, others
+together, none without ADS-B) and by altitude reference: the time and
+segments in bands of mean ground speed (under 100, 100–150, 150–200,
+200–250, 250–300, over 300 km/h) and of altitude (under 3,000 ft, then
+every 2,000 ft to 11,000, 11,000–15,000, over 15,000). The altitude is that
+of each reference: the pressure altitude ADS-B transponders send (on the
+standard 1013 hPa) and the altitude every system sends (from GPS), published
+apart and never added together, since the two differ by the day's pressure
+and by the geoid. Ground speed is not
+airspeed: a tailwind adds to it and a headwind takes from it, so the bands
+are of speed over the ground.
+
+## 10. Helicopters by day and by night
+
+Helicopter flying time (section 1 of METHOD.md, the airborne timeline) at
+night, when the sun is more than **6 degrees below the horizon** (between
+civil dusk and civil dawn), and by day, computed for each segment from its
+position and time, by height above the ground (the bands of section 4) and
+1-degree cell. A cell is published only with at least 10 helicopter-days in
+the month. Night flights are mostly rescue, police and medical transport,
+which the feed cannot tell apart from the rest.
+
+## 11. Tow planes
+
+From the aerotows of section 7: how many tows each tug flew that day (1,
+2–5, 6–10, more than 10) and the share of its flying time spent towing (the
+durations of its tows over its airborne time that day: under 25%, 25–50%,
+50–75%, over 75%), as counts of tugs, never by address.
+
 ## Limits
 
 - Everything here is what the OGN network hears. An aircraft that carries
@@ -262,6 +333,20 @@ never wave, and why only the count per cell is published.
   hundred metres (METHOD.md, section 3): near a ridge they can be off by
   tens of metres, which matters for the lowest bands of section 4 and for
   launches (section 7).
+- **Cruising levels are not measured (dropped on 7 October 2026, before
+  publication).** A measure of the semicircular rule was written the same
+  day. Below the transition altitude pilots set the local QNH, which the feed
+  does not carry; a GPS altitude and a flight level on 1013 hPa both differ
+  from it by hundreds of feet on a given day. On 6 October 2026 the rule
+  looked followed by 17 to 24% of level segments, against 20% that chance
+  alone gives with a ±200 ft window every 2,000 ft, so the figure said
+  nothing about pilots. It may come back with the QNH of the nearest METAR.
+- **Circuits and touch-and-go are not measured (dropped on 7 October 2026,
+  before publication).** On 6 October 2026 the rule written that day found
+  2,878 circuits and 2,816 touch-and-go for 3,290 powered flights, almost
+  certainly tug cycles, and heights above the terrain model and reported
+  altitudes off by more than the 20 m the rule allowed near the ground. The
+  figures were not published.
 - **Flying below minimum heights is not measured, on purpose.** A
   low-flying aircraft may be taking off, landing, ridge soaring, towing a
   banner, on a rescue or on police work, or infringing the rules, and the
@@ -275,5 +360,14 @@ never wave, and why only the count per cell is published.
   their data existed. Winch launches require an altitude gain of 150 m at
   4 m/s within 60 s, after two first counts the same day that took aerotows
   and self-launches for winches (section 7). The share of time circling is
-  taken over the aircraft seen circling (section 5). The expected histogram of
+  taken over the aircraft seen circling (section 5). Later the same day,
+  before publication: a launch must be first heard within 150 m of the
+  ground, the rest counted as starts not seen (section 7); flights go on
+  across silences the aircraft could have flown through, up to 2 hours
+  (section 6); thermals of paragliders and hang gliders are given apart
+  (section 3). Sections 9 to 11, on powered aircraft
+  and helicopters, added before any of their data existed; ADS-B is used
+  in them, unlike in the sections above, for the pressure altitude and the
+  emitter category. Circuits and touch-and-go, and cruising levels, written
+  the same day, were dropped before publication (Limits). The expected histogram of
   the per-pilot test (section 2) is computed pilot by pilot.

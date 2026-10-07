@@ -610,7 +610,11 @@ than four days exists, and the batch needs only the last day and a half.
 
 From 7 October 2026 some measures are computed once a night, at 01:30 UTC,
 from the recording of the previous UTC day (section 9), and only their
-aggregates are kept. They answer questions that need a whole day of an
+aggregates are kept. The same run computes the measures of PATTERNS.md,
+and writes them apart: the tables of this file first, those of PATTERNS.md
+second, in two transactions, so a failure of either leaves the other's
+figures of the day written, and the day's record says what failed (from the
+evening of 7 October 2026). They answer questions that need a whole day of an
 aircraft's positions at once. The rules of sections 1 and 2 apply unchanged:
 the same sources and exclusions, the time written in the fix, the 5-minute
 rules for stale and future fixes, the airborne speeds per kind, the
