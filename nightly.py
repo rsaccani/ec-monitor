@@ -171,10 +171,21 @@ RELAY_LATE_SHARE, RELAY_LATE_MIN = 0.05, 100
 RELAY_GROUP_S = 20              # seconds after the first reception of a fix to wait for other receivers
 RELAY_SOURCES = {"OGFLR"}       # FLARM: the receiver converts ellipsoid height to MSL itself
 
-TABLES = ("daily_thermals", "daily_mixed_thermals", "daily_agl_hours", "daily_circling_time", "daily_flights",
-          "daily_wave", "daily_launches", "daily_tug_tows", "daily_crewed_encounters", "daily_drone_classes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles", "daily_parked",
-          "daily_drones", "daily_drone_cells", "daily_drone_extent", "daily_drone_encounters",
-          "daily_quality", "nightly_runs")
+# The two families of tables (7 October 2026), written by the same run in two
+# transactions, conspicuity (METHOD.md) first: an error in one is logged and
+# recorded in nightly_runs.notes and leaves the other's day written. An error
+# while the day is read stops both, since both are computed from it.
+FAMILIES = {
+    "conspicuity": ("daily_drone_classes", "daily_drones", "daily_drone_cells", "daily_drone_extent",
+                    "daily_drone_encounters", "daily_crewed_encounters", "daily_parked", "daily_quality"),
+    "patterns": ("daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
+                 "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
+                 "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
+                 "daily_cruise", "daily_helicopter_night"),
+}
+TABLES = FAMILIES["conspicuity"] + FAMILIES["patterns"]
+# The statistics endpoints whose monthly snapshot belongs to the patterns family.
+PATTERN_SNAPSHOTS = ("patterns",)
 
 
 def band(value, edges):
@@ -342,9 +353,18 @@ WINCH_TOP_S = 150                             # the top of the launch is sought 
 WINCH_TOP_EDGES = (300, 400, 500, 700)
 LAUNCH_SESSION = sources.SESSION_BREAK        # an airborne fix after this long unheard starts a flight
 LAUNCH_MATCH = (-300, 600)                    # a tow or winch counts for a flight starting this close
+# A flight is a launch only when it is first heard within 150 m of the ground:
+# above that it was joined in the air, after a gap in coverage or out of it
+# (6 October 2026: 2,153 glider "launches" against 1,745 glider flights).
+# 150 m is a winch launch's first few seconds, an aerotow's first minute or
+# a paraglider just off a hill, and above the terrain model's error.
+LAUNCH_MAX_AGL = 150
 
 
 # --- 8. Patterns of flight (PATTERNS.md, 7 October 2026) -------------------------
+# Thermals are split further: paragliders and hang gliders circle at
+# different radii and speeds (7 October 2026).
+THERMAL_KIND = {7: "paraglider", 6: "hang_glider", 1: "glider"}
 PATTERN_KIND = {6: "free_flight", 7: "free_flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered",
                 3: "helicopter"}
 RADIUS_EDGES = (30, 50, 80, 120, 200)         # m
@@ -353,6 +373,25 @@ CLIMB_MIN_S = 20                              # a thermal sampled over less time
 VSEP_EDGES = (50, 100, 200)                   # m between two aircraft sharing a thermal
 AGL_HOUR_EDGES = (50, 120, 300, 600, 1200, 2000)
 FLIGHT_MIN_EDGES = (10, 30, 60, 120, 240, 480)
+# A flight goes on across a silence of any length up to FLIGHT_MAX_GAP when it
+# was airborne on both sides (the timeline has only airborne segments), neither
+# side was within LAUNCH_MAX_AGL of the ground, and the distance between them
+# could be flown in the time at FLIGHT_MAX_KMH of its kind: a glider out of
+# coverage for half an hour is one flight; a landing, a ground stop or a drive
+# to another site is not. Generous maxima, about the fastest each kind flies.
+FLIGHT_MAX_GAP = 2 * 3600
+# A fix standing still on the ground (at most 3 kt, within 30 m of the terrain
+# model) after the last airborne one ends the flight: a stop at the field or a
+# relaunch on the hill. The first rule of 7 October 2026, any 2-minute break
+# with both sides within 150 m of the ground, split paragliders soaring a
+# ridge low and slow into wind, and raised the flight counts instead.
+FLIGHT_STOP_KT, FLIGHT_STOP_AGL = 3, 30
+# Only where standing still means being on the ground: a helicopter or a drone
+# hovering low, or a balloon, looks the same as one that has landed (the
+# second rule of the same day cut helicopter flights to a median of 2.4 min).
+FLIGHT_STOP_CATEGORIES = {1, 2, 6, 7, 8, 9}
+FLIGHT_MAX_KMH = {7: 70, 6: 120, 1: 280, 2: 350, 8: 350, 9: 900, 3: 300, 13: 150}
+FLIGHT_MAX_KMH_OTHER = 350
 FLIGHT_EXTENT_KM = (1, 5, 20, 50, 100, 300)
 FLIGHT_PATH_KM = (5, 20, 50, 100, 300, 500)
 WAVE_MIN_M = 2500                             # the climb must start this high
@@ -361,6 +400,44 @@ WAVE_TURN = 3.0                               # deg/s of turning on average, at 
 WAVE_NET_TURN = 360                           # and less than one net turn in the window
 WAVE_GAP = 30                                 # a silence longer than this restarts the window
 WAVE_QUIET = 1800                             # one wave climb per glider per half hour
+
+
+# --- 9. Powered aircraft and helicopters (PATTERNS.md sections 9-11, 7 October 2026) ---
+POWERED = {2, 8, 9}
+HELICOPTER = 3
+FL = re.compile(r" FL(\d+(?:\.\d+)?)")
+LEVEL_FT = 150                      # a level segment stays within 150 ft of its first altitude
+LEVEL_S, LEVEL_GAP = 120, 30        # for at least 2 minutes, no silence over 30 s
+CRUISE_AGL_M = 300                  # cruise distributions: level segments above 300 m over the ground
+CRUISE_ALT_EDGES_FT = (3000, 5000, 7000, 9000, 11000, 15000)
+CRUISE_KMH_EDGES = (100, 150, 200, 250, 300)
+EMITTERS_OF_INTEREST = ("A1", "B4", "A7")
+NIGHT_SUN_DEG = -6                  # civil dusk to civil dawn
+TUG_SHARE_EDGES = (0.25, 0.5, 0.75)
+
+
+def sun_elevation(t, lat, lon):
+    """Degrees of the sun above the horizon (NOAA's approximation, a fraction of a degree)."""
+    d = t / 86400 + 2440587.5 - 2451545.0              # days since J2000
+    g = math.radians((357.529 + 0.98560028 * d) % 360)
+    q = (280.459 + 0.98564736 * d) % 360
+    lam = math.radians(q + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g))
+    eps = math.radians(23.439 - 0.00000036 * d)
+    dec = math.asin(math.sin(eps) * math.sin(lam))
+    ra = math.degrees(math.atan2(math.cos(eps) * math.sin(lam), math.cos(lam))) % 360
+    gmst = (280.46061837 + 360.98564736629 * d) % 360
+    ha = math.radians((gmst + lon - ra + 540) % 360 - 180)
+    la = math.radians(lat)
+    return math.degrees(math.asin(math.sin(la) * math.sin(dec) + math.cos(la) * math.cos(dec) * math.cos(ha)))
+
+
+class PoweredTrack:
+    """One powered aircraft or helicopter, for its level segments."""
+    __slots__ = ("t", "runs")
+
+    def __init__(self):
+        self.t = None
+        self.runs = {}            # reference -> [t0, alt0, t1, speed sum, n, agl0, alt sum]
 
 
 class CrewedEncounters:
@@ -537,6 +614,8 @@ class ParkedRun:
 class Nightly:
     def __init__(self, day, ddb=({}, set())):
         self.day = day
+        self.c = True             # METHOD.md: drones, encounters, parked, quality
+        self.p = True             # PATTERNS.md; switched off if its work fails during the pass
         self.ddb_types, self.notrack = ddb
         self.emitters = collections.defaultdict(set)    # address -> ADS-B emitter categories heard
         self.declared = collections.defaultdict(set)    # address with a category 13 -> system labels
@@ -546,6 +625,8 @@ class Nightly:
         self.major, self.major13 = {}, set()      # (address, tocall) -> majority category; vote()
         self.addr_major = {}                      # address -> majority over all its systems; vote()
         self.crewed = CrewedEncounters()
+        self.failed = {}                          # family -> what went wrong, for nightly_runs.notes
+        self.tow_pairs = set()
         self.agl_time = collections.Counter()      # (category, solar hour, AGL band) -> s; drones apart
         self.addr_hour_air = collections.Counter() # (address, solar hour) -> s, gliders and free flight
         self.drone_agl = collections.Counter()     # (solar hour, AGL band, address) -> s
@@ -555,6 +636,11 @@ class Nightly:
         self.wave_last = {}                        # glider -> (t, course, net, abs)
         self.wave_quiet = {}
         self.waves = []                            # (address, t0, lat, lon)
+        self.powered = {}                         # address -> PoweredTrack
+        self.levels = collections.Counter()       # (address, category, reference, alt band, speed band) -> segments
+        self.level_s = collections.Counter()
+        self.heli = collections.defaultdict(lambda: [0.0, set()])   # (lat, lon, night, agl band) -> s, aircraft
+        self.addr_air = collections.Counter()     # tug candidates -> airborne seconds
         self.launch_last = {}                     # glider or hang glider -> t of its last fix
         self.launch_air = {}                      # -> t of its last airborne fix
         self.sessions = []                        # (address, category, t, lat, lon): flights begun
@@ -693,7 +779,7 @@ class Nightly:
         raw_tc = path[0]
         in_day = self.d0 <= epoch < self.d1     # quality is filed by reception
         if raw_tc == "OGNSDR" or raw_tc == "OGNSXR":
-            if in_day:
+            if in_day and self.c:
                 self.receiver_beacon(src, body)
             return
         if body[26:27] == "&" or raw_tc in sources.EXCLUDED:
@@ -846,27 +932,70 @@ class Nightly:
         crewed_airborne = category in CREWED and (kt or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT)
         if category == DRONE:
             self.drone_fix(address, t, lat, lon, alt_m)
-        elif crewed_airborne and alt_m is not None and t - self.last_drone_t <= ENCOUNTER_ACTIVE:
+        elif self.c and crewed_airborne and alt_m is not None and t - self.last_drone_t <= ENCOUNTER_ACTIVE:
             self.crewed_fix(address, category, t, lat, lon, alt_m)
         am = self.addr_major.get(address)
         ck = CrewedEncounters.KIND.get(am)
         agl = None
-        if am in TOWED and alt_m is not None:
+        if self.p and am in TOWED and alt_m is not None:
             ground = self.terrain.elevation(lat, lon)
             agl = alt_m - ground if ground is not None else None
-            self.launch_fix(address, am, t, lat, lon, agl, kt, alt_m)
+            self.pattern(self.launch_fix, address, am, t, lat, lon, agl, kt, alt_m)
         if (ck is not None and alt_m is not None and not PACKET_CATEGORY
                 and (kt or 0) >= sources.FLYING_KT.get(am, sources.AIRBORNE_KT)):
             self.crewed.fix(address, ck, t, lat, lon, alt_m, course, kt, am, agl)
+        if self.p and (am in POWERED or am == HELICOPTER) and alt_m is not None:
+            f = FL.search(body) if kind == "adsb" else None
+            self.pattern(self.powered_fix, address, am, t, lat, lon, alt_m, kt, course,
+                         float(f.group(1)) * 100 if f else None)
         if kind == "adsb":
             return                              # ADS-B: only the other aircraft of an encounter
         self.timeline(address, category, t, lat, lon, kt, alt_m)
-        if category == 1 and course and alt_m is not None:
-            self.wave_fix(address, t, lat, lon, alt_m, course)
+        if self.p and category == 1 and course and alt_m is not None:
+            self.pattern(self.wave_fix, address, t, lat, lon, alt_m, course)
         if (category in CIRCLE_CATEGORIES or category == DRONE) and course:
             self.circle(address, tocall, category, t, course, kt, lat, lon, alt_m)
-        if category in PARKED_CATEGORIES:
+        if self.c and category in PARKED_CATEGORIES:
             self.park(address, label, category, t, lat, lon, alt_m)
+
+    # --- 9-11. powered aircraft ------------------------------------------------------------
+
+    def powered_fix(self, address, cat, t, lat, lon, alt, kt, course, fl_ft):
+        """Level segments of powered aircraft and helicopters (PATTERNS.md, section 9)."""
+        tr = self.powered.get(address)
+        if tr is None:
+            tr = self.powered[address] = PoweredTrack()
+        if tr.t is not None and t <= tr.t:
+            return                              # one fix per address and second, whatever the system
+        tr.t = t
+        # Per altitude reference: pressure (ADS-B's FL) and the altitude every
+        # system sends (GPS, or whatever the transponder gives).
+        refs = [("gps", alt / 0.3048)]
+        if fl_ft is not None:
+            refs.append(("pressure", fl_ft))
+        agl = None
+        for ref, ft in refs:
+            run = tr.runs.get(ref)
+            if run is not None and (t - run[2] > LEVEL_GAP or abs(ft - run[1]) > LEVEL_FT):
+                self.close_level(address, cat, ref, run)
+                run = None
+            if run is None:
+                if agl is None:
+                    ground = self.terrain.elevation(lat, lon)
+                    agl = alt - ground if ground is not None else -1e9
+                run = tr.runs[ref] = [t, ft, t, 0.0, 0, agl, 0.0]
+            run[2] = t
+            run[3] += (kt or 0) * 1.852
+            run[4] += 1
+            run[6] += ft
+
+    def close_level(self, address, cat, ref, run):
+        t0, ft0, t1, vsum, n, agl0, ftsum = run
+        if t1 - t0 < LEVEL_S or n < 2 or agl0 < CRUISE_AGL_M:
+            return
+        key = (address, cat, ref, band(ftsum / n, CRUISE_ALT_EDGES_FT), band(vsum / n, CRUISE_KMH_EDGES))
+        self.levels[key] += 1
+        self.level_s[key] += t1 - t0
 
     # --- 7. launches ------------------------------------------------------------------
 
@@ -880,7 +1009,7 @@ class Nightly:
         if (kt or 0) >= sources.FLYING_KT.get(cat, sources.AIRBORNE_KT):
             prev = self.launch_air.get(address)
             if prev is None or t - prev > LAUNCH_SESSION:
-                self.sessions.append((address, cat, t, lat, lon))
+                self.sessions.append((address, cat, t, lat, lon, agl))
             self.launch_air[address] = t
         if cat != 1 or agl is None:
             return                              # winches launch gliders
@@ -938,10 +1067,12 @@ class Nightly:
             starts[towed].append(t0)
         for address, t0, la, lo, top in winches:
             starts[address].append(t0)
-        for address, cat, t, la, lo in self.sessions:
+        for address, cat, t, la, lo, agl in self.sessions:
             if any(LAUNCH_MATCH[0] <= s - t <= LAUNCH_MATCH[1] for s in starts.get(address, ())):
                 continue
-            rows[("no_tow_seen", TOWED[cat], math.floor(la), math.floor(lo), UNKNOWN_BAND, UNKNOWN_BAND)] += 1
+            # First heard high up: a flight joined in the air, kept out of the launch split.
+            method = "no_tow_seen" if agl is not None and agl <= LAUNCH_MAX_AGL else "start_unseen"
+            rows[(method, TOWED[cat], math.floor(la), math.floor(lo), UNKNOWN_BAND, UNKNOWN_BAND)] += 1
         tugs = collections.Counter(tug for _, tug, _, _, _, _, _, _ in tows)
         tug_rows = collections.Counter(band(n, TUG_TOWS_EDGES) for n in tugs.values())
         self.tow_pairs = {(a, b) if a < b else (b, a) for a, b, *_ in tows}
@@ -964,12 +1095,49 @@ class Nightly:
         if dist(prev[1], prev[2], lat, lon) > sources.IMPLAUSIBLE_MS * max(seconds, 1):
             return
         if not sources.flying(category, prev[3], kt):
+            if self.p and category in FLIGHT_STOP_CATEGORIES and (kt or 0) <= FLIGHT_STOP_KT and alt_m is not None:
+                f = self.flight.get(address)
+                if f is not None and not f[11] and t - f[3] <= sources.SESSION_BREAK:
+                    ground = self.terrain.elevation(lat, lon)
+                    if ground is not None and alt_m - ground <= FLIGHT_STOP_AGL:
+                        f[11] = True            # seen standing on the ground since its last airborne fix
             return
         if category in GROUND_CATEGORIES:
             return
         local = prev[0] + seconds / 2 + prev[2] * SOLAR_SECONDS_PER_DEGREE
+        if self.p:
+            self.pattern(self.pattern_segment, address, category, prev, t, lat, lon, kt, seconds, local)
+        if self.c and category == DRONE:
+            ground = self.terrain.elevation(prev[1], prev[2])
+            agl = prev[4] - ground if prev[4] is not None and ground is not None else None
+            kmh = ((prev[3] or 0) + (kt or 0)) / 2 * 1.852
+            self.drone_air[(math.floor(prev[1]), math.floor(prev[2]), band(agl, DRONE_HEIGHT_EDGES),
+                            band(kmh, DRONE_SPEED_EDGES), address)] += seconds
+
+    def pattern(self, f, *args):
+        """Run a piece of the patterns family's per-fix work. If it fails, the
+        family is switched off for the rest of the day and recorded, and the
+        conspicuity measures go on (7 October 2026)."""
+        try:
+            f(*args)
+        except Exception as e:
+            logger.exception("The patterns family failed during the pass; it is not computed for this day")
+            self.failed["patterns"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.p = False
+
+    def pattern_segment(self, address, category, prev, t, lat, lon, kt, seconds, local):
+        """One airborne segment of the timeline, for PATTERNS.md sections 1, 4, 6, 10 and 11."""
         hour = int(local % 86400 // 3600)
         ground = self.terrain.elevation(prev[1], prev[2])
+        if category in TUGS:
+            self.addr_air[address] += seconds
+        if category == HELICOPTER:
+            night = int(sun_elevation(prev[0] + seconds / 2, prev[1], prev[2]) < NIGHT_SUN_DEG)
+            h = self.heli[(math.floor(prev[1]), math.floor(prev[2]), night,
+                           band(prev[4] - ground if prev[4] is not None and ground is not None else None,
+                                AGL_HOUR_EDGES))]
+            h[0] += seconds
+            h[1].add(address)
         agl_band = band(prev[4] - ground if prev[4] is not None and ground is not None else None, AGL_HOUR_EDGES)
         if category == DRONE:
             self.drone_agl[(hour, agl_band, address)] += seconds
@@ -977,7 +1145,8 @@ class Nightly:
             self.agl_time[(category, hour, agl_band)] += seconds
             if category in CIRCLE_CATEGORIES:
                 self.addr_hour_air[(address, hour)] += seconds
-        self.flight_segment(address, category, prev, t, lat, lon, seconds)
+        self.flight_segment(address, category, prev, t, lat, lon, seconds,
+                            prev[4] - ground if prev[4] is not None and ground is not None else None)
         if category == DRONE:
             # Per address, so that a crewed aircraft declared a drone can be
             # filed apart once the day's evidence is in (evidence()).
@@ -986,24 +1155,36 @@ class Nightly:
             k = (int(local // 86400), category, int(local % 86400 // 3600))
             self.hours_air[k] += seconds
             self.hours_ac[k].add(address)
-        if category == DRONE:
-            ground = self.terrain.elevation(prev[1], prev[2])
-            agl = prev[4] - ground if prev[4] is not None and ground is not None else None
-            kmh = ((prev[3] or 0) + (kt or 0)) / 2 * 1.852
-            self.drone_air[(math.floor(prev[1]), math.floor(prev[2]), band(agl, DRONE_HEIGHT_EDGES),
-                            band(kmh, DRONE_SPEED_EDGES), address)] += seconds
 
-    def flight_segment(self, address, category, prev, t, lat, lon, seconds):
-        """Flights (PATTERNS.md): airborne segments of one address, a new flight
-        after a silence or a ground stop longer than SESSION_BREAK."""
+    def flight_segment(self, address, category, prev, t, lat, lon, seconds, agl=None):
+        """Flights (PATTERNS.md, section 6): the airborne segments of one address,
+        across silences the aircraft could have flown through (FLIGHT_MAX_GAP,
+        FLIGHT_MAX_KMH), a new flight after a landing or a longer silence.
+
+        f: [t0, lat0, lon0, last t, max distance, path, category, lon0, last lat,
+        last lon, height above ground at the last segment, seen stopped on the ground since]
+        """
         f = self.flight.get(address)
-        if f is None or prev[0] - f[3] > sources.SESSION_BREAK:
-            if f is not None:
+        low = lambda h: h is None or h <= LAUNCH_MAX_AGL
+        if f is not None and f[11]:
+            self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5]))
+            f = None
+        if f is not None and prev[0] - f[3] > sources.SESSION_BREAK:
+            gap = prev[0] - f[3]
+            across = dist(f[8], f[9], prev[1], prev[2])
+            if (gap > FLIGHT_MAX_GAP or low(f[10]) or low(agl)
+                    or across > FLIGHT_MAX_KMH.get(category, FLIGHT_MAX_KMH_OTHER) / 3.6 * gap):
                 self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5]))
-            f = self.flight[address] = [prev[0], prev[1], prev[2], prev[0], 0.0, 0.0, category, prev[2]]
+                f = None
+            else:
+                f[5] += across                  # the straight line across the silence: a lower bound
+        if f is None:
+            f = self.flight[address] = [prev[0], prev[1], prev[2], prev[0], 0.0, 0.0, category, prev[2],
+                                        prev[1], prev[2], agl, False]
         f[3] = t
         f[5] += dist(prev[1], prev[2], lat, lon)
         f[4] = max(f[4], dist(f[1], f[2], lat, lon))
+        f[8], f[9], f[10] = lat, lon, agl
 
     def wave_fix(self, address, t, lat, lon, alt, course):
         """Probably wave (PATTERNS.md): a glider climbing on average 1 m/s for 3 minutes
@@ -1260,6 +1441,9 @@ class Nightly:
         for tr in self.circles.values():
             tr.finish()
         self.crewed.finish()
+        for address, tr in self.powered.items():
+            for ref, run in tr.runs.items():
+                self.close_level(address, self.addr_major.get(address), ref, run)
         for address, f in self.flight.items():
             self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5]))
         self.flight = {}
@@ -1332,10 +1516,30 @@ class Nightly:
         return "unknown"
 
     def rows(self):
-        """Every table's rows for this day, as {table: (columns, rows)}."""
+        """Every table's rows for this day, as {family: {table: (columns, rows)}}.
+
+        Two families (from 7 October 2026): "conspicuity" (METHOD.md) and
+        "patterns" (PATTERNS.md). Each is computed apart, so an error in one
+        is recorded in self.failed and leaves the other's rows intact; the
+        patterns family is computed first, since the crewed encounters report
+        the tows the launches find.
+        """
+        out = {"conspicuity": {}, "patterns": {}}
+        for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity)):
+            if family in self.failed:
+                continue                        # already failed during the pass
+            try:
+                out[family] = compute()
+            except Exception as e:              # one family must not cost the other its day
+                logger.exception(f"The {family} family failed while its rows were computed")
+                self.failed[family] = f"rows: {type(e).__name__}: {e}"[:200]
+                out[family] = {}
+        return out
+
+    def rows_patterns(self):
+        """PATTERNS.md: hours, circling, thermals and the rest, launches."""
         day = self.day.isoformat()
         out = {}
-
         # 1. hours
         # Drone time by the day's evidence: a crewed aircraft declared a drone
         # leaves the drone row and is filed as unknown, since neither its
@@ -1401,6 +1605,19 @@ class Nightly:
                                        [(day,) + k + (n,) for k, n in sorted(self.mixed.items())])
         out.update(self.pattern_rows(day, best))
 
+        # 7. launches (PATTERNS.md 7), before the encounters, which report the tows among them
+        launches, tug_tows = self.launch_rows(day)
+        out["daily_launches"] = (("day", "method", "towed_kind", "lat_idx", "lon_idx", "height_band",
+                                  "duration_band", "launches"), launches)
+        out["daily_tug_tows"] = (("day", "tows_band", "tugs"), tug_tows)
+
+        return out
+
+    def rows_conspicuity(self):
+        """METHOD.md: parked aircraft, drones, crewed encounters, data quality."""
+        day = self.day.isoformat()
+        ev = self.evidence()
+        out = {}
         # 3. parked
         out["daily_parked"] = (("day", "system_name", "category", "aircraft", "seconds", "packets"),
                                [(day, label, cat, len(v[0]), round(v[1], 1), v[2])
@@ -1455,12 +1672,6 @@ class Nightly:
                                       [(day, e, len(v[0]), round(v[1], 1)) for e, v in sorted(classes.items())])
         self.encounters_all = len(self.encounters)
 
-        # 7. launches (PATTERNS.md 7), before the encounters, which report the tows among them
-        launches, tug_tows = self.launch_rows(day)
-        out["daily_launches"] = (("day", "method", "towed_kind", "lat_idx", "lon_idx", "height_band",
-                                  "duration_band", "launches"), launches)
-        out["daily_tug_tows"] = (("day", "tows_band", "tugs"), tug_tows)
-
         # 6. crewed aircraft of different kinds (METHOD.md 10.2)
         out["daily_crewed_encounters"] = (("day", "kind_a", "kind_b", "threshold", "distance_band", "closing_band",
                                            "systems_a", "systems_b", "shares_radio", "shares_any", "encounters"),
@@ -1487,6 +1698,7 @@ class Nightly:
         circ = collections.Counter()
         for address, (cat, th) in best.items():
             kind = kind_of(cat)
+            tkind = THERMAL_KIND.get(cat, kind)
             for x in th:
                 hour = solar_hour((x[1] + x[2]) / 2, x[4])
                 circ[(kind, hour)] += x[6]
@@ -1499,7 +1711,7 @@ class Nightly:
                 # turns the wind adds to the ground speed on one side what it takes
                 # on the other, so the mean speed is close to the airspeed.
                 radius = x[8] / math.radians(x[5]) if x[5] else None
-                r = therm[(kind, hour, math.floor(x[3]), math.floor(x[4]), band(climb, CLIMB_EDGES),
+                r = therm[(tkind, hour, math.floor(x[3]), math.floor(x[4]), band(climb, CLIMB_EDGES),
                            band(radius, RADIUS_EDGES))]
                 r[0] += 1
                 if climb is not None:
@@ -1547,6 +1759,34 @@ class Nightly:
                                    if self.d0 <= t0 < self.d1)
         out["daily_wave"] = (("day", "lat_idx", "lon_idx", "climbs"),
                              [(day,) + k + (n,) for k, n in sorted(wave.items())])
+
+        # Powered aircraft and helicopters (sections 9 to 11)
+        cruise = collections.defaultdict(lambda: [0, 0.0, set()])
+        for (address, cat, ref, ab, sb), n in self.levels.items():
+            emitted = self.emitters.get(address, set())
+            em = next((e for e in EMITTERS_OF_INTEREST if e in emitted), "other" if emitted else "none")
+            kind = "helicopter" if cat == HELICOPTER else "powered"
+            c = cruise[(kind, em, ref, ab, sb)]
+            c[0] += n
+            c[1] += self.level_s[(address, cat, ref, ab, sb)]
+            c[2].add(address)
+        out["daily_cruise"] = (("day", "kind", "emitter", "altitude_ref", "altitude_band", "speed_band",
+                                "segments", "seconds", "aircraft"),
+                               [(day,) + k + (v[0], round(v[1], 1), len(v[2])) for k, v in sorted(cruise.items())])
+        out["daily_helicopter_night"] = (("day", "lat_idx", "lon_idx", "night", "agl_band", "air_seconds", "aircraft"),
+                                         [(day,) + k + (round(v[0], 1), len(v[1])) for k, v in sorted(self.heli.items())])
+        tow_s = collections.Counter()
+        for towed, tug, cat, t0, t1, la, lo, rel in self.crewed.tows:
+            tow_s[tug] += t1 - t0
+        tugs = collections.defaultdict(lambda: [0, 0.0, 0.0])
+        for tug, sec in tow_s.items():
+            air = max(self.addr_air.get(tug, 0.0), sec)
+            r = tugs[band(sec / air if air else None, TUG_SHARE_EDGES)]
+            r[0] += 1
+            r[1] += sec
+            r[2] += air
+        out["daily_tug_time"] = (("day", "share_band", "tugs", "tow_seconds", "air_seconds"),
+                                 [(day, b, v[0], round(v[1], 1), round(v[2], 1)) for b, v in sorted(tugs.items())])
         return out
 
     def crewed_rows(self, day):
@@ -1736,6 +1976,16 @@ class Nightly:
         return out
 
 
+def snapshot_endpoints(family):
+    """The endpoints whose monthly snapshot belongs to a family."""
+    every = sources.SourceTracker.SNAPSHOT_ENDPOINTS
+    if family == "patterns":
+        return tuple(PATTERN_SNAPSHOTS)
+    if family == "conspicuity":
+        return tuple(e for e in every if e not in PATTERN_SNAPSHOTS)
+    return tuple(every)
+
+
 def connect_db(autocommit=False):
     """As app.get_db_connection, without importing app (which starts the listener).
 
@@ -1758,7 +2008,7 @@ def git(*args):
         return None
 
 
-def snapshot(month, dry_run):
+def snapshot(month, dry_run, family="all"):
     """Store what every statistics endpoint publishes for `month` (METHOD.md, section 9).
 
     Taken the night the month's last day is computed. The JSON comes from
@@ -1767,7 +2017,8 @@ def snapshot(month, dry_run):
     commit and the code commit deployed at that moment. A rerun replaces it.
     """
     tracker = sources.SourceTracker(None, lambda: connect_db(autocommit=True))
-    bodies = tracker.snapshot_bodies(month)
+    mine = snapshot_endpoints(family)
+    bodies = {k: v for k, v in tracker.snapshot_bodies(month, mine).items()}
     method_commit = git("log", "-1", "--format=%H", "--", "METHOD.md")
     deployed = git("rev-parse", "HEAD")
     now = datetime.datetime.utcnow().replace(microsecond=0)
@@ -1775,7 +2026,7 @@ def snapshot(month, dry_run):
     for name, obj in bodies.items():
         text = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
         rows.append((month, name, method_commit, deployed, now, len(text), zlib.compress(text.encode("utf-8"), 9)))
-    missing = [e for e in sources.SourceTracker.SNAPSHOT_ENDPOINTS if e not in bodies]
+    missing = [e for e in mine if e not in bodies]
     if dry_run:
         print(f"\n== monthly_snapshot {month}: method {method_commit}, deployed {deployed}")
         for r in rows:
@@ -1787,7 +2038,8 @@ def snapshot(month, dry_run):
     try:
         conn.begin()
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM monthly_snapshot WHERE month = %s", (month,))
+            cur.execute(f"DELETE FROM monthly_snapshot WHERE month = %s AND endpoint IN ({', '.join(['%s'] * len(mine))})",
+                        (month,) + tuple(mine))
             cur.executemany("INSERT INTO monthly_snapshot (month, endpoint, method_commit, deployed_commit, "
                             "created_at, bytes, body) VALUES (%s, %s, %s, %s, %s, %s, %s)", rows)
         conn.commit()
@@ -1800,19 +2052,36 @@ def snapshot(month, dry_run):
                 (f", not taken: {', '.join(missing)}" if missing else ""))
 
 
-def write(day, tables, run_row):
+def write_family(day, family, tables):
+    """Replace one family's rows of the day, in one transaction of its own."""
     conn = connect_db()
     try:
         conn.begin()
         with conn.cursor() as cur:
-            for table in TABLES:
+            for table in FAMILIES[family]:
                 cur.execute(f"DELETE FROM {table} WHERE day = %s", (day.isoformat(),))
-            for table, (cols, rows) in tables.items():
+            for table in FAMILIES[family]:
+                cols, rows = tables.get(table, ((), []))
                 if rows:
                     cur.executemany(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})",
                                     rows)
-            cur.execute("INSERT INTO nightly_runs (day, finished_at, hours_read, hours_missing, line_count, seconds) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)", run_row)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def write_run(run_row, notes):
+    """The day's nightly_runs row, with what failed, if anything, in notes."""
+    conn = connect_db()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM nightly_runs WHERE day = %s", (run_row[0],))
+            cur.execute("INSERT INTO nightly_runs (day, finished_at, hours_read, hours_missing, line_count, seconds, "
+                        "notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", run_row + (notes[:255],))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1881,23 +2150,37 @@ def main():
     if not read:
         logger.error(f"No recording for {day}")
         return 1
-    tables = n.rows()
+    families = n.rows()
+    tables = {**families["conspicuity"], **families["patterns"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
-    long = {r[3] for r in tables["daily_quality"][1] if len(r[3]) > 64}
+    long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
     if long:
         raise ValueError(f"check names longer than daily_quality.check_name allows: {sorted(long)}")
-    kept = sum(r[-1] for r in tables["daily_drone_encounters"][1])
-    logger.info(f"Drone encounters: {n.encounters_all} found, {kept} kept once crewed aircraft declared drones are set aside")
-    f, escort_only, formation_only = n.crewed_pairs
-    logger.info(f"Crewed pairs flying together: {f} by the formation rule ({formation_only} of them missed by the "
-                f"5-minute rule), {escort_only} more by the 5-minute rule alone")
-    for (kinds, name, what), c in sorted(n.crewed_summary.items()):
-        logger.info(f"Crewed encounters {kinds[0]} x {kinds[1]} {name} {what}: {c}")
+    if "daily_drone_encounters" in tables:
+        kept = sum(r[-1] for r in tables["daily_drone_encounters"][1])
+        logger.info(f"Drone encounters: {n.encounters_all} found, {kept} kept once crewed aircraft declared drones "
+                    f"are set aside")
+        f, escort_only, formation_only = n.crewed_pairs
+        logger.info(f"Crewed pairs flying together: {f} by the formation rule ({formation_only} of them missed by the "
+                    f"5-minute rule), {escort_only} more by the 5-minute rule alone")
+        for (kinds, name, what), c in sorted(n.crewed_summary.items()):
+            logger.info(f"Crewed encounters {kinds[0]} x {kinds[1]} {name} {what}: {c}")
     run_row = (day.isoformat(), datetime.datetime.utcnow().replace(microsecond=0), read,
                ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1))
     if args.dry_run:
         print_dry_run(tables, run_row)
+    if args.dry_run and "patterns" not in n.failed:
+        # Flight medians per kind, for checking the rule; aggregates only.
+        by = collections.defaultdict(list)
+        for address, cat, t0, lon0, sec, maxd, path in n.flights:
+            if n.d0 <= t0 < n.d1:
+                by[PATTERN_KIND.get(cat, "other") if cat != DRONE else "drone"].append((sec, maxd, path))
+        print("\n== flights: kind, count, median minutes, median km from the start, median path km")
+        for kind, v in sorted(by.items()):
+            print(f"   {kind:12s} {len(v):6d} {statistics.median(x[0] for x in v) / 60:7.1f} "
+                  f"{statistics.median(x[1] for x in v) / 1000:7.1f} {statistics.median(x[2] for x in v) / 1000:7.1f}")
+    if args.dry_run and "conspicuity" not in n.failed:
         # The climb evidence, address by address under a salted hash.
         import hashlib
         import secrets
@@ -1907,16 +2190,36 @@ def main():
         for a, c in sorted(n.max_climb.items(), key=lambda x: -x[1]):
             print(f"   {hashlib.sha1((salt + a).encode()).hexdigest()[:8]} {EVIDENCE_NAMES[ev[a]]:20s} "
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
-    else:
-        write(day, tables, run_row)
-        logger.info(f"{day}: {sum(len(r) for _, r in tables.values())} rows written from {read} hours "
-                    f"({n.lines:,} lines) in {time.time() - started:.0f} s")
+    failed = dict(n.failed)
+    written = []
+    for family in ("conspicuity", "patterns"):
+        if family in failed:
+            continue
+        if args.dry_run:
+            written.append(family)
+            continue
+        try:
+            write_family(day, family, families[family])
+            written.append(family)
+        except Exception as e:
+            logger.exception(f"The {family} family could not be written; its previous rows of {day} are kept")
+            failed[family] = f"write: {type(e).__name__}: {e}"[:200]
+    notes = "; ".join(f"{k} failed ({v})" for k, v in failed.items())
+    if not args.dry_run:
+        write_run(run_row, notes)
+        logger.info(f"{day}: {sum(len(families[f][t][1]) for f in written for t in families[f])} rows written "
+                    f"({', '.join(written) or 'nothing'}) from {read} hours ({n.lines:,} lines) in "
+                    f"{time.time() - started:.0f} s" + (f"; {notes}" if notes else ""))
+    elif notes:
+        logger.error(notes)
     if month_ends or args.snapshot:
-        # After the day's rows, so that the snapshot holds the whole month.
-        snapshot(day.strftime("%Y-%m"), args.dry_run)
+        # After the day's rows, so that the snapshot holds the whole month; a
+        # family whose day failed keeps the month's snapshot it had, if any.
+        for family in written:
+            snapshot(day.strftime("%Y-%m"), args.dry_run, family)
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     logger.info(f"Peak memory {rss / 1024:.0f} MB")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -49,5 +49,10 @@ had never been tried that way is what left the service stopped on the night
 of 4 October 2026.
 
 Each run logs one line with the rows written, the hours read and the peak
-memory; a failed run logs the traceback and leaves the previous rows of that
-day as they were (one transaction). The log grows by a few lines a night.
+memory. The tables come in two families written in two transactions,
+conspicuity (METHOD.md) first and patterns (PATTERNS.md) second (from
+7 October 2026): if one family fails, while it is computed or written, the
+traceback is logged, `nightly_runs.notes` says which family and why, the
+other family's rows are written all the same, and the run exits with status
+1. An error while the day's files are read stops both, and leaves the
+previous rows of that day as they were. The log grows by a few lines a night.

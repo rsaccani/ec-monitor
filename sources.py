@@ -526,6 +526,9 @@ SYSTEMS_MIN_COMBO = 5   # aircraft before a combination of systems is listed by 
 # this many thermals, and the bands of thermal counts kept for archived months.
 PREFERENCE_MIN_THERMALS = (5, 10)
 THERMAL_CELL_MIN = 20     # thermals in a month before a 1-degree cell of climb rates is published
+# An airfield or base with few aircraft could otherwise show one owner's
+# habits (PATTERNS.md, section 10): cells only with this much in the month.
+HELICOPTER_CELL_MIN = 10  # helicopter-days
 THERMAL_BANDS = (1, 5, 10, 20)
 # The thermal count taken for each band when an archived month's expected
 # histogram is rebuilt without the pilots' own counts: about the middle of
@@ -1665,9 +1668,10 @@ class SourceTracker:
 
     @staticmethod
     def _nightly_days(cur):
-        cur.execute("SELECT day, hours_read, hours_missing FROM nightly_runs ORDER BY day")
+        cur.execute("SELECT day, hours_read, hours_missing, notes FROM nightly_runs ORDER BY day")
         return [{"day": r[0].isoformat(), "hours_read": int(r[1]),
-                 "hours_missing": [int(h) for h in r[2].split(",") if h]} for r in cur.fetchall()]
+                 "hours_missing": [int(h) for h in r[2].split(",") if h], "notes": r[3] or None}
+                for r in cur.fetchall()]
 
     @staticmethod
     def pooled_right(pilots):
@@ -1846,6 +1850,17 @@ class SourceTracker:
                          "radius_band": None if r[4] == UNKNOWN_BAND else int(r[4]), "thermals": int(r[5]),
                          "climb_sum": float(r[6]), "climbs": int(r[7]), "radius_sum": float(r[8])}
                         for r in cur.fetchall()]
+            # Paragliders and hang gliders apart since 7 October 2026 (the kind
+            # "free_flight" before), and also together, summed here.
+            together = collections.defaultdict(lambda: [0, 0.0, 0, 0.0])
+            for t in thermals:
+                if t["kind"] in ("paraglider", "hang_glider"):
+                    k = (t["month"], t["solar_hour"], t["climb_band"], t["radius_band"])
+                    x = together[k]
+                    x[0] += t["thermals"]; x[1] += t["climb_sum"]; x[2] += t["climbs"]; x[3] += t["radius_sum"]
+            thermals += [{"month": m, "kind": "free_flight", "solar_hour": h, "climb_band": cb, "radius_band": rb,
+                          "thermals": x[0], "climb_sum": x[1], "climbs": x[2], "radius_sum": x[3]}
+                         for (m, h, cb, rb), x in together.items()]
             cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum),
                                    SUM(climbs)
                                 FROM daily_thermals GROUP BY 1, 2, 3, 4 HAVING SUM(thermals) >= {THERMAL_CELL_MIN}""")
@@ -1873,16 +1888,40 @@ class SourceTracker:
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, SUM(climbs)
                                FROM daily_wave GROUP BY 1, 2, 3""")
             wave = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "climbs": int(r[3])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, emitter, altitude_ref, altitude_band, speed_band,
+                                  SUM(segments), SUM(seconds), SUM(aircraft)
+                               FROM daily_cruise GROUP BY 1, 2, 3, 4, 5, 6""")
+            cruise = [{"month": r[0], "kind": r[1], "emitter": r[2], "altitude_ref": r[3], "altitude_band": int(r[4]),
+                       "speed_band": int(r[5]), "segments": int(r[6]), "seconds": float(r[7]),
+                       "aircraft_days": int(r[8])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), night, agl_band, SUM(air_seconds), SUM(aircraft)
+                               FROM daily_helicopter_night GROUP BY 1, 2, 3""")
+            helicopters = [{"month": r[0], "night": bool(r[1]), "agl_band": None if r[2] == UNKNOWN_BAND else int(r[2]),
+                            "air_seconds": float(r[3]), "aircraft_days": int(r[4])} for r in cur.fetchall()]
+            cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, night, SUM(air_seconds), SUM(aircraft)
+                                FROM daily_helicopter_night GROUP BY 1, 2, 3, 4
+                                HAVING SUM(aircraft) >= {HELICOPTER_CELL_MIN}""")
+            helicopter_cells = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "night": bool(r[3]),
+                                 "air_seconds": float(r[4]), "aircraft_days": int(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), share_band, SUM(tugs), SUM(tow_seconds), SUM(air_seconds)
+                               FROM daily_tug_time GROUP BY 1, 2""")
+            tug_time = [{"month": r[0], "share_band": int(r[1]), "tug_days": int(r[2]), "tow_seconds": float(r[3]),
+                         "air_seconds": float(r[4])} for r in cur.fetchall()]
             return {"days": self._nightly_days(cur), "hours": hours, "dates": dates, "circling": circling,
                     "preference": preference, "gaggles": gaggles, "parked": parked, "launches": launches,
                     "thermals": thermals, "thermal_cells": thermal_cells, "mixed_thermals": mixed,
                     "agl_hours": agl, "circling_time": circling_time, "flights": flights, "wave": wave,
+                    "cruise": cruise,
+                    "helicopters": helicopters, "helicopter_cells": helicopter_cells, "tug_time": tug_time,
                     "pattern_bands": {"climb_ms": [0, 0.5, 1, 1.5, 2, 3, 4], "radius_m": [0, 30, 50, 80, 120, 200],
                                       "vsep_m": [0, 50, 100, 200, 300],
                                       "agl_m": [0, 50, 120, 300, 600, 1200, 2000],
                                       "flight_minutes": [0, 10, 30, 60, 120, 240, 480],
                                       "flight_extent_km": [0, 1, 5, 20, 50, 100, 300],
-                                      "flight_path_km": [0, 5, 20, 50, 100, 300, 500]},
+                                      "flight_path_km": [0, 5, 20, 50, 100, 300, 500],
+                                      "cruise_altitude_ft": [0, 3000, 5000, 7000, 9000, 11000, 15000],
+                                      "cruise_speed_kmh": [0, 100, 150, 200, 250, 300],
+                                      "tug_tow_share": [0, 0.25, 0.5, 0.75]},
                     "launch_cells": launch_cells, "tug_tows": tugs,
                     "launch_bands": {"release_agl_m": [0, 300, 450, 600, 900],
                                      "winch_top_agl_m": [0, 300, 400, 500, 700],
@@ -2009,7 +2048,7 @@ class SourceTracker:
                           "visibility/grid", "pattern", "prediction", "patterns", "drones", "quality",
                           "encounters")
 
-    def snapshot_bodies(self, month):
+    def snapshot_bodies(self, month, only=None):
         """What every statistics endpoint publishes, for the snapshot of `month`.
 
         The same functions the endpoints call, so a snapshot is the page's
@@ -2029,6 +2068,8 @@ class SourceTracker:
         )
         out = {}
         for name, f in calls:
+            if only is not None and name not in only:
+                continue
             try:
                 out[name] = f()
             except Exception as e:      # one failing statistic must not cost the others their snapshot

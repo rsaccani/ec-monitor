@@ -37,6 +37,13 @@ import time
 
 logger = logging.getLogger("ads_l_map")
 
+# zstd level for finished hours. Until 7 October 2026 it was 19, which took
+# about 9 minutes of the host's only CPU for a busy daytime hour (220 MB) and
+# slowed the nightly batch by a third when the two overlapped; level 9 takes
+# about 20 seconds for files a quarter larger (ratio 5.9 against 7.5, measured
+# on that hour), and decompresses as fast.
+ZSTD_LEVEL = int(os.environ.get("EC_RAW_ZSTD_LEVEL", "9"))
+
 _position = re.compile(r"[/@]\d{6}h(\d{2})(\d{2}\.\d{2})([NS]).(\d{3})(\d{2}\.\d{2})([EW])")
 _id_field = re.compile(r" id([0-9A-Fa-f]{2})[0-9A-Fa-f]{6}")
 JET = 9                     # OGN aircraft type in the id field
@@ -148,7 +155,7 @@ class Recorder:
         for path in sorted(glob.glob(os.path.join(self.dir, "*.aprs"))):
             if path != current and not os.path.exists(path + ".zst"):
                 self.children.append(subprocess.Popen(
-                    ["nice", "zstd", "-19", "-q", "--rm", path],
+                    ["nice", "zstd", f"-{ZSTD_LEVEL}", "-q", "--rm", path],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL))
         cutoff = time.strftime(NAME, time.gmtime(now - self.days * 86400))
         for path in glob.glob(os.path.join(self.dir, "*.aprs*")):
