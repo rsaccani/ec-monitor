@@ -417,6 +417,15 @@ ROUTE_MIN_AIRCRAFT = 5
 # A landing inferred when a flight ends in silence (end_flight): the last fix
 # below 100 m over the ground and lower than 30 to 60 s before.
 INFER_AGL = 100
+# A flight landing within this of its take-off is back home: never cross-country.
+HOME_M = 1000
+# A paraglider is called cross-country only beyond this from its take-off: a
+# low first climb gives a glide range of 2-3 km, and drifting down the valley
+# from a hill is not a cross-country flight (Rodolfo, 7 October 2026).
+PARAGLIDER_CROSS_M = 5000
+# The first climb of a flight that starts on the ground with no launch found
+# ends when the aircraft has come down this far from its highest point.
+FIRST_CLIMB_DROP = 50
 INFER_BACK = (30, 60)
 PATTERN_KIND = {6: "free_flight", 7: "free_flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered",
                 3: "helicopter"}
@@ -1363,7 +1372,7 @@ class Nightly:
                 f[5] += across                  # the straight line across the silence: a lower bound
         if f is None:
             f = self.flight[address] = [prev[0], prev[1], prev[2], prev[0], 0.0, 0.0, category, prev[2],
-                                        prev[1], prev[2], agl, False, prev[4], agl, [], None]
+                                        prev[1], prev[2], agl, False, prev[4], agl, [], None, [prev[4], False]]
         f[3] = t
         f[5] += dist(prev[1], prev[2], lat, lon)
         f[4] = max(f[4], dist(f[1], f[2], lat, lon))
@@ -1371,6 +1380,14 @@ class Nightly:
         # For a landing inferred at the end (end_flight): the last fix, and
         # its altitude every 10 s over the last 90 s.
         f[15] = (alt_now, agl_now)
+        # The top of the first climb: the highest altitude until the aircraft has
+        # come down FIRST_CLIMB_DROP from it (PATTERNS.md, section 6).
+        top = f[16]
+        if not top[1] and alt_now is not None:
+            if top[0] is None or alt_now > top[0]:
+                top[0] = alt_now
+            elif top[0] - alt_now > FIRST_CLIMB_DROP:
+                top[1] = True
         if alt_now is not None:
             hist = f[14]
             if not hist or t - hist[-1][0] >= 10:
@@ -1395,7 +1412,8 @@ class Nightly:
             before = [a for t, a in f[14] if INFER_BACK[0] <= last_t - t <= INFER_BACK[1]]
             if before and last_alt is not None and last_alt < max(before):
                 landing, how = (f[8], f[9], last_alt), "inferred"
-        self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1], f[12], f[13], landing, how))
+        self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1], f[12], f[13], landing, how,
+                             f[16][0]))
 
     def site_near(self, which, lat, lon, radius):
         """The site of a list of sources._sites ("fivl", "takeoff", "airfield")
@@ -1463,7 +1481,8 @@ class Nightly:
                 tow_agl[towed].append((t0, rel))
         for address, t0, la, lo, top in self.winches:
             tow_agl[address].append((t0, top))
-        for address, cat, t0, lon0, sec, maxd, path, lat0, alt0, agl0, landing, how in self.flights:
+        self.first_climb_starts = collections.Counter()
+        for address, cat, t0, lon0, sec, maxd, path, lat0, alt0, agl0, landing, how, climb_top in self.flights:
             if not self.d0 <= t0 < self.d1 or sec < FLIGHT_MIN_S:
                 continue
             if how == "inferred" and cat in POWERED_FIXED and self.airfield_near(landing[0], landing[1]) is None:
@@ -1477,17 +1496,23 @@ class Nightly:
                     cls, d = "end_unseen", maxd
                 else:
                     start = alt0
+                    launched = []
                     if cat == 1:
                         launched = [h for t, h in tow_agl.get(address, ()) if LAUNCH_MATCH[0] <= t0 - t <= LAUNCH_MATCH[1]]
                         ground = self.terrain.elevation(lat0, lon0)
                         if launched and ground is not None:
                             start = ground + max(launched)   # the release, or the top of the winch launch
+                    if not launched and agl0 is not None and agl0 <= LAUNCH_MAX_AGL and climb_top is not None:
+                        # Started on the ground with no launch found: from the
+                        # top of its first climb, else its reach would be zero.
+                        start = max(climb_top, start) if start is not None else climb_top
+                        self.first_climb_starts[kind] += 1
                     if start is None or landing[2] is None:
                         cls, d = "no_altitude", maxd
                     else:
                         reach = max(0.0, start - landing[2]) * GLIDE_RATIO[cat] * GLIDE_MARGIN
                         home = dist(lat0, lon0, landing[0], landing[1])
-                        if home > reach:
+                        if home > reach and home > (PARAGLIDER_CROSS_M if cat == 7 else HOME_M):
                             cls, d = "cross", home
                         elif maxd > reach:
                             cls, d = "out_and_return", maxd
@@ -2512,6 +2537,8 @@ def main():
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
     if long:
         raise ValueError(f"check names longer than daily_quality.check_name allows: {sorted(long)}")
+    if getattr(n, "first_climb_starts", None):
+        logger.info(f"Flights classed from the top of their first climb: {dict(n.first_climb_starts)}")
     if "daily_drone_encounters" in tables:
         kept = sum(r[-1] for r in tables["daily_drone_encounters"][1])
         logger.info(f"Drone encounters: {n.encounters_all} found, {kept} kept once crewed aircraft declared drones "

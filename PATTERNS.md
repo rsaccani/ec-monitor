@@ -268,7 +268,27 @@ the launch site when a tow or a winch launch was found (section 7), else the
 altitude of its first airborne fix, like every flight of the other kinds.
 A flight that never went beyond the glide range from its take-off is
 **local**; one that went beyond it and landed within it is **out and
-return**; one that landed beyond it is **cross-country**. A flight without
+return**; one that landed beyond it is **cross-country**.
+
+Two corrections of the evening of 7 October 2026, before publication. A
+flight that **lands within 1 km of its take-off is back home** and never
+cross-country, whatever its glide range: local or out and return as
+above. And a flight that **starts on the ground with no launch found**
+(every paraglider and hang glider, and a glider with no tow or winch
+launch seen) takes as its take-off altitude **the top of its first climb**,
+the highest it reached before coming down 50 m from it; when a thermal
+follows the launch without a break, its top counts, which overestimates
+the glide range, the cautious side for this purpose. Without either rule,
+a flight from a flat field or a top-landing slope started and ended at the
+same altitude, so its glide range was zero and any landing a few hundred
+metres away read as cross-country: on 6 October 2026, 355 of 496 glider
+cross-country flights, 190 of 343 paraglider and 25 of 41 hang glider
+ones had landed within 1 km of their take-off, and out-and-return flights
+were inflated the same way. A **paraglider** is called cross-country only
+when it lands **more than 5 km** from its take-off: from a hill a first
+climb of 200-300 m gives a glide range of 2-3 km, and on the 11-14 UTC dry
+run of 6 October 34 of 91 paraglider cross-country flights had landed
+1-5 km away, drifting down a valley more often than flying a route. A flight without
 an altitude at either end is counted as such. For local and out-and-return
 flights the length is the largest distance from the take-off; for
 cross-country flights the straight line from take-off to landing; the path
