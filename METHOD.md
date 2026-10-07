@@ -24,7 +24,15 @@ ground stations forward its devices (their prefix PAW identifies them; until
 09:51 UTC on 5 October 2026 they were stored under other radio, and the
 counts reassign those rows when they are computed, so the October 2026
 figures include them). Each is treated as one source, so a device
-heard under two of them is followed as one stream and counted once. Until
+heard under two of them is followed as one stream and counted once.
+PilotAware's ground stations also rebroadcast the FLARM aircraft they hear,
+under the PilotAware prefix with the FLARM device's address and the category
+"ground support": in October 2026, 560 of the 1,463 PilotAware ids were such
+copies. From 7 October 2026 they are not counted as PilotAware devices, and
+the counts drop them whenever they are computed, so the October 2026 figures
+exclude them too; the aircraft itself is counted under FLARM, its own system.
+A genuine PilotAware ground vehicle, which declares the same category, is
+lost with them, and is not an aircraft. Until
 15:19 UTC on 4 October 2026 they were followed apart, which split one
 FLARM into two sparser streams that looked less visible than the device was
 and counted its flying time twice; the October 2026 figures mix the two rules
@@ -68,6 +76,18 @@ glider, `'` glider, `^` powered aircraft, `X` helicopter, `O` balloon). Naviter 
 until 09:21 UTC on 5 October 2026 it was not read, and since Naviter sends the
 glider symbol for every aircraft, its paragliders were counted as gliders in
 the measures and without a category in the device counts.
+The measures take the category of each packet. The device counts take one
+category per device, source and month, and until 7 October 2026 it was the
+one of the device's first packet of the month. FANET instruments switch to
+ground tracking once the pilot has landed and then declare a static object,
+so a pilot first heard after a landing was counted as one: 3,070 of the 9,096
+October FANET rows up to that day were static objects. From 7 October 2026 a
+later aircraft category replaces a stored ground support or static object
+category, also on a row written earlier in the month once the device is
+heard again; rows of devices not heard again keep the category they had.
+Drone Remote ID, decoded by some OGN receivers and forwarded under its own
+source, is counted as a radio system from 7 October 2026, and its devices as
+drones whatever their id declares.
 
 **Do not track.** A packet whose id carries the owner's no-tracking flag is
 dropped on arrival, like a device marked in the OGN device database, from
@@ -493,8 +513,9 @@ fly, above all where carriage cannot be enforced. For each month:
 Monthly lists of device addresses per source and channel, for counting
 devices; daily and monthly totals per source, channel, category, height band
 and cell for the measures above; reception counts by angle; prediction errors
-by bin. Apart from the raw feed kept for four days, described below, no track
-and no position of any aircraft is stored.
+by bin; the daily totals of section 10, and for each aircraft that circled,
+its thermals to each side per day. Apart from the raw feed kept for four
+days, described below, no track and no position of any aircraft is stored.
 
 A device address can be traced to an aircraft and its pilot, so the lists of
 addresses are kept for the current and the previous month only. Once a month
@@ -505,6 +526,39 @@ previous month is kept whole so that the share of devices heard again from
 one month to the next can be measured; a source whose ids change often shows
 almost none. The service checks every six hours, so a month's addresses go
 within a few hours of the end of the following month.
+
+Some published figures can only be computed from the addresses, and until
+7 October 2026 they were lost with them. From that day each month is reduced,
+before its addresses are deleted and in the same step, to what those figures
+need as well:
+
+- **Systems per aircraft** (section 1), as published: aircraft on one, two,
+  and three or more systems per category, those with a radio and a phone
+  app, the combinations of systems shared by at least 5 aircraft and the
+  rest pooled, and the ADS-L transmitters that also send FLARM or FANET.
+- **Return**: of the devices heard on each source in the month, how many
+  were heard again on it the month after. The month after is never older
+  than the previous month, so both still hold their addresses at that
+  moment.
+- **Circling per pilot** (section 10.2): how many aircraft had 1 to 4, 5 to
+  9, 10 to 19 and 20 or more thermals, in tenths of their right-hand share,
+  and the sums the preference test is computed from (the variance expected
+  by chance and the observed one, the aircraft at 80% or more on one side
+  and the number chance would give), so that the test is still answered for
+  the month. The thermals per aircraft and day are then deleted.
+
+Months archived before 7 October 2026 were reduced without these, and have
+neither.
+
+**Monthly snapshots.** From 7 October 2026, the night the last day of a month
+is computed (section 10), the data of every statistics endpoint is stored as
+it stood then, with the commit of this file and of the code in force: what
+the page showed for that month, frozen. Later changes to a rule change the
+live figures, never a snapshot, so a trend over months can be read on
+figures computed under the rules of their own time, and the commit says
+which. Snapshots are published as downloads under the same licence as the
+other data. A month whose last night is computed again has its snapshot
+replaced.
 
 The plan was to keep nothing of the feed beyond the counts above, and the
 first weeks showed what that costs. Several measures had to be redefined once
@@ -534,10 +588,233 @@ packet from a device that asks not to be tracked, in its own id or in the
 OGN device database. The files stay on the server,
 readable by the service account alone; each hour is compressed once it is
 over and deleted after four days. Only the aggregates of this method leave
-the server, as with the live feed. The recording is a setting of the service and is meant to be switched
-off once the measures have settled.
+the server, as with the live feed.
 
-## 10. Known limits
+The recording was meant to be switched off once the measures had settled.
+From 7 October 2026 it stays on, because the measures of section 10 are
+computed from it: each night a batch reads the previous day of the recording
+once and keeps only its aggregates. Some of those questions need a whole day
+of an aircraft's positions at once (where a thermal begins and ends, whether
+an aircraft sat still for half an hour), which the live service cannot hold
+in memory for every aircraft. The retention does not change: nothing older
+than four days exists, and the batch needs only the last day and a half.
+
+## 10. Measured each night from the recording
+
+From 7 October 2026 some measures are computed once a night, at 01:30 UTC,
+from the recording of the previous UTC day (section 9), and only their
+aggregates are kept. They answer questions that need a whole day of an
+aircraft's positions at once. The rules of sections 1 and 2 apply unchanged:
+the same sources and exclusions, the time written in the fix, the 5-minute
+rules for stale and future fixes, the airborne speeds per kind, the
+implausible segments and fixes, one timeline per 24-bit address for flying
+time. Devices whose owners asked not to be tracked are never recorded.
+ADS-B stays out of every flight measure, and appears only as the other
+aircraft in the drone encounters of 10.4, where an aircraft with ADS-B Out is
+exactly what a drone pilot should know about.
+
+A fix belongs to the UTC day written in it. A segment that begins before
+midnight UTC and ends after it is not counted; at that hour it is one to
+three in the morning across Europe. The data-quality checks of 10.5 are
+counted by the time of reception instead, since a wrong clock is what some
+of them count. A day missing hours of recording, because the service was
+stopped, is computed from the hours there are, and the figures list the
+hours that were missing.
+
+### 10.1 When each kind of aircraft flies
+
+The question: on which days and at which hours does each kind of aircraft
+fly, which tells a regulator when the airspace is shared and with whom.
+Hours are **local solar time**, UTC plus the longitude divided by 15 (one
+hour every 15 degrees east), so that two in the afternoon is the same moment
+of the day, with the sun at the same height, in Lisbon and in Bucharest.
+Time zones and summer time would put an hour or two of difference between
+places that fly at the same solar hours, and thermals follow the sun. The
+weekday is that of the local solar date.
+
+The flying time is that of section 1, one timeline per address, filed by the
+solar hour at the middle of each airborne segment, at the longitude where
+the segment began. Ground support and static objects are left out, and
+drones (10.4) are kept apart from crewed aircraft. Each hour also counts the
+aircraft that flew in it; summed over hours that counts aircraft-hours, so
+the number of aircraft is read hour by hour.
+
+### 10.2 Circling direction
+
+The question: do pilots circle more to one side, does each pilot keep a side
+of their own, and do pilots who share a thermal turn the same way, which
+matters to anyone predicting where a circling aircraft will be (section 6).
+
+**Direction** comes from the change of course between successive fixes of
+one device, so it does not need a turn rate. Only fixes at most 5 seconds
+apart are used: in 15 seconds a paraglider circling once every 20 seconds
+turns 270 degrees, which reads as 90 the other way. A change of course of 5
+to 45 degrees a second (a full turn in 72 down to 8 seconds) is turning.
+Right means clockwise seen from above; on the recording the turn rate FLARM
+transmits agreed in sign with the change of course 99.4% of the time, FANET's
+92%. Both fixes must be at the airborne speed of section 1 for the kind, and
+below 200 km/h.
+
+**A thermal** is a run of turning to one side totalling at least **two full
+turns** (720 degrees). One turn can be a manoeuvre; two in a row are a climb.
+Runs to the same side within **10 minutes and 3 km** of each other are one
+thermal, since pilots leave the core to recentre and packets drop out, and
+both would otherwise split one climb into several. A thermal belongs to the
+day of its first run. Measured for gliders, hang gliders and paragliders.
+
+One aircraft is one address, and an instrument sending FLARM, FANET and ADS-L
+under one address would count each thermal three times, so only the system
+on which the address has most thermals that day is used. Per day and kind
+the data keep the thermals, the degrees turned and the seconds circling, to
+each side.
+
+**Each pilot's side** is tested against chance. If every pilot of a kind
+chose each side with the share p seen across all of them, the right-hand
+share of a pilot with n thermals would vary around p with variance
+p(1 − p)/n. The test compares the observed variance of the shares, among
+pilots with at least 5 and at least 10 thermals, with that expected one, and
+counts the pilots at 80% or more on one side against the number the binomial
+distribution expects. It is computed when read, over the current and the
+previous month, from each aircraft's thermals per day (section 9); a pilot
+needs many thermals, and one day gives few. Thermals of one pilot are not
+independent of each other: a pilot joining a gaggle usually turns the way it
+turns, which also widens the spread, so a wide spread is a sign of personal
+preference without proving it.
+
+**Gaggles.** Two aircraft share a thermal when, while both are circling,
+they are within **500 m** of each other horizontally and **300 m**
+vertically for at least **60 seconds** in all (positions compared every
+5 seconds). Each such pair of thermals is counted once, as turning the same
+way or opposite ways. If pilots chose sides independently, two of them would
+agree with probability p² + (1 − p)², and for two kinds with shares pa and
+pb, pa·pb + (1 − pa)(1 − pb); the page sets the observed share beside it.
+Pilots in a thermal are expected to turn the way the first one turns, so the
+gaggle figure says how far that holds, and how much of the side preference
+of 10.2 it may explain.
+
+### 10.3 Parked aircraft transmitting
+
+The question: how much of each system's traffic comes from aircraft sitting
+on the ground with the transmitter on. A parked transmitter uses airtime that
+aircraft in flight share (FANET slows every device in range down as their
+number grows, section 2), drains a battery, and shows on other pilots'
+displays as traffic.
+
+An aircraft counts as parked when it declares a crewed category (gliders to
+jets, categories 1 to 9) and all its fixes on one system stay inside a box
+whose diagonal is under **100 m** for at least **30 minutes**, with no
+silence over 20 minutes and no change of category, and the median of its
+height above the terrain model, read once a minute, lies between **−60 and
++60 m**. The box is twice the position noise of a phone, and smaller than
+any field anybody taxis or ground handles in; half an hour excludes a
+briefing or a launch queue; the height band is the error of the terrain
+model near relief (section 3) with the altitude offsets seen on the ground,
+0 to +8 m on every system. A paraglider or hang glider pilot waiting at
+take-off with the instrument on for half an hour is counted too.
+ADS-B is left out, since the recording drops ADS-B surface reports
+(section 9). Per day, system and category the data keep the parked aircraft,
+the seconds and the packets received.
+
+### 10.4 Drones (Question 7)
+
+The question: how much do drones fly where light aircraft fly, how low and
+how fast, how far from their pilots, and how often they come close to a
+crewed aircraft.
+
+A drone is a device declaring category 13 (unmanned aircraft) on any source,
+or any device on Remote ID. Its flying time follows the timeline of 10.1
+with the airborne rule for kinds without a speed of their own (section 1: at
+least 10 km/h at either end of a segment), so a hovering drone counts only
+while it moves, and the time is a lower bound.
+
+Each airborne segment is filed by the **1-degree cell** where it began
+(about 110 by 77 km at the latitude of the Alps; a finer map of so few
+devices could point at one operator), by **height above the ground** (0–50, 50–120, 120–300, above
+300 m, from the terrain model of section 3; 120 m is the ceiling of the
+open category in the EU rules for drones), by **speed** (the mean of its two
+ends: under 20, 20–50, 50–100, over 100 km/h), and by the set of systems the
+drone's address was heard on that day (platforms that only relay others are
+left out).
+
+**Extent.** For each drone and day, the largest distance from the first fix
+of a session to any later fix of it (sessions end at a silence over 20
+minutes), in bands of under 1, 1–3, 3–10 and over 10 km. The first fix is
+taken as where the remote pilot stands, who must keep a drone in the open
+category within sight, a few hundred metres for a small one. An extent above
+1 km therefore **suggests** flight beyond the line of sight; it cannot prove
+it, since the pilot may move or have observers, and the first fix may come
+after take-off. A session is used rather than the whole day so that an
+operator who flies at two sites is not counted as one flight between them.
+
+**Encounters.** A drone fix and a fix of a crewed aircraft in flight
+(categories 1 to 9, at the airborne speed of its kind, any source including
+ADS-B) within **10 seconds**, **1 km** horizontally and **150 m** vertically,
+both with an altitude. One encounter is counted per pair of aircraft in 10
+minutes, filed by its closest horizontal distance (under 300, 300–600,
+600–1,000 m), the kind of the other aircraft, the systems each address was
+heard on that day, and whether the two share at least one of them. Sharing
+a system means both were heard on it by the network. Whether either could
+have shown the other to its pilot depends on what each device decodes and
+displays, which the feed does not say, so nothing more is claimed from it.
+
+### 10.5 Data quality
+
+The question: which errors in the feed come from the way a system or a
+receiver is set up, and could be fixed by whoever runs it. Findings are
+published per system and per OGN receiver, by name; devices appear only as
+counts (decided on 7 October 2026). Each check is a count over a stated
+total, per day.
+
+Per system:
+
+- **Fixes more than 60 seconds late** on arrival, and **fixes more than
+  5 seconds ahead** of their arrival, of all fixes: a clock that is wrong, or
+  positions held back and sent in bursts. The measures already ignore fixes
+  more than 5 minutes late (section 1).
+- **Altitude of 60,000 m or more**, of the fixes with an altitude: 2¹⁶ m,
+  65,536 m, is what a small negative altitude becomes in an unsigned 16-bit
+  field. **Altitude exactly 0**, of the same: usually no altitude, sent as
+  zero.
+- **Positions within 1 degree of 0,0** and **positions without a time**
+  (the time field sent as underscores), of all position packets.
+- **Heading over 360 degrees**, of the fixes with a course.
+- **Free-flight fixes beyond what a paraglider or hang glider can do**
+  (section 1), of the free-flight fixes.
+- **Addresses with 3 or more jumps** over 500 km/h and 2 km between
+  successive fixes, of the addresses on the system: one address shared by
+  several devices, or corrupt positions.
+- **Devices changing category within the day**, of the devices declaring
+  one, counting only categories declared in at least two packets. A FANET
+  instrument switching between paraglider or hang glider and static object
+  is its ground-tracking mode after a landing, counted under a check of its
+  own.
+
+Per receiver, from its own position reports and from the radio packets it
+forwards (the receiver is the last element of the packet's path; ADS-B is
+left out):
+
+- **Moved**: its reported position more than 2 km from its first report of
+  the day. A receiver in a car, or one whose configured position is wrong
+  part of the time, places the aircraft it hears wrongly whenever their
+  position is decoded from its own (section 1).
+- **Altitude**: the median of its announced altitude more than 500 m from
+  the terrain model under it.
+- **Late**: more than 5% of the packets it forwards (at least 100) more than
+  60 seconds late.
+- **Altitude offset**: FLARM devices send their height above the ellipsoid
+  and the receiver converts it to height above sea level. For every FLARM
+  fix heard by two or more receivers, the altitudes they forward are
+  compared. A receiver's offset is the median of its differences with the
+  others; a receiver heard mostly beside one faulty neighbour would show that
+  neighbour's error reversed, so the figure kept is the median against the
+  partners whose own offset is within 20 m. Flagged above **20 m**, with at
+  least **50** fixes shared with such partners. On 3 October 2026 two
+  receivers showed +41 to +48 m, the size of the geoid above the ellipsoid in
+  central Europe, as if they did not convert.
+
+Receivers are listed only when flagged, beside how many were judged.
+
+## 11. Known limits
 
 - A device never heard at all does not appear, and a pilot who carries
   nothing is invisible to this measure as to everyone else.
@@ -560,3 +837,10 @@ off once the measures have settled.
 - A restart of the service loses the totals not yet written (at most 15
   minutes) and every silence that spans it; nothing is counted twice, and no
   silence is invented.
+- The altitude reference of drones on the feed is not documented. The Remote
+  ID standards carry a height above the WGS84 ellipsoid, which lies 40 to
+  55 m above sea level in Europe; if that is what arrives, a drone looks that
+  much higher than it is, which moves it across the 50 m band of section
+  10.4 and makes the vertical margin of an encounter smaller in effect.
+- The nightly measures need the raw recording: a day the service was stopped
+  for has its missing hours missing for good.
