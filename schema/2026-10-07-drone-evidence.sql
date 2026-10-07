@@ -1,4 +1,4 @@
--- Which devices declaring a drone are drones (nightly.py, METHOD.md 10.4,
+-- Which devices declaring a drone are drones (nightly.py, METHOD.md 10.1 since 7 October 2026,
 -- 7 October 2026). Run once as root before deploying the code that uses it:
 --   mysql < schema/2026-10-07-drone-evidence.sql
 -- The drone tables gain `evidence` in their key: 1 confirmed, 2 uncertain.

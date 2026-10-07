@@ -1,6 +1,6 @@
 # Running the nightly measures
 
-`nightly.py` computes the measures of METHOD.md section 10 from the raw
+`nightly.py` computes the measures of METHOD.md section 10 and PATTERNS.md from the raw
 recording of the previous UTC day and writes aggregate tables. It runs as
 `rsa`, from the service checkout `~/ads-l-map`, at 01:30 UTC: the recorder
 closes the last hour of the day at midnight and the first hour of the next

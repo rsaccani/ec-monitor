@@ -522,10 +522,25 @@ def _upsert(table, keys, columns):
 
 
 SYSTEMS_MIN_COMBO = 5   # aircraft before a combination of systems is listed by name
-# The per-pilot circling test (METHOD.md, section 10.2): pilots with at least
+# The per-pilot circling test (PATTERNS.md, section 2): pilots with at least
 # this many thermals, and the bands of thermal counts kept for archived months.
 PREFERENCE_MIN_THERMALS = (5, 10)
+THERMAL_CELL_MIN = 20     # thermals in a month before a 1-degree cell of climb rates is published
 THERMAL_BANDS = (1, 5, 10, 20)
+# The thermal count taken for each band when an archived month's expected
+# histogram is rebuilt without the pilots' own counts: about the middle of
+# the band, and 25 for "20 or more" (7 October 2026).
+BAND_THERMALS = (2, 7, 14, 25)
+
+
+def expected_deciles(n, p):
+    """For one pilot with n thermals, the chance of each tenth of right-hand share
+    (the deciles of `histogram`: 0 under 10%, ..., 9 from 90%) if sides were
+    chosen with probability p."""
+    out = [0.0] * 10
+    for j in range(n + 1):
+        out[min(9, int(j / n * 10))] += math.comb(n, j) * p ** j * (1 - p) ** (n - j)
+    return out
 HOURS_SQL = _upsert("monthly_hours", ["month", "category"], ["segments", "air_seconds"])
 DETAIL_SQL = _upsert("monthly_visibility_detail",
                      ("month", "source", "via", "category", "msl_band", "agl_band"), DETAIL_COLUMNS)
@@ -675,6 +690,7 @@ class SourceTracker:
         self.drones_cache = (0, None)
         self.quality_cache = (0, None)
         self.snapshots_cache = (0, None)
+        self.encounters_cache = (0, None)
         self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
         # One lock per statistic, so a slow one (the device counts) never holds
         # up the others, and a thread-local flag with which warm_loop forces a
@@ -1357,7 +1373,7 @@ class SourceTracker:
                                 ("pattern", self.pattern_stats), ("sources", self.monthly_stats),
                                 ("visibility", self.visibility_stats), ("patterns", self.patterns_stats),
                                 ("drones", self.drones_stats), ("quality", self.quality_stats),
-                                ("snapshots", self.snapshots_stats)):
+                                ("snapshots", self.snapshots_stats), ("encounters", self.encounters_stats)):
                     try:
                         f()
                     except Exception as e:      # one failing statistic must not stop the others
@@ -1627,7 +1643,7 @@ class SourceTracker:
             self.prediction_cache = (time.time(), out)
             return out
 
-    # --- the nightly measures (nightly.py, METHOD.md section 10) ------------
+    # --- the nightly measures (nightly.py; METHOD.md section 10, PATTERNS.md) --
 
     def _cached(self, name, attr, compute):
         """The cache and lock pattern of the statistics above, for one more."""
@@ -1661,7 +1677,7 @@ class SourceTracker:
 
     @staticmethod
     def preference_sums(pilots, p):
-        """The sums the per-pilot test is made of (METHOD.md, section 10.2).
+        """The sums the per-pilot test is made of (PATTERNS.md, section 2).
 
         `pilots` is a list of (thermals, right-hand thermals), `p` the share of
         right-hand thermals in the population. If every pilot chose each side
@@ -1676,7 +1692,8 @@ class SourceTracker:
         for nmin in PREFERENCE_MIN_THERMALS:
             sel = [(n, r) for n, r in pilots if n >= nmin]
             x = {"min_thermals": nmin, "pilots": len(sel), "chance_var_sum": 0.0, "share_sum": 0.0,
-                 "share_sq_sum": 0.0, "right_80": 0, "left_80": 0, "expected_80": 0.0}
+                 "share_sq_sum": 0.0, "right_80": 0, "left_80": 0, "expected_80": 0.0,
+                 "expected_histogram": [0.0] * 10}
             for n, r in sel:
                 share = r / n
                 x["share_sum"] += share
@@ -1687,16 +1704,25 @@ class SourceTracker:
                     x["chance_var_sum"] += p * (1 - p) / n
                     x["expected_80"] += sum(math.comb(n, j) * p ** j * (1 - p) ** (n - j)
                                             for j in range(n + 1) if j / n >= 0.8 or j / n <= 0.2)
+                    for d, v in enumerate(expected_deciles(n, p)):
+                        x["expected_histogram"][d] += v
             out.append(x)
         return out
 
     @staticmethod
-    def preference_row(x, p, histogram):
-        """The published row of one preference test, from its sums."""
+    def preference_row(x, p, histogram, expected=None, approximate=False):
+        """The published row of one preference test, from its sums.
+
+        `expected_histogram` is the number of pilots per decile that chance
+        alone would give, each pilot with its own thermal count (from
+        7 October 2026); for an archived month the counts are known only by
+        band, and it is marked `expected_approximate`.
+        """
         n = x["pilots"]
         row = {"min_thermals": x["min_thermals"], "pilots": n, "p_right": round(p, 4) if p is not None else None,
                "observed_var": None, "chance_var": None, "ratio": None,
-               "right_80": None, "left_80": None, "expected_80": None, "histogram": None}
+               "right_80": None, "left_80": None, "expected_80": None, "histogram": None,
+               "expected_histogram": None, "expected_approximate": approximate}
         if n >= 5 and p is not None and 0 < p < 1:
             mean = x["share_sum"] / n
             obs = max(0.0, x["share_sq_sum"] / n - mean * mean)
@@ -1704,7 +1730,8 @@ class SourceTracker:
             row.update(observed_var=round(obs, 5), chance_var=round(chance, 5),
                        ratio=round(obs / chance, 2) if chance else None,
                        right_80=int(x["right_80"]), left_80=int(x["left_80"]),
-                       expected_80=round(x["expected_80"], 1), histogram=histogram)
+                       expected_80=round(x["expected_80"], 1), histogram=histogram,
+                       expected_histogram=[round(v, 2) for v in expected] if expected else None)
         return row
 
     @classmethod
@@ -1713,7 +1740,7 @@ class SourceTracker:
         out = []
         for x in cls.preference_sums(pilots, p):
             hist = collections.Counter(min(9, int(r / n * 10)) for n, r in pilots if n >= x["min_thermals"])
-            out.append(cls.preference_row(x, p, [hist[b] for b in range(10)]))
+            out.append(cls.preference_row(x, p, [hist[b] for b in range(10)], x["expected_histogram"]))
         return out
 
     def patterns_stats(self):
@@ -1756,7 +1783,9 @@ class SourceTracker:
             cur.execute("""SELECT month, category, thermal_band, share_decile, pilots
                                FROM monthly_circling_pilot_summary""")
             deciles = collections.defaultdict(lambda: [0] * 10)
+            band_pilots = collections.defaultdict(collections.Counter)   # (month, cat) -> band -> pilots
             for month, cat, b, decile, k in cur.fetchall():
+                band_pilots[(month, int(cat))][int(b)] += int(k)
                 for nmin in PREFERENCE_MIN_THERMALS:
                     if THERMAL_BANDS[int(b)] >= nmin:
                         deciles[(month, int(cat), nmin)][int(decile)] += int(k)
@@ -1768,7 +1797,15 @@ class SourceTracker:
                          chance_var_sum=float(r[6]), share_sum=float(r[7]), share_sq_sum=float(r[8]),
                          right_80=int(r[9]), left_80=int(r[10]), expected_80=float(r[11]))
                 p = int(r[5]) / int(r[4]) if r[4] else None
-                row = self.preference_row(x, p, deciles.get((r[0], int(r[1]), int(r[2]))))
+                expected = None
+                if p is not None and 0 < p < 1:
+                    # Each band's pilots taken at the band's typical count.
+                    expected = [0.0] * 10
+                    for b, k in band_pilots[(r[0], int(r[1]))].items():
+                        if THERMAL_BANDS[b] >= int(r[2]):
+                            for d, v in enumerate(expected_deciles(BAND_THERMALS[b], p)):
+                                expected[d] += k * v
+                row = self.preference_row(x, p, deciles.get((r[0], int(r[1]), int(r[2]))), expected, approximate=True)
                 preference.append(dict({"from": r[0] + "-01", "to": r[0], "category": int(r[1])}, **row))
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), category_a, category_b, SUM(same_side), SUM(opposite_side)
                                FROM daily_gaggles GROUP BY 1, 2, 3""")
@@ -1784,11 +1821,75 @@ class SourceTracker:
                                FROM daily_parked GROUP BY 1, 2, 3""")
             parked = [{"month": r[0], "system": r[1], "category": int(r[2]), "aircraft_days": int(r[3]),
                        "seconds": float(r[4]), "packets": int(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), method, towed_kind, height_band, duration_band,
+                                  SUM(launches)
+                               FROM daily_launches GROUP BY 1, 2, 3, 4, 5""")
+            launches = [{"month": r[0], "method": r[1], "towed_kind": r[2],
+                         "height_band": None if r[3] == UNKNOWN_BAND else int(r[3]),
+                         "duration_band": None if r[4] == UNKNOWN_BAND else int(r[4]), "launches": int(r[5])}
+                        for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), method, lat_idx, lon_idx, SUM(launches)
+                               FROM daily_launches GROUP BY 1, 2, 3, 4""")
+            launch_cells = [{"month": r[0], "method": r[1], "lat": int(r[2]), "lon": int(r[3]),
+                             "launches": int(r[4])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), tows_band, SUM(tugs)
+                               FROM daily_tug_tows GROUP BY 1, 2""")
+            tugs = [{"month": r[0], "tows_band": int(r[1]), "tug_days": int(r[2])} for r in cur.fetchall()]
+            # Thermals: by kind, solar hour and the two bands; cells only where at
+            # least THERMAL_CELL_MIN thermals were flown in the month, so that a
+            # cell never stands for a handful of identifiable flights.
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, solar_hour, climb_band, radius_band,
+                                  SUM(thermals), SUM(climb_sum), SUM(climbs), SUM(radius_sum)
+                               FROM daily_thermals GROUP BY 1, 2, 3, 4, 5""")
+            thermals = [{"month": r[0], "kind": r[1], "solar_hour": int(r[2]),
+                         "climb_band": None if r[3] == UNKNOWN_BAND else int(r[3]),
+                         "radius_band": None if r[4] == UNKNOWN_BAND else int(r[4]), "thermals": int(r[5]),
+                         "climb_sum": float(r[6]), "climbs": int(r[7]), "radius_sum": float(r[8])}
+                        for r in cur.fetchall()]
+            cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum),
+                                   SUM(climbs)
+                                FROM daily_thermals GROUP BY 1, 2, 3, 4 HAVING SUM(thermals) >= {THERMAL_CELL_MIN}""")
+            thermal_cells = [{"month": r[0], "kind": r[1], "lat": int(r[2]), "lon": int(r[3]), "thermals": int(r[4]),
+                              "climb_sum": float(r[5]), "climbs": int(r[6])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind_a, kind_b, vsep_band, SUM(thermals)
+                               FROM daily_mixed_thermals GROUP BY 1, 2, 3, 4""")
+            mixed = [{"month": r[0], "kind_a": r[1], "kind_b": r[2], "vsep_band": int(r[3]), "thermals": int(r[4])}
+                     for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, solar_hour, agl_band, SUM(air_seconds)
+                               FROM daily_agl_hours GROUP BY 1, 2, 3, 4""")
+            agl = [{"month": r[0], "kind": r[1], "solar_hour": int(r[2]),
+                    "agl_band": None if r[3] == UNKNOWN_BAND else int(r[3]), "air_seconds": float(r[4])}
+                   for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, solar_hour, SUM(circling_seconds), SUM(air_seconds)
+                               FROM daily_circling_time GROUP BY 1, 2, 3""")
+            circling_time = [{"month": r[0], "kind": r[1], "solar_hour": int(r[2]), "circling_seconds": float(r[3]),
+                              "air_seconds": float(r[4])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, start_hour, duration_band, extent_band, path_band,
+                                  SUM(flights), SUM(seconds), SUM(path_m)
+                               FROM daily_flights GROUP BY 1, 2, 3, 4, 5, 6""")
+            flights = [{"month": r[0], "kind": r[1], "start_hour": int(r[2]), "duration_band": int(r[3]),
+                        "extent_band": int(r[4]), "path_band": int(r[5]), "flights": int(r[6]),
+                        "seconds": float(r[7]), "path_m": float(r[8])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, SUM(climbs)
+                               FROM daily_wave GROUP BY 1, 2, 3""")
+            wave = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "climbs": int(r[3])} for r in cur.fetchall()]
             return {"days": self._nightly_days(cur), "hours": hours, "dates": dates, "circling": circling,
-                    "preference": preference, "gaggles": gaggles, "parked": parked}
+                    "preference": preference, "gaggles": gaggles, "parked": parked, "launches": launches,
+                    "thermals": thermals, "thermal_cells": thermal_cells, "mixed_thermals": mixed,
+                    "agl_hours": agl, "circling_time": circling_time, "flights": flights, "wave": wave,
+                    "pattern_bands": {"climb_ms": [0, 0.5, 1, 1.5, 2, 3, 4], "radius_m": [0, 30, 50, 80, 120, 200],
+                                      "vsep_m": [0, 50, 100, 200, 300],
+                                      "agl_m": [0, 50, 120, 300, 600, 1200, 2000],
+                                      "flight_minutes": [0, 10, 30, 60, 120, 240, 480],
+                                      "flight_extent_km": [0, 1, 5, 20, 50, 100, 300],
+                                      "flight_path_km": [0, 5, 20, 50, 100, 300, 500]},
+                    "launch_cells": launch_cells, "tug_tows": tugs,
+                    "launch_bands": {"release_agl_m": [0, 300, 450, 600, 900],
+                                     "winch_top_agl_m": [0, 300, 400, 500, 700],
+                                     "tow_minutes": [0, 3, 5, 8, 12], "tows_per_tug": [1, 2, 6, 11]}}
         return self._cached("patterns", "patterns_cache", compute)
 
-    # Which devices declaring a drone are drones (nightly.py, METHOD.md 10.4).
+    # Which devices declaring a drone are drones (nightly.py, METHOD.md 10.1).
     DRONE_EVIDENCE = {1: "confirmed", 2: "uncertain", 3: "crewed_adsb_emitter", 4: "crewed_ddb_thermal",
                       5: "stray", 6: "crewed_climb_extent"}
 
@@ -1835,6 +1936,28 @@ class SourceTracker:
                     "distance_bands_m": [0, 300, 600, 1000], "classes": classes, "cells": cells, "bands": bands,
                     "systems": systems, "extent": extent, "encounters": encounters}
         return self._cached("drones", "drones_cache", compute)
+
+    def encounters_stats(self):
+        """Crewed aircraft of different kinds coming close, per month (METHOD.md 10.2).
+
+        Aggregates only: per kind pair, threshold, distance and closing-speed
+        band and the systems of each side; never an event, a date finer than
+        the month, or a place.
+        """
+        def compute(cur):
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind_a, kind_b, threshold, distance_band, closing_band,
+                                  systems_a, systems_b, shares_radio, shares_any, SUM(encounters)
+                               FROM daily_crewed_encounters GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10""")
+            rows = [{"month": r[0], "kind_a": r[1], "kind_b": r[2], "threshold": r[3],
+                     "distance_band": int(r[4]), "closing_band": None if r[5] == UNKNOWN_BAND else int(r[5]),
+                     "systems_a": r[6], "systems_b": r[7], "shares_radio": bool(r[8]), "shares_any": bool(r[9]),
+                     "encounters": int(r[10])} for r in cur.fetchall()]
+            return {"days": self._nightly_days(cur),
+                    "thresholds": {"wide": {"metres": 1000, "vertical_m": 150, "seconds": 10},
+                                   "close": {"metres": 300, "vertical_m": 100, "seconds": 10}},
+                    "distance_bands_m": {"wide": [0, 300, 600, 1000], "close": [0, 100, 200, 300]},
+                    "closing_bands_kmh": [0, 50, 100, 200, 400], "encounters": rows}
+        return self._cached("encounters", "encounters_cache", compute)
 
     def quality_stats(self, month=None):
         """Data-quality findings per system and per OGN receiver, last 7 days and this month.
@@ -1883,7 +2006,8 @@ class SourceTracker:
     # --- monthly snapshots (METHOD.md, section 9) ---------------------------
 
     SNAPSHOT_ENDPOINTS = ("adsl/monthly", "sources", "hours", "systems", "visibility", "visibility/detail",
-                          "visibility/grid", "pattern", "prediction", "patterns", "drones", "quality")
+                          "visibility/grid", "pattern", "prediction", "patterns", "drones", "quality",
+                          "encounters")
 
     def snapshot_bodies(self, month):
         """What every statistics endpoint publishes, for the snapshot of `month`.
@@ -1901,6 +2025,7 @@ class SourceTracker:
             ("visibility/grid", lambda: self.grid_stats(month)), ("pattern", self.pattern_stats),
             ("prediction", self.prediction_stats), ("patterns", self.patterns_stats),
             ("drones", self.drones_stats), ("quality", lambda: self.quality_stats(month)),
+            ("encounters", self.encounters_stats),
         )
         out = {}
         for name, f in calls:

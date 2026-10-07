@@ -738,12 +738,15 @@ def respond_parts(out, name):
     """A statistic made of several lists: JSON as it is, or one CSV with a `part` column."""
     if request.args.get("format") != "csv":
         return jsonify(out)
-    return respond([dict({"part": part}, **row) for part, rows in out.items() for row in rows], name)
+    # Only the lists of rows go into the CSV; the band edges and thresholds
+    # beside them are in the JSON (until 7 October 2026 they broke it).
+    return respond([dict({"part": part}, **row) for part, rows in out.items()
+                    if isinstance(rows, list) for row in rows if isinstance(row, dict)], name)
 
 
 @app.route(API + "/patterns")
 def get_patterns():
-    """Flying time by solar hour and weekday, circling direction, parked aircraft (METHOD.md, section 10)."""
+    """How light aviation flies (PATTERNS.md), and parked aircraft transmitting (METHOD.md, section 10.3)."""
     if tracker is None or SKIP_STATS_DATABASE:
         return jsonify({})
     try:
@@ -755,7 +758,7 @@ def get_patterns():
 
 @app.route(API + "/drones")
 def get_drones():
-    """Drones by cell, height, speed, systems and extent, and their encounters (METHOD.md, section 10)."""
+    """Drones by cell, height, speed, systems and extent, and their encounters (METHOD.md, section 10.1)."""
     if tracker is None or SKIP_STATS_DATABASE:
         return jsonify({})
     try:
@@ -765,9 +768,21 @@ def get_drones():
         return jsonify({})
 
 
+@app.route(API + "/encounters")
+def get_encounters():
+    """Crewed aircraft of different kinds coming close, as monthly aggregates (METHOD.md, section 10.2)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        return respond_parts(tracker.encounters_stats(), "crewed-encounters")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_crewed_encounters: {e}")
+        return jsonify({})
+
+
 @app.route(API + "/quality")
 def get_quality():
-    """Data-quality findings per system and per OGN receiver (METHOD.md, section 10)."""
+    """Data-quality findings per system and per OGN receiver (METHOD.md, section 10.4)."""
     if tracker is None or SKIP_STATS_DATABASE:
         return jsonify({})
     try:

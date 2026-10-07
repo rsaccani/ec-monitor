@@ -1,4 +1,5 @@
--- Tables of the nightly measures (nightly.py, METHOD.md section 10), and two
+-- Tables of the nightly measures (nightly.py, METHOD.md section 10 and, from
+-- the evening of 7 October 2026, PATTERNS.md), and two
 -- grants for the fixes of 7 October 2026 in sources.py. Run once as root:
 --   mysql < schema/2026-10-07-nightly.sql
 -- before deploying the code that uses them. Every daily table is keyed by
