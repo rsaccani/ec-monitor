@@ -663,7 +663,9 @@ def source_info(tocall):
 
 _places = None          # (by 0.25-degree cell, all places), loaded on first use
 _sites = None           # list name -> [(lat, lon, name, gliding)]
-_place_names = {}       # (lat_idx, lon_idx, kind) -> name or None
+_place_names = {}       # (lat_idx, lon_idx, kind) -> (name, lat, lon) or None
+_site_names = None      # (list, name) -> [(lat, lon)], for site_position
+COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 
 def _load_places():
@@ -724,26 +726,57 @@ def _nearest_site(sites, lat_idx, lon_idx, prefer_gliding=False):
         if south - pad_lat <= lat <= north + pad_lat and west - pad_lon <= lon <= east + pad_lon:
             key = (0 if gliding or not prefer_gliding else 1, _distance(clat, clon, lat, lon))
             if best is None or key < best[0]:
-                best = (key, name)
+                best = (key, (name, lat, lon))
+    return best[1] if best else None
+
+
+def site_position(kind, name, lat_idx, lon_idx):
+    """(name, lat, lon) of the site of the kind's lists (SITE_ORDER) called
+    `name` that lies nearest the cell's centre, or None. The thermal sites of
+    nightly.py are stored by name, and two sites can share one ("Startplatz"),
+    so the one nearest the cell is taken to be it."""
+    global _site_names
+    if _sites is None:
+        _load_sites()
+    if _site_names is None:
+        _site_names = collections.defaultdict(list)
+        for which, rows in _sites.items():
+            for lat, lon, site, _ in rows:
+                _site_names[(which, site[:255])].append((lat, lon))
+    n = THERMAL_CELLS_PER_DEG
+    clat, clon = (lat_idx + 0.5) / n, (lon_idx + 0.5) / n
+    best = None
+    for which in SITE_ORDER.get(kind, ()):
+        for lat, lon in _site_names.get((which, name), ()):
+            d = _distance(clat, clon, lat, lon)
+            if best is None or d < best[0]:
+                best = (d, (name, lat, lon))
     return best[1] if best else None
 
 
 def place_name(lat_idx, lon_idx, kind=None):
+    """The name of a 0.25-degree cell for one kind of aircraft; see place_site."""
+    site = place_site(lat_idx, lon_idx, kind)
+    return site[0] if site else None
+
+
+def place_site(lat_idx, lon_idx, kind=None):
     """The name of a 0.25-degree cell for one kind of aircraft (PATTERNS.md,
     section 3): a flying site of the kind's lists (SITE_ORDER), else the most
     populous town inside the cell, else the nearest within PLACE_NEAR_M of its
     centre, as "Bassano del Grappa (IT)"; None if there is none (the page then
-    shows coordinates). A site's name is given as its list gives it."""
+    shows coordinates). A site's name is given as its list gives it. Returns
+    (name, lat, lon), the position being the site's or the town's, or None."""
     key = (lat_idx, lon_idx, kind)
     if key in _place_names:
         return _place_names[key]
     if _sites is None:
         _load_sites()
     for which in SITE_ORDER.get(kind, ()):
-        name = _nearest_site(_sites.get(which, ()), lat_idx, lon_idx, prefer_gliding=(which == "airfield"))
-        if name:
-            _place_names[key] = name
-            return name
+        site = _nearest_site(_sites.get(which, ()), lat_idx, lon_idx, prefer_gliding=(which == "airfield"))
+        if site:
+            _place_names[key] = site
+            return site
     if _places is None:
         _load_places()
     inside = _places.get((lat_idx, lon_idx))
@@ -759,9 +792,9 @@ def place_name(lat_idx, lon_idx, kind=None):
                     if d <= PLACE_NEAR_M and (near is None or d < near[0]):
                         near = (d, p)
         best = near[1] if near else None
-    name = f"{best[1]} ({best[2]})" if best else None
-    _place_names[key] = name
-    return name
+    site = (f"{best[1]} ({best[2]})", best[3], best[4]) if best else None
+    _place_names[key] = site
+    return site
 
 
 class SourceTracker:
@@ -1954,13 +1987,17 @@ class SourceTracker:
 
     def thermal_places(self, cur):
         """The busiest and the strongest thermal places of the current and the
-        previous month, per kind, among 0.25-degree cells with at least
-        THERMAL_CELL_MIN thermals in the window (PATTERNS.md, section 3)."""
+        previous month, per kind, among places with at least THERMAL_CELL_MIN
+        thermals in the window (PATTERNS.md, section 3). A place is a
+        0.25-degree cell, or up to the four cells around the grid corner
+        nearest a site, when they are named after that site (8 October 2026)."""
         now = datetime.datetime.utcnow().date()
         since = (now.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
-        cur.execute(f"""SELECT kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum), SUM(climbs)
-                            FROM daily_thermals WHERE day >= %s AND kind IN ('glider', 'paraglider', 'hang_glider')
-                        GROUP BY 1, 2, 3 HAVING SUM(thermals) >= {THERMAL_CELL_MIN}""", (since,))
+        # Every cell, with no minimum: the threshold applies to the merged place,
+        # so a cell under it can count towards a neighbour named after the same site.
+        cur.execute("""SELECT kind, lat_idx, lon_idx, SUM(thermals), SUM(climb_sum), SUM(climbs)
+                           FROM daily_thermals WHERE day >= %s AND kind IN ('glider', 'paraglider', 'hang_glider')
+                       GROUP BY 1, 2, 3""", (since,))
         found = cur.fetchall()
         # The site most of a cell's thermals were flown from (nightly.py,
         # daily_thermal_sites); without one, the site nearest the cell's
@@ -1972,19 +2009,58 @@ class SourceTracker:
             key = (kind, int(la), int(lo))
             if key not in from_site or int(th) > from_site[key][0]:
                 from_site[key] = (int(th), site)
-        cells = []
         n = THERMAL_CELLS_PER_DEG
+        groups = collections.defaultdict(list)
         for kind, la, lo, th, csum, cn in found:
             la, lo = int(la), int(lo)
-            site = from_site.get((kind, la, lo))
-            cells.append({"kind": kind, "south": la / n, "north": (la + 1) / n, "west": lo / n, "east": (lo + 1) / n,
-                          "name": site[1] if site else place_name(la, lo, kind),
-                          "named_by": "take-off" if site else "nearest", "thermals": int(th),
-                          "mean_climb": round(float(csum) / int(cn), 2) if cn else None})
+            named = from_site.get((kind, la, lo))
+            site = site_position(kind, named[1], la, lo) if named else place_site(la, lo, kind)
+            cell = {"la": la, "lo": lo, "name": named[1] if named else (site[0] if site else None),
+                    "named_by": "take-off" if named else "nearest", "thermals": int(th),
+                    "climb_sum": float(csum), "climbs": int(cn)}
+            # A place is the site's own block: the 2 by 2 cells around the grid
+            # corner nearest to it. Cells named after the same site (its name
+            # and position, never the name alone) merge within that block; one
+            # named after it elsewhere, or with no site found, stays a place
+            # of its own, and so does a cell with no name.
+            key = ("cell", kind, la, lo)
+            cell["site"] = site
+            if site is not None:
+                ci, cj = round(site[1] * n), round(site[2] * n)
+                if la in (ci - 1, ci) and lo in (cj - 1, cj):
+                    key = ("site", kind, site[0], site[1], site[2])
+            groups[key].append(cell)
+        places = []
+        for key, group in groups.items():
+            th = sum(c["thermals"] for c in group)
+            if th < THERMAL_CELL_MIN:
+                continue
+            csum = sum(c["climb_sum"] for c in group)
+            cn = sum(c["climbs"] for c in group)
+            top = max(group, key=lambda c: c["thermals"])
+            place = {"kind": key[1], "south": min(c["la"] for c in group) / n,
+                     "north": (max(c["la"] for c in group) + 1) / n,
+                     "west": min(c["lo"] for c in group) / n, "east": (max(c["lo"] for c in group) + 1) / n,
+                     "cells": len(group), "name": top["name"], "named_by": top["named_by"],
+                     "thermals": th, "mean_climb": round(csum / cn, 2) if cn else None,
+                     "away_km": None, "away_dir": None, "label": top["name"]}
+            # A place outside its site's block (a cell of its own) is labelled with
+            # its distance and direction from the site, to its centre, so that
+            # thermals found far from a take-off are not read as its own.
+            site = top["site"]
+            if key[0] == "cell" and site is not None:
+                clat, clon = (place["south"] + place["north"]) / 2, (place["west"] + place["east"]) / 2
+                km = max(5, 5 * round(_distance(site[1], site[2], clat, clon) / 5000))
+                east = (clon - site[2]) * math.cos(math.radians((clat + site[1]) / 2))
+                bearing = math.degrees(math.atan2(east, clat - site[1])) % 360
+                place["away_km"] = km
+                place["away_dir"] = COMPASS_8[int((bearing + 22.5) // 45) % 8]
+                place["label"] = f"{top['name']}, {km} km {place['away_dir']}"
+            places.append(place)
         out = {"from": since.isoformat(), "to": now.isoformat(), "min_thermals": THERMAL_CELL_MIN,
                "busiest": [], "strongest": []}
         for kind in ("glider", "paraglider", "hang_glider"):
-            mine = [c for c in cells if c["kind"] == kind]
+            mine = [c for c in places if c["kind"] == kind]
             out["busiest"] += sorted(mine, key=lambda c: -c["thermals"])[:THERMAL_PLACES_TOP]
             out["strongest"] += sorted((c for c in mine if c["mean_climb"] is not None),
                                        key=lambda c: -c["mean_climb"])[:THERMAL_PLACES_TOP]

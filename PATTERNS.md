@@ -162,9 +162,9 @@ month, and by cell. From 7 October 2026 thermals are kept in cells of a
 **quarter of a degree** (about 28 by 19 km in the Alps; 1 degree before),
 and given both as 1-degree cells and as **thermal places**: for the current
 and the previous month together, the busiest cells (most thermals) and the
-strongest (highest mean climb), per kind, among the cells with at least 20
-thermals in those two months, so that a cell never stands for a handful of
-flights.
+strongest (highest mean climb), per kind, among the places (one cell, or
+up to four around a site, below) with at least 20 thermals in those two
+months, so that a place never stands for a handful of flights.
 
 **Names.** A cell is named, for each kind, after **the site most of its
 thermals were flown from** (from the evening of 7 October 2026): every
@@ -191,6 +191,36 @@ have been flown from another site, or over open country. The sources are
 credited in the README of the repository. The altitude is what each system reports (METHOD.md,
 section 1); an offset cancels in a difference, so the climb rate does not
 depend on the reference.
+
+**Places of more than one cell** (8 October 2026). A take-off on the
+corner of four cells, such as Weissenstein, or an airfield near a cell
+boundary, such as Milfield or Nortel, splits one place across cells, and
+the same name appeared twice in one list; the grid is ours and means
+nothing to a reader. So the cells of one kind named after the same site
+merge into one place when they lie in **the site's block**: the 2 by 2
+cells around the grid corner nearest to the site. The site is the site
+itself, by its name and position, and never the name alone, so two
+different take-offs both called "Startplatz" stay apart; a cell named
+after a take-off is matched to the site of that name nearest the cell,
+since the nightly tables keep the name only. Cells named after the
+nearest site or after a town follow the same rule, by that site or town.
+A place's thermals are the sum of its cells', its mean climb the sum of
+their climbs over the number of their thermals with a climb rate, its
+box the smallest one holding them, and it is marked as named by the
+nearest site only if its cell with most thermals is. The 20-thermal
+minimum and the two rankings apply after the merge, so a cell with fewer
+can count towards its site's place. The block is bounded because every
+thermal is filed under the take-off of its flight: merging every
+touching cell of one name, as a first version of the same day did, turned
+a cross-country chain from one airfield into a single place, Hilzingen
+140 km long on the data up to 8 October 2026. A cell named after a site
+but outside its block, where pilots from there found thermals far away,
+stays a place of its own, so a busy airfield can still appear twice in a
+list; cells with no name never merge. Such a place is labelled with its
+distance from the site to its centre, rounded to 5 km, and its direction
+on eight points, as "Fluggelände Hahnweide (EDST), 30 km S", and a place
+in its site's block keeps the plain name; the same holds for places
+named after the nearest site or a town.
 
 **Thermals shared by different kinds.** Two aircraft of different kinds
 share a thermal by the gaggle rule of section 2 (within 500 m and 300 m for
@@ -585,3 +615,6 @@ wide sits in mountains, a high plateau in plain and hills.
 - **8 October 2026.** A thermal must gain at least 50 m in its largest
   climb, from a low point to the highest point after it, and its
   duration and climb rate are taken over that span (sections 2 and 3).
+  The cells of one kind named after the same site, within the 2 by 2
+  block around the grid corner nearest to it, are one thermal place,
+  merged before the minimum and the rankings (section 3).
