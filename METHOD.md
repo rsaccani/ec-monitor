@@ -693,8 +693,8 @@ in the OGN device database is entered by the owner, and can be stale: a
 FLARM moved from a glider to a drone keeps the glider's entry until somebody
 changes it. Since the device setting can be wrong and the database entry
 can be old, neither decides alone, and the flight breaks a tie between them
-only in one way: a thermal (two full turns to one side, as in PATTERNS.md,
-section 2), which a
+only in one way: a thermal (two full turns to one side gaining at least
+50 m, as in PATTERNS.md, section 2, from 8 October 2026), which a
 drone does not fly.
 
 An address declares a drone for the day only when 13 is its majority

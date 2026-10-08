@@ -69,6 +69,33 @@ thermal, since pilots leave the core to recentre and packets drop out, and
 both would otherwise split one climb into several. A thermal belongs to the
 day of its first run. Measured for gliders, hang gliders and paragliders.
 
+A correction of 8 October 2026: a circling episode, as above, is a
+thermal only if **its largest climb gains at least 50 m**: the largest
+rise from a low point to the highest point reached after that low point,
+found by following the episode with a running minimum. Two turns alone also
+caught a glider spiralling down to land and the turns of a pilot still
+looking for the core, and both drew the climb down: on the first two
+days published the cells of Schänis and Unterwössen, two alpine gliding
+schools, averaged -1.02 and -0.98 m/s, with 53 of their 54 thermals
+under 0.5 m/s. The same span gives the thermal its duration and its
+climb rate (section 3), so the search turns before the low point and the
+weak turns after the top fall outside it, while a turn in which the core
+is lost and found again inside the climb stays in, as part of what that
+climb cost. An episode that climbed and then ended lower than it started
+keeps its climb: a spiral descent on the same side within 10 minutes and
+3 km of a thermal merges into it (section 2), so measured from the
+episode's lowest point, which then comes last, a real climb would be
+lost. Every
+measure that counts thermals uses only those that pass: the side of
+sections 2 and 3, gaggles, places and the circling time of section 5. On
+6 October 2026 the rule kept 745 of 1,020 glider thermals, 528 of 743
+paraglider and 19 of 28 hang glider ones, and the mean climb rose from
+0.64 to 1.15 m/s for gliders, 0.86 to 1.32 for paragliders and 0.59 to
+1.05 for hang gliders; the share turned to the right moved by about a
+point for gliders and paragliders. Of the thermals kept, 18 of gliders
+and 12 of paragliders had climbed and then ended lower. Schänis kept 1 of
+its 15 thermals that day and Unterwössen none of 14.
+
 One aircraft is one address, and an instrument sending FLARM, FANET and ADS-L
 under one address would count each thermal three times, so only the system
 on which the address has most thermals that day is used. Per day and kind
@@ -121,10 +148,14 @@ speed and turn rate, which the wind would bias by up to its own speed. The
 radius is binned under 30, 30–50, 50–80, 80–120, 120–200 and over 200 m: a
 paraglider circles at 30 to 50 m, a glider at 60 to 120.
 
-**Strength.** The climb of a thermal is the altitude gained between the
-first and last position sampled while circling (every 5 seconds) divided by
-the time between them, when that time is at least 20 seconds; a thermal
-sampled over less time gives no climb rate. It is the average of the
+**Strength.** The climb of a thermal is its largest climb (section 2):
+the largest altitude gain from a position sampled while circling (every
+5 seconds) to the highest one after it, divided by the time between the
+two, when that time is at least 20 seconds; a thermal climbing over less
+time gives no climb rate.
+Until 8 October 2026 it was taken between the first and the last position
+sampled, which made a spiral descent a thermal with a negative climb
+(section 2). It is the average of the
 thermal, in bands of under 0.5, 0.5–1, 1–1.5, 1.5–2, 2–3, 3–4 and over 4 m/s,
 by kind, by local solar hour of the middle of the thermal (section 1), by
 month, and by cell. From 7 October 2026 thermals are kept in cells of a
@@ -551,3 +582,6 @@ wide sits in mountains, a high plateau in plain and hills.
   emitter category. Circuits and touch-and-go, and cruising levels, written
   the same day, were dropped before publication (Limits). The expected histogram of
   the per-pilot test (section 2) is computed pilot by pilot.
+- **8 October 2026.** A thermal must gain at least 50 m in its largest
+  climb, from a low point to the highest point after it, and its
+  duration and climb rate are taken over that span (sections 2 and 3).

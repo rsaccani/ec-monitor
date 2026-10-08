@@ -80,11 +80,19 @@ SOLAR_SECONDS_PER_DEGREE = 240
 CIRCLE_CATEGORIES = (1, 6, 7)
 CIRCLE_MAX_GAP = 5
 CIRCLE_MIN_RATE, CIRCLE_MAX_RATE = 5.0, 45.0   # deg/s: from 72 s to 8 s a turn
-CIRCLE_MIN_TURN = 720                          # two full turns make a climb
+CIRCLE_MIN_TURN = 720                          # two full turns to one side make a circling episode
 CIRCLE_MAX_KT = 200 / 1.852                    # faster than any of the three circles
 # A pilot who leaves the core and comes back, or a dropout, splits one climb
 # into runs; runs on the same side within 10 minutes and 3 km are one thermal.
 THERMAL_MERGE_S, THERMAL_MERGE_M = 600, 3000
+# A circling episode is a thermal only if its largest climb, the largest rise
+# from a low point to the highest point after it, gains this much height
+# (8 October 2026). Two
+# turns alone also catch a spiral descent to land and the search turns
+# before a core is found, which drew the mean climb of the cells of Schänis
+# and Unterwössen to -1.0 m/s on 6 and 7 October 2026. The same span gives
+# the thermal its duration and its climb rate (PATTERNS.md, section 2).
+THERMAL_MIN_GAIN = 50
 # Two aircraft share a thermal (a gaggle) when, for at least 60 s of the time
 # both are circling, they are within 500 m horizontally and 300 m vertically.
 # Positions are compared on a 5-second grid.
@@ -292,9 +300,28 @@ def load_ddb():
     return types, notrack, models
 
 
+def climb_span(samples):
+    """(metres gained, seconds) of the largest climb within a circling episode:
+    the largest rise from a sampled low point to the highest point after it,
+    found with a running minimum; None without an altitude."""
+    if not samples:
+        return None
+    best = (0, 0)
+    low = low_b = None
+    for b in sorted(samples):
+        alt = unpack(samples[b])[2]
+        if low is None or alt < low:
+            low, low_b = alt, b
+        elif alt - low > best[0]:
+            best = (alt - low, (b - low_b) * GAGGLE_BUCKET)
+    return best
+
+
 class CircleTrack:
     """One address on one system, while it may be circling."""
     __slots__ = ("cat", "last", "run", "run_s", "run_m", "run_t0", "run_pos", "run_samples", "thermal", "thermals")
+    # (category, outcome) -> circling episodes, for the log: "thermal", "no_gain", "no_altitude"
+    outcomes = collections.Counter()
 
     def __init__(self, cat):
         self.cat = cat
@@ -305,7 +332,8 @@ class CircleTrack:
         self.run_t0 = None
         self.run_pos = None
         self.run_samples = {}     # 5-second bucket -> (lat, lon, alt)
-        # open thermal: [side, t0, t1, lat, lon, degrees, seconds, samples, metres along the circles]
+        # open circling episode: [side, t0, t1, lat, lon, degrees, seconds, samples, metres along
+        # the circles]; a thermal once closed adds [metres gained, seconds of the climb] (keep)
         self.thermal = None
         self.thermals = []
 
@@ -322,7 +350,7 @@ class CircleTrack:
                 th[8] += self.run_m
             else:
                 if th is not None:
-                    self.thermals.append(th)
+                    self.keep(th)
                 self.thermal = [side, self.run_t0, t, lat, lon, abs(self.run), self.run_s, self.run_samples,
                                 self.run_m]
             self.run_samples = {}
@@ -337,8 +365,20 @@ class CircleTrack:
         if self.last is not None:
             self.close_run(self.last[0], self.last[3], self.last[4])
         if self.thermal is not None:
-            self.thermals.append(self.thermal)
+            self.keep(self.thermal)
             self.thermal = None
+
+    def keep(self, th):
+        """A closed circling episode is kept as a thermal only if it climbed
+        THERMAL_MIN_GAIN (PATTERNS.md, section 2)."""
+        span = climb_span(th[7])
+        if span is not None and span[0] >= THERMAL_MIN_GAIN:
+            th.extend(span)
+            self.thermals.append(th)
+            outcome = "thermal"
+        else:
+            outcome = "no_altitude" if span is None else "no_gain"
+        CircleTrack.outcomes[(self.cat, outcome)] += 1
 
 
 # --- 7. Launches (PATTERNS.md, section 7, 7 October 2026) ---------------------
@@ -1822,12 +1862,10 @@ class Nightly:
                     if not self.d0 <= x[1] < self.d1:
                         continue
                     thermals[address] += 1
-                    if x[7]:
-                        first, last = x[7][min(x[7])], x[7][max(x[7])]
-                        gain = unpack(last)[2] - unpack(first)[2]
-                        self.max_climb[address] = max(self.max_climb[address], gain)
-                        if gain >= CLIMB_M:
-                            climbs.add(address)
+                    gain = x[9]
+                    self.max_climb[address] = max(self.max_climb[address], gain)
+                    if gain >= CLIMB_M:
+                        climbs.add(address)
         out = {}
         remote_id = sources.source_info(REMOTE_ID)[0]
         for address in self.declared:
@@ -2056,11 +2094,9 @@ class Nightly:
                 hour = solar_hour((x[1] + x[2]) / 2, x[4])
                 terrain = self.terrain_of(x[3], x[4])
                 circ[(kind, terrain, hour)] += x[6]
-                climb = None
-                if x[7]:
-                    b0, b1 = min(x[7]), max(x[7])
-                    if (b1 - b0) * GAGGLE_BUCKET >= CLIMB_MIN_S:
-                        climb = (unpack(x[7][b1])[2] - unpack(x[7][b0])[2]) / ((b1 - b0) * GAGGLE_BUCKET)
+                # The climb of the thermal: its largest climb, from a low point to the
+                # highest after it (8 October 2026; first to last sample before).
+                climb = x[9] / x[10] if x[10] >= CLIMB_MIN_S else None
                 # Radius = distance flown along the circles / angle turned. Over whole
                 # turns the wind adds to the ground speed on one side what it takes
                 # on the other, so the mean speed is close to the airspeed.
@@ -2537,6 +2573,9 @@ def main():
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
     if long:
         raise ValueError(f"check names longer than daily_quality.check_name allows: {sorted(long)}")
+    if CircleTrack.outcomes:
+        logger.info("Circling episodes by category and outcome (every system): "
+                    + ", ".join(f"{c}/{o}: {v}" for (c, o), v in sorted(CircleTrack.outcomes.items())))
     if getattr(n, "first_climb_starts", None):
         logger.info(f"Flights classed from the top of their first climb: {dict(n.first_climb_starts)}")
     if "daily_drone_encounters" in tables:
