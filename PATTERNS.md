@@ -547,7 +547,11 @@ town is the nearest one rather than the largest: a 1-degree cell over
 the Gotthard was named after Lugano. Peaks and passes joined on the
 evening of 8 October 2026; before, the town-only rule named the cell
 over the Furka "30 km S of Kerns (CH)". A peak or pass carries the
-country of the town nearest it, "near Furkapass (CH)".
+country of the town nearest it, "near Furkapass (CH)". From the same evening a
+landmark label also names the nearest town of at least 50,000 people
+within 30 km of the cell's centre, with distance and direction, "near
+Dobratsch, 20 km W of Villach (AT)": a peak is known locally, a large
+town by everyone.
 
 Ridge lift and convergence lines can look the same: a glider flying along a
 ridge or a convergence climbs in straight lines too, and above high ground

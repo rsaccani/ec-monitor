@@ -585,6 +585,11 @@ SITE_LANDMARK_M = 3000
 WAVE_QUARTER_FROM = "2026-10-06"
 WAVE_TOWN_NEAR_M = 12500
 WAVE_LANDMARK_M = 12000
+# A peak or pass is known locally, a large town by everyone: a landmark label
+# also gives the nearest town of WAVE_BIG_TOWN_POP people within WAVE_BIG_TOWN_M,
+# "near Dobratsch, 20 km W of Villach (AT)" (8 October 2026).
+WAVE_BIG_TOWN_POP = 50000
+WAVE_BIG_TOWN_M = 30000
 
 # Which lists name a cell for each kind, in order; the town of GeoNames last.
 SITE_ORDER = {"paraglider": ("fivl", "takeoff"), "hang_glider": ("fivl", "takeoff"), "glider": ("airfield",)}
@@ -885,23 +890,30 @@ def _nearest_town(lat, lon):
 
 def wave_name(lat_idx, lon_idx):
     """The name of a 0.25-degree cell of probable wave: "near Altdorf (CH)" for a
-    town within WAVE_TOWN_NEAR_M of its centre, "near Gotthardpass" for the
-    best-known peak or pass within WAVE_LANDMARK_M, else "20 km SE of Glarus
+    town within WAVE_TOWN_NEAR_M of its centre, "near Gotthardpass (CH)" for the
+    best-known peak or pass within WAVE_LANDMARK_M, with a large town when one
+    is close ("near Dobratsch, 20 km W of Villach (AT)"), else "20 km SE of Glarus
     (CH)" from the nearest town within SITE_TOWN_M; None without either."""
     if _places is None:
         _load_places()
     n = THERMAL_CELLS_PER_DEG
     clat, clon = (lat_idx + 0.5) / n, (lon_idx + 0.5) / n
-    best = None
+    best = big = None
     for dl in range(-2, 3):
         for dc in range(-3, 4):
             for p in _places.get((lat_idx + dl, lon_idx + dc), ()):
                 d = _distance(clat, clon, p[3], p[4])
                 if d <= SITE_TOWN_M and (best is None or d < best[0]):
                     best = (d, p)
+                if p[0] >= WAVE_BIG_TOWN_POP and d <= WAVE_BIG_TOWN_M and (big is None or d < big[0]):
+                    big = (d, p)
     if best is not None and best[0] <= WAVE_TOWN_NEAR_M:
         return f"near {best[1][1]} ({best[1][2]})"
     mark = _landmark_near(clat, clon, 0, WAVE_LANDMARK_M)
+    if mark and big:
+        d, p = big
+        # the country once, at the end: the town's
+        return f"near {mark[0]}, {5 * round(d / 5000)} km {_compass(p[3], p[4], clat, clon)} of {p[1]} ({p[2]})"
     if mark:
         return f"near {with_country(mark[0], country_at(mark[1], mark[2]))}"
     if best is None:
