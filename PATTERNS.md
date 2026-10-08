@@ -180,7 +180,24 @@ those tagged for gliding first, with its ICAO code in brackets when it has
 one), among those inside the cell or within 5 km of its edge. The first
 rule of the same evening used only the site nearest the centre, which named
 the cell of Meduno and Monte Valinis after another FIVL site. The names are given as each
-list gives them; FIVL's carry their province. A cell with no such site
+list gives them; FIVL's carry their province. From 8 October 2026 a
+name that says nothing about where the site is, or that two sites of
+one list share, is qualified with the nearest town of at least 5,000
+people within 50 km (the GeoNames list below, which holds towns only,
+no peaks), as "Startplatz Ost (Baiersbronn)"; a name is generic when it
+is made only of words such as start, Startplatz, launch, take-off,
+decollo, décollage, despegue, paragliding, Gleitschirm or airfield, of
+compass points and of numbers. Where the town does not separate two
+sites, the distance and direction from it follow, "(Brannenburg, 4 km
+SW)", and failing that the position; a town already in the name goes
+straight to the distance. Entries of one name within 1 km of each other
+are one site mapped twice and keep one name. On the lists of 7 October
+2026 this renamed 144 of 4,602 OpenStreetMap take-offs (136 for a
+generic name) and 55 of 6,634 aerodromes (46 for a shared name), and
+none of the 416 FIVL sites. The nightly run files each thermal under the
+qualified name, so from 8 October a site is found by its name exactly;
+days stored before carry the list's own name, matched to the site of
+that name nearest the cell. A cell with no such site
 takes the most populous town or village of at least 5,000 people inside
 it, or the nearest within 25 km of its centre, from the GeoNames list of
 places (cities5000), as "Bassano del Grappa (IT)"; a cell with neither is
@@ -475,7 +492,17 @@ full turn net over the climb. A thermal turns at 5 degrees a second or more
 (section 2), so the turning rule keeps thermals out, and the net turn lets
 figure eights in. 2,500 m keeps out most ridge and thermal climbs over
 lowland and hills. A climb of the same glider counts once in half an hour.
-Climbs are counted per day and 1-degree cell.
+Climbs are counted per day and cell, in cells of a **quarter of a degree**
+from 8 October 2026, filed at the midpoint of the climb (1 degree and its
+start before). A cell is named by geography, never by a take-off, since
+wave is where the mountains make it and pilots reach it from far away:
+"near Altdorf (CH)" when the nearest town of at least 5,000 people is
+within 10 km of the cell's centre, after rounding to 5 km, else the
+distance and direction from that town, "30 km S of Altdorf (CH)", on
+eight points. 10 km because the centre may itself be 14 km from a climb
+in the cell. The GeoNames list holds towns only, so a peak or a pass
+cannot name a cell, and the town is the nearest one rather than the
+largest: a 1-degree cell over the Gotthard was named after Lugano.
 
 Ridge lift and convergence lines can look the same: a glider flying along a
 ridge or a convergence climbs in straight lines too, and above high ground
@@ -617,4 +644,8 @@ wide sits in mountains, a high plateau in plain and hills.
   duration and climb rate are taken over that span (sections 2 and 3).
   The cells of one kind named after the same site, within the 2 by 2
   block around the grid corner nearest to it, are one thermal place,
-  merged before the minimum and the rankings (section 3).
+  merged before the minimum and the rankings, and a place outside its
+  site's block is labelled with its distance and direction from it.
+  Generic and shared site names are qualified with the nearest town
+  (section 3). Probable wave is counted in 0.25-degree cells at the
+  climb's midpoint, named by the nearest town (section 8).

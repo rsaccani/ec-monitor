@@ -502,6 +502,10 @@ WAVE_TURN = 3.0                               # deg/s of turning on average, at 
 WAVE_NET_TURN = 360                           # and less than one net turn in the window
 WAVE_GAP = 30                                 # a silence longer than this restarts the window
 WAVE_QUIET = 1800                             # one wave climb per glider per half hour
+# A wave climb is filed at the midpoint of the climb, in cells of a quarter of a
+# degree (sources.THERMAL_CELLS_PER_DEG), from 8 October 2026; 1 degree and the
+# start of the climb before. A 1-degree cell named the place by its largest
+# town, Lugano for climbs over the Gotthard (PATTERNS.md, section 8).
 
 
 # --- 9. Powered aircraft and helicopters (PATTERNS.md sections 9-11, 7 October 2026) ---
@@ -738,7 +742,7 @@ class Nightly:
         self.wave_q = collections.defaultdict(collections.deque)   # glider -> (t, alt, net turn, abs turn)
         self.wave_last = {}                        # glider -> (t, course, net, abs)
         self.wave_quiet = {}
-        self.waves = []                            # (address, t0, lat, lon)
+        self.waves = []                            # (address, t0, lat, lon of the climb's midpoint)
         self.powered = {}                         # address -> PoweredTrack
         self.levels = collections.Counter()       # (address, category, reference, alt band, speed band) -> segments
         self.level_s = collections.Counter()
@@ -1602,7 +1606,7 @@ class Nightly:
             gain = alt - a0
             if (gain >= WAVE_GAIN_M and gain / (t - t0) >= WAVE_RATE and abs(net - n0) < WAVE_NET_TURN
                     and (turned - u0) / (t - t0) <= WAVE_TURN):
-                self.waves.append((address, t0, la0, lo0))
+                self.waves.append((address, t0, (la0 + lat) / 2, (lo0 + lon) / 2))
                 self.wave_quiet[address] = t + WAVE_QUIET
                 q.clear()
                 return
@@ -2157,8 +2161,8 @@ class Nightly:
         out["daily_flights"] = (("day", "kind", "terrain", "launch", "start_hour", "duration_band", "extent_band", "path_band",
                                  "flights", "seconds", "path_m"),
                                 [(day,) + k + (v[0], round(v[1], 1), round(v[2])) for k, v in sorted(fl.items())])
-        wave = collections.Counter((math.floor(la), math.floor(lo)) for _, t0, la, lo in self.waves
-                                   if self.d0 <= t0 < self.d1)
+        wave = collections.Counter((math.floor(la * THERMAL_CELLS_PER_DEG), math.floor(lo * THERMAL_CELLS_PER_DEG))
+                                   for _, t0, la, lo in self.waves if self.d0 <= t0 < self.d1)
         out["daily_wave"] = (("day", "lat_idx", "lon_idx", "climbs"),
                              [(day,) + k + (n,) for k, n in sorted(wave.items())])
 

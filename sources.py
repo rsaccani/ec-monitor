@@ -540,6 +540,38 @@ PLACE_NEAR_M = 25000      # a cell with no place inside takes the nearest within
 SITE_EDGE_M = 5000
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 SITE_FILES = {"fivl": "fivl-sites.tsv", "takeoff": "osm-takeoffs.tsv", "airfield": "osm-airfields.tsv"}
+# A site name that is generic or repeated within its list is qualified with
+# the nearest town (PATTERNS.md, section 3, 8 October 2026), so that every
+# name in a list is unique and says where the site is. Generic: made only of
+# these words, compass points and numbers, all compared in lower case.
+GENERIC_TAKEOFF_WORDS = frozenset("""
+    start startplatz startpunkt startrampe weststartplatz oststartplatz nordstartplatz südstartplatz
+    landeplatz launch takeoff take off decollo décollage decollage atterrissage atterraggio despegue
+    descolagem zona de del la le les des du di da d l parapente parapendio paragliding paraglider
+    paragliders paraglide gleitschirm hängegleiter drachen deltaplano deltaplane delta hang hanggliding
+    gliding glider site vol libre free flight flying rampa vôo voo livre aire area place spot point
+    zone siklóernyős starthely απογείωση αλεξιπτώτου πλαγιάς парапланерный старт параглајдинг
+    узлетиште vzletišče ppg pg gs hg""".split())
+GENERIC_AIRFIELD_WORDS = frozenset("""
+    airfield airstrip aerodrome aérodrome aeródromo aerodromo aeroporto aéroport airport flugplatz
+    segelflugplatz segelfluggelände sonderlandeplatz verkehrslandeplatz landeplatz ultraleichtflugplatz
+    ul ulm aviosuperficie campo di volo letiště lotnisko lądowisko аэродром аеродром летище
+    селскостопанско бывший аэрадром сельскагаспадарчай авіяцыі aerodrom flygfält flyveplads de
+    la le du del base air private gliding glider club strip former disused agricultural abandoned""".split())
+COMPASS_WORDS = frozenset("""
+    n s e w o ne nw se sw no so nord sud süd ost west est ouest north south east nordost nordwest
+    südost südwest nordouest sudouest nordest sudest""".split())
+SITE_TOWN_M = 50000       # the nearest town is looked for this far
+SITE_SAME_M = 1000        # the same name this close is one site mapped twice
+# Probable wave (PATTERNS.md, section 8) is counted per 0.25-degree cell from
+# this day, and per 1 degree before; a cell is named by geography, never by a
+# take-off: "near Altdorf (CH)" when the nearest town is within WAVE_NEAR_KM of
+# the cell's centre, after rounding to 5 km, else "20 km SE of Glarus (CH)".
+# 10 km because the centre is itself up to 14 km from a climb in the cell:
+# a finer distance would claim a precision the cell does not have.
+WAVE_QUARTER_FROM = "2026-10-06"
+WAVE_NEAR_KM = 10
+
 # Which lists name a cell for each kind, in order; the town of GeoNames last.
 SITE_ORDER = {"paraglider": ("fivl", "takeoff"), "hang_glider": ("fivl", "takeoff"), "glider": ("airfield",)}
 # An airfield or base with few aircraft could otherwise show one owner's
@@ -662,9 +694,10 @@ def source_info(tocall):
 
 
 _places = None          # (by 0.25-degree cell, all places), loaded on first use
-_sites = None           # list name -> [(lat, lon, name, gliding)]
+_sites = None           # list name -> [(lat, lon, name, gliding)], each name unique in its list
+_site_raw = {}          # list name -> {unique name: the name as the list gives it}, where they differ
 _place_names = {}       # (lat_idx, lon_idx, kind) -> (name, lat, lon) or None
-_site_names = None      # (list, name) -> [(lat, lon)], for site_position
+_site_names = None      # (list, name) -> [(lat, lon, display name)], for site_position
 COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 
@@ -710,7 +743,110 @@ def _load_sites():
                     rows.append((float(r[col["lat"]]), float(r[col["lon"]]), name, gliding))
         except (OSError, KeyError, ValueError, IndexError) as e:
             logger.error(f"Flying sites {fn} not loaded ({e})")
-        _sites[key] = rows
+        _sites[key] = _qualify_sites(rows, GENERIC_AIRFIELD_WORDS if key == "airfield" else GENERIC_TAKEOFF_WORDS)
+        _site_raw[key] = {r[2]: raw[2] for r, raw in zip(_sites[key], rows) if r[2] != raw[2]}
+
+
+def _generic(name, words):
+    tokens = [t for t in re.split(r"[\s\-/,.()'’]+", name.lower()) if t]
+    return bool(tokens) and all(t in words or t in COMPASS_WORDS or t.isdigit() for t in tokens)
+
+
+def _compass(lat0, lon0, lat1, lon1):
+    """The direction from the first point to the second on eight points."""
+    return COMPASS_8[int((_bearing(lat0, lon0, lat1, lon1) + 22.5) // 45) % 8]
+
+
+def _nearest_town(lat, lon):
+    """(name, lat, lon) of the GeoNames town nearest a point within SITE_TOWN_M, or None."""
+    if _places is None:
+        _load_places()
+    n = THERMAL_CELLS_PER_DEG
+    la, lo = math.floor(lat * n), math.floor(lon * n)
+    best = None
+    for dl in range(-2, 3):
+        for dc in range(-3, 4):
+            for p in _places.get((la + dl, lo + dc), ()):
+                d = _distance(lat, lon, p[3], p[4])
+                if d <= SITE_TOWN_M and (best is None or d < best[0]):
+                    best = (d, (p[1], p[3], p[4]))
+    return best[1] if best else None
+
+
+def wave_name(lat_idx, lon_idx):
+    """The name of a 0.25-degree cell of probable wave, from the GeoNames town
+    nearest its centre within SITE_TOWN_M: "near Altdorf (CH)", or
+    "20 km SE of Glarus (CH)" from the town to the centre; None without one."""
+    if _places is None:
+        _load_places()
+    n = THERMAL_CELLS_PER_DEG
+    clat, clon = (lat_idx + 0.5) / n, (lon_idx + 0.5) / n
+    best = None
+    for dl in range(-2, 3):
+        for dc in range(-3, 4):
+            for p in _places.get((lat_idx + dl, lon_idx + dc), ()):
+                d = _distance(clat, clon, p[3], p[4])
+                if d <= SITE_TOWN_M and (best is None or d < best[0]):
+                    best = (d, p)
+    if best is None:
+        return None
+    d, p = best
+    km = 5 * round(d / 5000)
+    if km <= WAVE_NEAR_KM:
+        return f"near {p[1]} ({p[2]})"
+    return f"{km} km {_compass(p[3], p[4], clat, clon)} of {p[1]} ({p[2]})"
+
+
+def _qualify_sites(rows, words):
+    """The rows of one site list with every name unique: a name that is generic
+    or occurs more than once gets the nearest town, "Startplatz Ost
+    (Lenggries)"; if that is still not unique, the distance and direction
+    from the town, "(Lenggries, 4 km SE)", and failing that the position.
+    Entries with the same name within SITE_SAME_M of each other are one site
+    mapped twice, and keep one name between them."""
+    # One site mapped twice: the same name within SITE_SAME_M; the first one
+    # stands for the others.
+    rep = list(range(len(rows)))
+    by_name = collections.defaultdict(list)
+    for i, r in enumerate(rows):
+        for j in by_name[r[2]]:
+            if _distance(r[0], r[1], rows[j][0], rows[j][1]) <= SITE_SAME_M:
+                rep[i] = j
+                break
+        else:
+            by_name[r[2]].append(i)
+    heads = [i for i in range(len(rows)) if rep[i] == i]
+    count = collections.Counter(rows[i][2] for i in heads)
+    ambiguous = [i for i in heads if count[rows[i][2]] > 1 or _generic(rows[i][2], words)]
+    names = {i: rows[i][2] for i in heads}
+    towns = {i: _nearest_town(rows[i][0], rows[i][1]) for i in ambiguous}
+
+    def qualify(name, inner):
+        # "Startplatz (GS)" + "Brannenburg" -> "Startplatz (GS, Brannenburg)",
+        # one pair of brackets rather than two
+        return f"{name[:-1]}, {inner})" if name.endswith(")") else f"{name} ({inner})"
+
+    def level(i, k):
+        lat, lon, name = rows[i][0], rows[i][1], rows[i][2]
+        town = towns[i]
+        if k == 1 and town and town[0].lower() not in name.lower():
+            return qualify(name, town[0])
+        if k == 1 and town:
+            k = 2       # "Hang Gliding Interlaken (Interlaken)" would say nothing
+        if k == 2 and town:
+            km = max(1, round(_distance(town[1], town[2], lat, lon) / 1000))
+            return qualify(name, f"{town[0]}, {km} km {_compass(town[1], town[2], lat, lon)}")
+        return qualify(name, f"{lat:.3f}, {lon:.3f}")
+
+    todo = ambiguous
+    for k in (1, 2, 3):
+        for i in todo:
+            names[i] = level(i, k)
+        seen = collections.Counter(names.values())
+        todo = [i for i in todo if seen[names[i]] > 1]
+        if not todo:
+            break
+    return [(r[0], r[1], names[rep[i]], r[3]) for i, r in enumerate(rows)]
 
 
 def _nearest_site(sites, lat_idx, lon_idx, prefer_gliding=False):
@@ -732,25 +868,32 @@ def _nearest_site(sites, lat_idx, lon_idx, prefer_gliding=False):
 
 def site_position(kind, name, lat_idx, lon_idx):
     """(name, lat, lon) of the site of the kind's lists (SITE_ORDER) called
-    `name` that lies nearest the cell's centre, or None. The thermal sites of
-    nightly.py are stored by name, and two sites can share one ("Startplatz"),
-    so the one nearest the cell is taken to be it."""
+    `name` that lies nearest the cell's centre, or None; the name returned is
+    the site's unique one. From 8 October 2026 nightly.py stores that unique
+    name and the match is exact; days stored before carry the list's own name,
+    which two sites can share ("Startplatz"), and the one nearest the cell is
+    taken to be it."""
     global _site_names
     if _sites is None:
         _load_sites()
     if _site_names is None:
+        # Days stored before 8 October 2026 carry the names as the lists give
+        # them, which may be generic or repeated: those are indexed too.
         _site_names = collections.defaultdict(list)
         for which, rows in _sites.items():
             for lat, lon, site, _ in rows:
-                _site_names[(which, site[:255])].append((lat, lon))
+                _site_names[(which, site[:255])].append((lat, lon, site))
+                raw = _site_raw.get(which, {}).get(site, site)
+                if raw != site:
+                    _site_names[(which, raw[:255])].append((lat, lon, site))
     n = THERMAL_CELLS_PER_DEG
     clat, clon = (lat_idx + 0.5) / n, (lon_idx + 0.5) / n
     best = None
     for which in SITE_ORDER.get(kind, ()):
-        for lat, lon in _site_names.get((which, name), ()):
+        for lat, lon, site in _site_names.get((which, name), ()):
             d = _distance(clat, clon, lat, lon)
             if best is None or d < best[0]:
-                best = (d, (name, lat, lon))
+                best = (d, (site, lat, lon))
     return best[1] if best else None
 
 
@@ -2004,18 +2147,30 @@ class SourceTracker:
         # centre or the town (place_name).
         cur.execute("""SELECT kind, lat_idx, lon_idx, site, SUM(thermals) FROM daily_thermal_sites
                            WHERE day >= %s GROUP BY 1, 2, 3, 4""", (since,))
-        from_site = {}
+        # A stored name is resolved to its site first, so that a site's old
+        # (generic) and new (unique) names add up in the same cell.
+        by_site = collections.Counter()
         for kind, la, lo, site, th in cur.fetchall():
-            key = (kind, int(la), int(lo))
-            if key not in from_site or int(th) > from_site[key][0]:
-                from_site[key] = (int(th), site)
+            la, lo = int(la), int(lo)
+            found_site = site_position(kind, site, la, lo)
+            by_site[(kind, la, lo, found_site or (site, None, None))] += int(th)
+        from_site = {}
+        for (kind, la, lo, site), th in by_site.items():
+            key = (kind, la, lo)
+            if key not in from_site or th > from_site[key][0]:
+                from_site[key] = (th, site)
         n = THERMAL_CELLS_PER_DEG
         groups = collections.defaultdict(list)
         for kind, la, lo, th, csum, cn in found:
             la, lo = int(la), int(lo)
             named = from_site.get((kind, la, lo))
-            site = site_position(kind, named[1], la, lo) if named else place_site(la, lo, kind)
-            cell = {"la": la, "lo": lo, "name": named[1] if named else (site[0] if site else None),
+            if named:
+                site = named[1] if named[1][1] is not None else None
+                name = named[1][0]
+            else:
+                site = place_site(la, lo, kind)
+                name = site[0] if site else None
+            cell = {"la": la, "lo": lo, "name": name,
                     "named_by": "take-off" if named else "nearest", "thermals": int(th),
                     "climb_sum": float(csum), "climbs": int(cn)}
             # A place is the site's own block: the 2 by 2 cells around the grid
@@ -2051,10 +2206,8 @@ class SourceTracker:
             if key[0] == "cell" and site is not None:
                 clat, clon = (place["south"] + place["north"]) / 2, (place["west"] + place["east"]) / 2
                 km = max(5, 5 * round(_distance(site[1], site[2], clat, clon) / 5000))
-                east = (clon - site[2]) * math.cos(math.radians((clat + site[1]) / 2))
-                bearing = math.degrees(math.atan2(east, clat - site[1])) % 360
                 place["away_km"] = km
-                place["away_dir"] = COMPASS_8[int((bearing + 22.5) // 45) % 8]
+                place["away_dir"] = _compass(site[1], site[2], clat, clon)
                 place["label"] = f"{top['name']}, {km} km {place['away_dir']}"
             places.append(place)
         out = {"from": since.isoformat(), "to": now.isoformat(), "min_thermals": THERMAL_CELL_MIN,
@@ -2221,9 +2374,21 @@ class SourceTracker:
                         "start_hour": int(r[4]), "duration_band": int(r[5]), "extent_band": int(r[6]),
                         "path_band": int(r[7]), "flights": int(r[8]), "seconds": float(r[9]), "path_m": float(r[10])}
                        for r in cur.fetchall()]
-            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), lat_idx, lon_idx, SUM(climbs)
-                               FROM daily_wave GROUP BY 1, 2, 3""")
-            wave = [{"month": r[0], "lat": int(r[1]), "lon": int(r[2]), "climbs": int(r[3])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%%Y-%%m'), day >= %s, lat_idx, lon_idx, SUM(climbs)
+                               FROM daily_wave GROUP BY 1, 2, 3, 4""", (WAVE_QUARTER_FROM,))
+            wave = []
+            for month, quarter, la, lo, climbs in cur.fetchall():
+                la, lo = int(la), int(lo)
+                # "lat" and "lon" stay the 1-degree cell for every row, as the
+                # page has read them since 7 October; a quarter-degree row adds
+                # its bounds and its name.
+                row = {"month": month, "lat": la, "lon": lo, "climbs": int(climbs), "cell_deg": 1, "name": None}
+                if quarter:
+                    q = THERMAL_CELLS_PER_DEG
+                    row.update({"lat": la // q, "lon": lo // q, "cell_deg": 1 / q, "south": la / q,
+                                "north": (la + 1) / q, "west": lo / q, "east": (lo + 1) / q,
+                                "name": wave_name(la, lo)})
+                wave.append(row)
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind, emitter, altitude_ref, altitude_band, speed_band,
                                   SUM(segments), SUM(seconds), SUM(aircraft)
                                FROM daily_cruise GROUP BY 1, 2, 3, 4, 5, 6""")
