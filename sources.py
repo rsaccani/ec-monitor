@@ -563,14 +563,28 @@ COMPASS_WORDS = frozenset("""
     südost südwest nordouest sudouest nordest sudest""".split())
 SITE_TOWN_M = 50000       # the nearest town is looked for this far
 SITE_SAME_M = 1000        # the same name this close is one site mapped twice
+# Peaks and passes name what a town does not (PATTERNS.md, sections 3 and 8,
+# 8 October 2026): data/landmarks-europe.tsv, OpenStreetMap peaks, volcanoes,
+# saddles and passes with at least 3 Wikidata sitelinks, so that a summit
+# known in three languages names a place and an unnamed hump does not.
+LANDMARKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "landmarks-europe.tsv")
+# A generic or shared take-off keeps the town when it is within SITE_TOWN_NEAR_M:
+# "Startplatz (Lenggries)" says where it is. Further away, a peak or pass says
+# it better: the nearest within SITE_LANDMARK_NEAR_M (the mountain the take-off
+# is on), else the best known within SITE_LANDMARK_M; else the town as before.
+SITE_TOWN_NEAR_M = 5000
+SITE_LANDMARK_NEAR_M = 1000
+SITE_LANDMARK_M = 3000
 # Probable wave (PATTERNS.md, section 8) is counted per 0.25-degree cell from
 # this day, and per 1 degree before; a cell is named by geography, never by a
-# take-off: "near Altdorf (CH)" when the nearest town is within WAVE_NEAR_KM of
-# the cell's centre, after rounding to 5 km, else "20 km SE of Glarus (CH)".
-# 10 km because the centre is itself up to 14 km from a climb in the cell:
-# a finer distance would claim a precision the cell does not have.
+# take-off: "near Altdorf (CH)" when the nearest town is within WAVE_TOWN_NEAR_M
+# of the cell's centre, else "near Gotthardpass" for the best-known peak or pass
+# within WAVE_LANDMARK_M, else "30 km S of Altdorf (CH)", rounded to 5 km. Half
+# a cell's height either way: the centre is itself up to 14 km from a climb in
+# the cell, and a finer distance would claim a precision the cell does not have.
 WAVE_QUARTER_FROM = "2026-10-06"
-WAVE_NEAR_KM = 10
+WAVE_TOWN_NEAR_M = 12500
+WAVE_LANDMARK_M = 12000
 
 # Which lists name a cell for each kind, in order; the town of GeoNames last.
 SITE_ORDER = {"paraglider": ("fivl", "takeoff"), "hang_glider": ("fivl", "takeoff"), "glider": ("airfield",)}
@@ -698,6 +712,8 @@ _sites = None           # list name -> [(lat, lon, name, gliding)], each name un
 _site_raw = {}          # list name -> {unique name: the name as the list gives it}, where they differ
 _place_names = {}       # (lat_idx, lon_idx, kind) -> (name, lat, lon) or None
 _site_names = None      # (list, name) -> [(lat, lon, display name)], for site_position
+_site_alias = {}        # list name -> {unique name: the town-only name of 8 October 2026 (ac4d1eb)}
+_landmarks = None       # 0.25-degree cell -> [(lat, lon, name, kind, sitelinks)]
 COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 
@@ -743,8 +759,102 @@ def _load_sites():
                     rows.append((float(r[col["lat"]]), float(r[col["lon"]]), name, gliding))
         except (OSError, KeyError, ValueError, IndexError) as e:
             logger.error(f"Flying sites {fn} not loaded ({e})")
-        _sites[key] = _qualify_sites(rows, GENERIC_AIRFIELD_WORDS if key == "airfield" else GENERIC_TAKEOFF_WORDS)
+        words = GENERIC_AIRFIELD_WORDS if key == "airfield" else GENERIC_TAKEOFF_WORDS
+        _sites[key] = _qualify_sites(rows, words)
         _site_raw[key] = {r[2]: raw[2] for r, raw in zip(_sites[key], rows) if r[2] != raw[2]}
+        # The names stored on 6-8 October 2026, qualified by the town alone,
+        # stay resolvable whether or not those days are recomputed.
+        old = _qualify_sites(rows, words, landmarks=False)
+        _site_alias[key] = {r[2]: o[2] for r, o in zip(_sites[key], old) if r[2] != o[2]}
+
+
+def _load_landmarks():
+    """data/landmarks-europe.tsv (README, "Data from others"), indexed by 0.25-degree cell."""
+    global _landmarks
+    by_cell = collections.defaultdict(list)
+    try:
+        with open(LANDMARKS_PATH, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                name, lat, lon, _ele, kind, sitelinks, _q = line.rstrip("\n").split("\t")
+                lat, lon = float(lat), float(lon)
+                by_cell[(math.floor(lat * THERMAL_CELLS_PER_DEG), math.floor(lon * THERMAL_CELLS_PER_DEG))].append(
+                    (lat, lon, name, kind, int(sitelinks)))
+    except (OSError, ValueError) as e:
+        logger.error(f"No peaks and passes for place names ({e})")
+    _landmarks = by_cell
+
+
+_country_cache = {}
+
+
+def country_at(lat, lon):
+    """ISO country code of the GeoNames town nearest a point within SITE_TOWN_M,
+    or None: the country of a site, a peak or a pass for its label (8 October
+    2026). Near a border it can be the neighbour's, as with any nearest town."""
+    key = (round(lat, 2), round(lon, 2))
+    if key in _country_cache:
+        return _country_cache[key]
+    if _places is None:
+        _load_places()
+    n = THERMAL_CELLS_PER_DEG
+    la, lo = math.floor(lat * n), math.floor(lon * n)
+    best = None
+    for dl in range(-2, 3):
+        for dc in range(-3, 4):
+            for p in _places.get((la + dl, lo + dc), ()):
+                d = _distance(lat, lon, p[3], p[4])
+                if d <= SITE_TOWN_M and (best is None or d < best[0]):
+                    best = (d, p[2])
+    _country_cache[key] = best[1] if best else None
+    return _country_cache[key]
+
+
+def with_country(name, cc):
+    """A name with its country code, merged into a final bracket: "Meduno - M.te
+    Valinis (PN, IT)", "Fluggelände Hahnweide (EDST, DE)", "Weissenstein
+    Launch (CH)"; unchanged when the bracket already ends with it."""
+    if not name or not cc:
+        return name
+    if name.endswith(")") and "(" in name:
+        inner = name[name.rindex("(") + 1:-1]
+        if inner == cc or inner.endswith(", " + cc):
+            return name
+        return f"{name[:-1]}, {cc})"
+    return f"{name} ({cc})"
+
+
+def site_country(name):
+    """The country of a site of any list by its stored name (unique name, the
+    list's own or an alias), or None."""
+    if _site_names is None:
+        site_position("glider", name, 0, 0)            # builds the index
+    for which in SITE_FILES:
+        hits = _site_names.get((which, name))
+        if hits:
+            return country_at(hits[0][0], hits[0][1])
+    return None
+
+
+def _landmark_near(lat, lon, near_m, within_m):
+    """(name, lat, lon) of the peak or pass nearest a point within near_m, else
+    the one with most Wikidata sitelinks within within_m, or None."""
+    if _landmarks is None:
+        _load_landmarks()
+    n = THERMAL_CELLS_PER_DEG
+    la, lo = math.floor(lat * n), math.floor(lon * n)
+    nearest = best = None
+    for dl in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            for p in _landmarks.get((la + dl, lo + dc), ()):
+                d = _distance(lat, lon, p[0], p[1])
+                if d <= near_m and (nearest is None or d < nearest[0]):
+                    nearest = (d, p)
+                if d <= within_m and (best is None or (p[4], -d) > (best[1][4], -best[0])):
+                    best = (d, p)
+    p = (nearest or best or (None, None))[1]
+    return (p[2], p[0], p[1]) if p else None
 
 
 def _generic(name, words):
@@ -774,9 +884,10 @@ def _nearest_town(lat, lon):
 
 
 def wave_name(lat_idx, lon_idx):
-    """The name of a 0.25-degree cell of probable wave, from the GeoNames town
-    nearest its centre within SITE_TOWN_M: "near Altdorf (CH)", or
-    "20 km SE of Glarus (CH)" from the town to the centre; None without one."""
+    """The name of a 0.25-degree cell of probable wave: "near Altdorf (CH)" for a
+    town within WAVE_TOWN_NEAR_M of its centre, "near Gotthardpass" for the
+    best-known peak or pass within WAVE_LANDMARK_M, else "20 km SE of Glarus
+    (CH)" from the nearest town within SITE_TOWN_M; None without either."""
     if _places is None:
         _load_places()
     n = THERMAL_CELLS_PER_DEG
@@ -788,20 +899,25 @@ def wave_name(lat_idx, lon_idx):
                 d = _distance(clat, clon, p[3], p[4])
                 if d <= SITE_TOWN_M and (best is None or d < best[0]):
                     best = (d, p)
+    if best is not None and best[0] <= WAVE_TOWN_NEAR_M:
+        return f"near {best[1][1]} ({best[1][2]})"
+    mark = _landmark_near(clat, clon, 0, WAVE_LANDMARK_M)
+    if mark:
+        return f"near {with_country(mark[0], country_at(mark[1], mark[2]))}"
     if best is None:
         return None
     d, p = best
-    km = 5 * round(d / 5000)
-    if km <= WAVE_NEAR_KM:
-        return f"near {p[1]} ({p[2]})"
-    return f"{km} km {_compass(p[3], p[4], clat, clon)} of {p[1]} ({p[2]})"
+    return f"{5 * round(d / 5000)} km {_compass(p[3], p[4], clat, clon)} of {p[1]} ({p[2]})"
 
 
-def _qualify_sites(rows, words):
+def _qualify_sites(rows, words, landmarks=True):
     """The rows of one site list with every name unique: a name that is generic
-    or occurs more than once gets the nearest town, "Startplatz Ost
-    (Lenggries)"; if that is still not unique, the distance and direction
-    from the town, "(Lenggries, 4 km SE)", and failing that the position.
+    or occurs more than once gets the nearest town when it is within
+    SITE_TOWN_NEAR_M, "Startplatz Ost (Lenggries)", else a peak or pass
+    (_landmark_near), "Startplatz Ost (Brauneck)", else the town; if that is
+    still not unique, the distance and direction from the town, "(Lenggries,
+    4 km SE)", and failing that the position. With landmarks=False, the town
+    alone, as on 8 October 2026 before the peaks (the aliases of old names).
     Entries with the same name within SITE_SAME_M of each other are one site
     mapped twice, and keep one name between them."""
     # One site mapped twice: the same name within SITE_SAME_M; the first one
@@ -820,6 +936,14 @@ def _qualify_sites(rows, words):
     ambiguous = [i for i in heads if count[rows[i][2]] > 1 or _generic(rows[i][2], words)]
     names = {i: rows[i][2] for i in heads}
     towns = {i: _nearest_town(rows[i][0], rows[i][1]) for i in ambiguous}
+    marks = {}
+    if landmarks:
+        for i in ambiguous:
+            town = towns[i]
+            if town is None or _distance(town[1], town[2], rows[i][0], rows[i][1]) > SITE_TOWN_NEAR_M:
+                mark = _landmark_near(rows[i][0], rows[i][1], SITE_LANDMARK_NEAR_M, SITE_LANDMARK_M)
+                if mark and mark[0].lower() not in rows[i][2].lower():
+                    marks[i] = mark
 
     def qualify(name, inner):
         # "Startplatz (GS)" + "Brannenburg" -> "Startplatz (GS, Brannenburg)",
@@ -829,6 +953,8 @@ def _qualify_sites(rows, words):
     def level(i, k):
         lat, lon, name = rows[i][0], rows[i][1], rows[i][2]
         town = towns[i]
+        if k == 1 and i in marks:
+            return qualify(name, marks[i][0])
         if k == 1 and town and town[0].lower() not in name.lower():
             return qualify(name, town[0])
         if k == 1 and town:
@@ -886,6 +1012,9 @@ def site_position(kind, name, lat_idx, lon_idx):
                 raw = _site_raw.get(which, {}).get(site, site)
                 if raw != site:
                     _site_names[(which, raw[:255])].append((lat, lon, site))
+                old = _site_alias.get(which, {}).get(site)
+                if old:
+                    _site_names[(which, old[:255])].append((lat, lon, site))
     n = THERMAL_CELLS_PER_DEG
     clat, clon = (lat_idx + 0.5) / n, (lon_idx + 0.5) / n
     best = None
@@ -2116,7 +2245,9 @@ class SourceTracker:
         other = collections.defaultdict(lambda: [0, 0, 0])
         for month, a, b, flights, aircraft in rows:
             if aircraft >= ROUTE_MIN_AIRCRAFT:
-                out.append({"month": month, "airfield_a": a, "airfield_b": b, "flights": flights, "aircraft": aircraft})
+                # Each airfield with its country, as the thermal places (8 October 2026).
+                out.append({"month": month, "airfield_a": with_country(a, site_country(a)),
+                            "airfield_b": with_country(b, site_country(b)), "flights": flights, "aircraft": aircraft})
             else:
                 o = other[month]
                 o[0] += 1
@@ -2193,22 +2324,26 @@ class SourceTracker:
             csum = sum(c["climb_sum"] for c in group)
             cn = sum(c["climbs"] for c in group)
             top = max(group, key=lambda c: c["thermals"])
+            # The site's country, merged into the name's final bracket (8 October
+            # 2026); a town's name carries its own already.
+            site = top["site"]
+            cc = country_at(site[1], site[2]) if site is not None else None
+            name = with_country(top["name"], cc)
             place = {"kind": key[1], "south": min(c["la"] for c in group) / n,
                      "north": (max(c["la"] for c in group) + 1) / n,
                      "west": min(c["lo"] for c in group) / n, "east": (max(c["lo"] for c in group) + 1) / n,
-                     "cells": len(group), "name": top["name"], "named_by": top["named_by"],
+                     "cells": len(group), "name": name, "country": cc, "named_by": top["named_by"],
                      "thermals": th, "mean_climb": round(csum / cn, 2) if cn else None,
-                     "away_km": None, "away_dir": None, "label": top["name"]}
+                     "away_km": None, "away_dir": None, "label": name}
             # A place outside its site's block (a cell of its own) is labelled with
             # its distance and direction from the site, to its centre, so that
             # thermals found far from a take-off are not read as its own.
-            site = top["site"]
             if key[0] == "cell" and site is not None:
                 clat, clon = (place["south"] + place["north"]) / 2, (place["west"] + place["east"]) / 2
                 km = max(5, 5 * round(_distance(site[1], site[2], clat, clon) / 5000))
                 place["away_km"] = km
                 place["away_dir"] = _compass(site[1], site[2], clat, clon)
-                place["label"] = f"{top['name']}, {km} km {place['away_dir']}"
+                place["label"] = f"{name}, {km} km {place['away_dir']}"
             places.append(place)
         out = {"from": since.isoformat(), "to": now.isoformat(), "min_thermals": THERMAL_CELL_MIN,
                "busiest": [], "strongest": []}

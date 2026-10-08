@@ -197,7 +197,22 @@ generic name) and 55 of 6,634 aerodromes (46 for a shared name), and
 none of the 416 FIVL sites. The nightly run files each thermal under the
 qualified name, so from 8 October a site is found by its name exactly;
 days stored before carry the list's own name, matched to the site of
-that name nearest the cell. A cell with no such site
+that name nearest the cell. Later on 8 October 2026 peaks and passes
+joined the towns: the town is kept when it lies within 5 km of the
+site, "Startplatz (Bad Tölz)"; further away a mountain says more, so
+the nearest peak or pass within 1 km is taken, else the best known
+within 3 km (most Wikidata sitelinks, the number of Wikipedia pages
+about it), "Startplatz Nord (Hochries)" rather than "(Aschau im
+Chiemgau)", and only without one the town, with the distance and
+uniqueness steps above. The peaks and passes are those of
+OpenStreetMap with at least three Wikidata sitelinks (README); this
+changed 36 of the 137 qualified take-off names and one aerodrome's. The
+town-only names stored on 6 to 8 October stay resolvable as aliases.
+When a place is shown, its site's country follows the name, merged into
+its last bracket, "Meduno - M.te Valinis (PN, IT)", "Fluggelände
+Hahnweide (EDST, DE), 30 km S", "Weissenstein Launch (CH)", taken from
+the GeoNames town nearest the site; the stored names do not carry it. A
+cell with no such site
 takes the most populous town or village of at least 5,000 people inside
 it, or the nearest within 25 km of its centre, from the GeoNames list of
 places (cities5000), as "Bassano del Grappa (IT)"; a cell with neither is
@@ -523,12 +538,16 @@ from 8 October 2026, filed at the midpoint of the climb (1 degree and its
 start before). A cell is named by geography, never by a take-off, since
 wave is where the mountains make it and pilots reach it from far away:
 "near Altdorf (CH)" when the nearest town of at least 5,000 people is
-within 10 km of the cell's centre, after rounding to 5 km, else the
-distance and direction from that town, "30 km S of Altdorf (CH)", on
-eight points. 10 km because the centre may itself be 14 km from a climb
-in the cell. The GeoNames list holds towns only, so a peak or a pass
-cannot name a cell, and the town is the nearest one rather than the
-largest: a 1-degree cell over the Gotthard was named after Lugano.
+within 12.5 km of the cell's centre, else "near Furkapass" after the
+best-known peak or pass within 12 km (most Wikidata sitelinks), else
+the distance and direction from the nearest town, "30 km S of Altdorf
+(CH)", rounded to 5 km on eight points. About half a cell either way,
+because the centre may itself be 14 km from a climb in the cell. The
+town is the nearest one rather than the largest: a 1-degree cell over
+the Gotthard was named after Lugano. Peaks and passes joined on the
+evening of 8 October 2026; before, the town-only rule named the cell
+over the Furka "30 km S of Kerns (CH)". A peak or pass carries the
+country of the town nearest it, "near Furkapass (CH)".
 
 Ridge lift and convergence lines can look the same: a glider flying along a
 ridge or a convergence climbs in straight lines too, and above high ground
@@ -676,3 +695,6 @@ wide sits in mountains, a high plateau in plain and hills.
   (section 3). Probable wave is counted in 0.25-degree cells at the
   climb's midpoint, named by the nearest town, and needs 1,000 m of
   relief within 5 km and a model wind of 20 km/h at the climb (section 8).
+  In the evening, peaks and passes from OpenStreetMap with three or more
+  Wikidata sitelinks name take-offs and wave cells that no town is close
+  to (sections 3 and 8).
