@@ -299,8 +299,11 @@ last seen before it, which is where coverage gave way:
   the mountains that height and the altitude differ by thousands of metres.
   The boundaries follow the claims the data should test: mobile operators
   describe coverage as reliable up to 300 m and patchy up to about 1,000 m,
-  and the 2021 feasibility study for EASA recorded a permanent loss of the
-  tracking link between 600 and 1,200 m above the ground. The ground is the
+  and the 2021 feasibility study for EASA, a desk study by Horváth &
+  Partners with no flights of its own, quoted trials by others (SafeSky's
+  among them) that lost the tracking link between 600 and 1,200 m above the
+  ground. Corrected on 8 October 2026: until then this section read as if
+  the study had recorded the loss itself. The ground is the
   NOAA ETOPO 2022 surface model at 15 arc-seconds (cells of about 460 by 310 m
   at the latitude of the Alps) over 35–72°N and 25°W–45°E; over the sea it is
   the sea surface. The ground under an aircraft is interpolated between the
