@@ -492,6 +492,32 @@ full turn net over the climb. A thermal turns at 5 degrees a second or more
 (section 2), so the turning rule keeps thermals out, and the net turn lets
 figure eights in. 2,500 m keeps out most ridge and thermal climbs over
 lowland and hills. A climb of the same glider counts once in half an hour.
+
+From 8 October 2026 such a climb is only a candidate, and counts as
+probable wave when two more things hold. The ground within **5 km** of the
+climb's midpoint must rise and fall by at least **1,000 m** (highest minus
+lowest point of the terrain model), because a wave needs a ridge to set
+it off. And the **wind at the climb's altitude and hour** must be at least
+**20 km/h** (about 11 knots, a cautious floor: wave soaring usually needs
+more), because without air flowing across the mountains there is no lee
+wave. The wind is a model's: the Open-Meteo historical forecast, fetched
+once a night for all candidates at points rounded to 0.1 degree and
+interpolated in height between pressure levels from 900 to 400 hPa. On
+6 and 7 October 2026 the climb test alone found 38 climbs. On the 6th the
+model wind at the height of every one of them was 1 to 13 km/h, in the
+Alps as over the Rhön or Poland, so none could be wave: they were straight
+climbs under cloud or along convergence. The 7th was a south föhn day, and
+10 of its 12 Alpine climbs had 18 to 50 km/h from the south and
+south-west; the lowland ones that had a similar wind had less than 350 m
+of relief within 5 km. Relief alone would have kept the ten calm Alpine
+climbs of the 6th. Stability did not separate anything, since the air at
+2.5 to 4 km was stable on both days everywhere (cooling 3.5 to 8 degrees
+per km), nor did the glider's track against the wind or its ground speed.
+**The rule is unverified**: no report of real wave, from pilots or of
+lenticular clouds, has been checked against it, and it rests on the
+pattern of those two days. If the wind cannot be fetched (the request is
+retried once), no climb of that day is counted and the day's notes say
+so; the raw recording, kept four days, allows the day to be recomputed.
 Climbs are counted per day and cell, in cells of a **quarter of a degree**
 from 8 October 2026, filed at the midpoint of the climb (1 degree and its
 start before). A cell is named by geography, never by a take-off, since
@@ -648,4 +674,5 @@ wide sits in mountains, a high plateau in plain and hills.
   site's block is labelled with its distance and direction from it.
   Generic and shared site names are qualified with the nearest town
   (section 3). Probable wave is counted in 0.25-degree cells at the
-  climb's midpoint, named by the nearest town (section 8).
+  climb's midpoint, named by the nearest town, and needs 1,000 m of
+  relief within 5 km and a model wind of 20 km/h at the climb (section 8).

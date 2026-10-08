@@ -298,6 +298,13 @@ within 34–72° N and 25° W–45° E, extracted from OpenStreetMap with one Ov
 (data as of 19:37 UTC). © OpenStreetMap contributors, available under the
 [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/) (https://www.openstreetmap.org/copyright).
 
+Wind for the probable wave of PATTERNS.md section 8: `nightly.py` asks the Open-Meteo historical forecast
+API (https://historical-forecast-api.open-meteo.com/v1/forecast, no key) once a night for the wind and
+geopotential height at pressure levels from 900 to 400 hPa, at the day's candidate wave climbs, rounded to
+0.1 degree. Weather data by [Open-Meteo.com](https://open-meteo.com/), licensed under
+[Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/). The wave rule built on it
+is unverified against reports of real wave.
+
 These lists name the thermal places of PATTERNS.md section 3. When they are loaded, a name that is generic
 or that two sites of one list share is qualified with the nearest GeoNames town (PATTERNS.md section 3), so
 every site of a list has a name of its own. The terrain model in `data/` is not in the

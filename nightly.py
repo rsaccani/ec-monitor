@@ -300,6 +300,17 @@ def load_ddb():
     return types, notrack, models
 
 
+def wind_at(levels, z):
+    """Wind speed at height z from [(height, u, v)] sorted by height, interpolating
+    the components linearly; the nearest level outside the range."""
+    for a, b in zip(levels, levels[1:]):
+        if a[0] <= z <= b[0]:
+            f = (z - a[0]) / (b[0] - a[0])
+            return math.hypot(a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2]))
+    a = levels[0] if z < levels[0][0] else levels[-1]
+    return math.hypot(a[1], a[2])
+
+
 def climb_span(samples):
     """(metres gained, seconds) of the largest climb within a circling episode:
     the largest rise from a sampled low point to the highest point after it,
@@ -502,6 +513,20 @@ WAVE_TURN = 3.0                               # deg/s of turning on average, at 
 WAVE_NET_TURN = 360                           # and less than one net turn in the window
 WAVE_GAP = 30                                 # a silence longer than this restarts the window
 WAVE_QUIET = 1800                             # one wave climb per glider per half hour
+# A climb that passes the test above is a candidate; it counts as probable wave
+# only over mountains and in wind (PATTERNS.md, section 8, 8 October 2026). On 6
+# October 2026 the forecast wind at the height of every climb was 1-13 km/h, Alps
+# included, while 10 of the 12 Alpine climbs of 7 October, a south föhn day, had
+# 18-50 km/h; relief alone kept the calm Alpine climbs of the 6th. Unverified
+# against any report of real wave.
+WAVE_RELIEF_M = 1000        # highest minus lowest ground within 5 km (Nightly.relief): a ridge to set a wave off
+WAVE_WIND_KMH = 20          # model wind at the climb's altitude and hour; about 11 kt, a cautious floor
+# The wind comes from the Open-Meteo historical forecast API (CC BY 4.0; README),
+# one request per night for all candidates, at points rounded to 0.1 degree and
+# interpolated in height between pressure levels.
+WAVE_WX_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+WAVE_WX_LEVELS = (900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400)   # hPa, about 1 to 7 km
+WAVE_WX_TIMEOUT, WAVE_WX_RETRY_S = 60, 15
 # A wave climb is filed at the midpoint of the climb, in cells of a quarter of a
 # degree (sources.THERMAL_CELLS_PER_DEG), from 8 October 2026; 1 degree and the
 # start of the climb before. A 1-degree cell named the place by its largest
@@ -742,7 +767,7 @@ class Nightly:
         self.wave_q = collections.defaultdict(collections.deque)   # glider -> (t, alt, net turn, abs turn)
         self.wave_last = {}                        # glider -> (t, course, net, abs)
         self.wave_quiet = {}
-        self.waves = []                            # (address, t0, lat, lon of the climb's midpoint)
+        self.waves = []                            # (address, t0, lat, lon, altitude, time of the climb's midpoint)
         self.powered = {}                         # address -> PoweredTrack
         self.levels = collections.Counter()       # (address, category, reference, alt band, speed band) -> segments
         self.level_s = collections.Counter()
@@ -1606,10 +1631,69 @@ class Nightly:
             gain = alt - a0
             if (gain >= WAVE_GAIN_M and gain / (t - t0) >= WAVE_RATE and abs(net - n0) < WAVE_NET_TURN
                     and (turned - u0) / (t - t0) <= WAVE_TURN):
-                self.waves.append((address, t0, (la0 + lat) / 2, (lo0 + lon) / 2))
+                self.waves.append((address, t0, (la0 + lat) / 2, (lo0 + lon) / 2, (a0 + alt) / 2, (t0 + t) / 2))
                 self.wave_quiet[address] = t + WAVE_QUIET
                 q.clear()
                 return
+
+    def wave_climbs(self):
+        """The day's candidate climbs that are probable wave: relief of at least
+        WAVE_RELIEF_M and a model wind of at least WAVE_WIND_KMH at the climb.
+        If the wind cannot be fetched, no climb of the day is kept and the day's
+        notes say so: unchecked climbs would bring back the calm-day climbs the
+        rule exists to drop, and the raw recording allows a recompute."""
+        cand = [w for w in self.waves if self.d0 <= w[1] < self.d1]
+        relief = [w for w in cand if (self.relief(w[2], w[3]) or 0) >= WAVE_RELIEF_M]
+        if not relief:
+            logger.info(f"Wave: {len(cand)} candidate climbs, {len(cand)} rejected by relief, none to check for wind")
+            return []
+        try:
+            wind = self.wave_wind(relief)
+        except Exception as e:
+            logger.error(f"Wave: {len(cand)} candidate climbs, {len(cand) - len(relief)} rejected by relief, "
+                         f"{len(relief)} with the wind unknown ({type(e).__name__}: {e}); no wave kept for the day")
+            self.failed["wave"] = f"wind unknown: {type(e).__name__}"[:200]
+            return []
+        kept = [w for w, v in zip(relief, wind) if v is not None and v >= WAVE_WIND_KMH]
+        logger.info(f"Wave: {len(cand)} candidate climbs, {len(cand) - len(relief)} rejected by relief "
+                    f"under {WAVE_RELIEF_M} m, {len(relief) - len(kept)} by wind under {WAVE_WIND_KMH} km/h "
+                    f"({sum(1 for v in wind if v is None)} without a wind value), {len(kept)} kept")
+        return kept
+
+    def wave_wind(self, climbs):
+        """Model wind speed (km/h) at each climb's midpoint, altitude and hour, from
+        one Open-Meteo request; retried once."""
+        pts = sorted({(round(w[2], 1), round(w[3], 1)) for w in climbs})
+        hourly = ",".join(f"{v}_{p}hPa" for p in WAVE_WX_LEVELS for v in ("wind_speed", "wind_direction",
+                                                                             "geopotential_height"))
+        url = (f"{WAVE_WX_URL}?latitude={','.join(str(p[0]) for p in pts)}"
+               f"&longitude={','.join(str(p[1]) for p in pts)}&start_date={self.day}&end_date={self.day}"
+               f"&hourly={hourly}&wind_speed_unit=kmh&timezone=GMT")
+        for attempt in (1, 2):
+            try:
+                with urllib.request.urlopen(url, timeout=WAVE_WX_TIMEOUT) as r:
+                    data = json.load(r)
+                break
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                logger.warning(f"Wave: the wind request failed ({type(e).__name__}: {e}); retrying once")
+                time.sleep(WAVE_WX_RETRY_S)
+        if isinstance(data, dict):
+            data = [data]
+        grid = dict(zip(pts, data))
+        out = []
+        for w in climbs:
+            h = grid[(round(w[2], 1), round(w[3], 1))]["hourly"]
+            i = min(len(h["time"]) - 1, max(0, int(round((w[5] - self.d0) / 3600))))
+            levels = []
+            for p in WAVE_WX_LEVELS:
+                z, ws, wd = (h[f"{v}_{p}hPa"][i] for v in ("geopotential_height", "wind_speed", "wind_direction"))
+                if None not in (z, ws, wd):
+                    levels.append((z, -ws * math.sin(math.radians(wd)), -ws * math.cos(math.radians(wd))))
+            levels.sort()
+            out.append(wind_at(levels, w[4]) if levels else None)
+        return out
 
     # --- 2. circling ----------------------------------------------------------------
 
@@ -2162,7 +2246,7 @@ class Nightly:
                                  "flights", "seconds", "path_m"),
                                 [(day,) + k + (v[0], round(v[1], 1), round(v[2])) for k, v in sorted(fl.items())])
         wave = collections.Counter((math.floor(la * THERMAL_CELLS_PER_DEG), math.floor(lo * THERMAL_CELLS_PER_DEG))
-                                   for _, t0, la, lo in self.waves if self.d0 <= t0 < self.d1)
+                                   for _, t0, la, lo, *_ in self.wave_climbs())
         out["daily_wave"] = (("day", "lat_idx", "lon_idx", "climbs"),
                              [(day,) + k + (n,) for k, n in sorted(wave.items())])
 
