@@ -437,6 +437,97 @@ def implausible(category, speed, alt_m):
     return (speed or 0) > top or (alt_m or 0) > FREE_FLIGHT_MAX_M
 
 
+# Impossible tracks, for every kind (METHOD.md, section 1, from 9 October
+# 2026): a ground speed or an altitude no aircraft of the declared category
+# can reach. Until then only free flight had limits of its own; the raw
+# recording of 6 October 2026 had 97 of 2,665 powered streams, 26 glider and
+# 16 helicopter streams with impossible tracks, altitudes of 64.5-65.5 km
+# (2^16 m, an unsigned field gone negative) among them, and drones whose
+# "flights" reached 65 km above the ground and 980 km/h. Each limit is set
+# above the fastest and highest aircraft of the kind with a strong tailwind,
+# so that only a fix no such aircraft can produce is dropped: a turboprop
+# declared as a powered aircraft cruises at 550 km/h, a glider in wave can
+# pass 300 km/h over the ground and 10 km of altitude. Category -> (km/h, m).
+CEILINGS = {
+    7: (100, FREE_FLIGHT_MAX_M), 6: (150, FREE_FLIGHT_MAX_M),
+    1: (400, 15000), 2: (800, 15000), 8: (800, 15000), 5: (800, 15000),
+    3: (400, 8000), 4: (400, 10000), 12: (200, 10000), 13: (350, 10000),
+    9: (1300, 20000), 11: (400, 40000),
+}
+CEILING_OTHER = (1300, 40000)
+JUMP_MIN_M = 2000          # under this a jump is GPS noise or two systems' clocks, not an impossible track
+
+
+def impossible_fix(category, speed_kt, alt_m):
+    """A fix beyond the ground speed or altitude of every aircraft of its category."""
+    kmh, top = CEILINGS.get(category, CEILING_OTHER)
+    return (speed_kt or 0) * 1.852 > kmh or (alt_m or 0) > top
+
+
+def impossible_jump(category, metres, seconds):
+    """A segment no aircraft of the category can fly: faster than 500 km/h, as
+    before 9 October 2026, or than the category's own limit where that is
+    higher (a jet at 900 km/h is flying); and, over more than JUMP_MIN_M,
+    faster than the category's limit."""
+    kmh = metres * 3.6 / max(seconds, 1)
+    top = CEILINGS.get(category, CEILING_OTHER)[0]
+    if kmh > max(IMPLAUSIBLE_MS * 3.6, top):
+        return True
+    return metres > JUMP_MIN_M and kmh > top
+
+
+# FLARM's ground speed 0 in flight (METHOD.md, section 1, from 9 October
+# 2026). Multi-protocol varios send 0 on their FLARM half while their FANET
+# and ADS-L halves give the true speed: on 6 October 2026, 291 of 1,111 FLARM
+# free-flight devices did so in most of their fast segments, against none of
+# 557 gliders and 1,095 powered aircraft, and the airborne rule, which takes
+# the slower end of a segment, lost 6.1% of the day's free flight. On those
+# fixes the 0 is taken as missing and the speed is computed from positions,
+# over the stream's own fixes at least ZERO_BASE_S and at most ZERO_MAX_S
+# earlier. The base is what keeps a parked instrument parked: its position
+# wanders by a few metres, which over 5 s is under 1 m/s, a quarter of the
+# 15 km/h free flight needs; over the 1 s between two FLARM fixes the same
+# wander would read as flight. Measured on 6 October 2026: of 398 h of FLARM
+# free-flight segments ending at a 0, 183 h computed at 15 km/h or more, of
+# which 1.2 h within 30 m of the terrain model with the address's other
+# systems silent or on the ground (the most a pilot walking, a car or a
+# wandering fix can have added). Gliders and powered aircraft, parked by the
+# hundred with 0, would have gained 0.7 h at 15 km/h or more on the ground,
+# and nothing in the air: hence free flight only.
+ZERO_SPEED_SOURCES = {"OGFLR"}
+ZERO_SPEED_CATEGORIES = {6, 7}
+ZERO_BASE_S, ZERO_MAX_S = 5, 60
+
+
+class ZeroSpeed:
+    """The speed a fix stands for when FLARM reports 0 on a moving instrument."""
+
+    def __init__(self):
+        self.recent = {}        # stream -> deque of (t, lat, lon), the last ZERO_BASE_S and one before
+
+    def speed(self, key, tocall, category, t, lat, lon, speed_kt):
+        """`speed_kt`, or on a FLARM free-flight fix reporting 0 the speed in
+        knots from positions (None when no fix of the stream is old enough).
+        Call once per fix, in time order, only for fixes the measures keep."""
+        if tocall not in ZERO_SPEED_SOURCES or category not in ZERO_SPEED_CATEGORIES:
+            return speed_kt
+        q = self.recent.get(key)
+        if q is None:
+            q = self.recent[key] = collections.deque()
+        q.append((t, lat, lon))
+        while len(q) > 1 and t - q[1][0] >= ZERO_BASE_S:
+            q.popleft()
+        if speed_kt != 0:
+            return speed_kt
+        t0, lat0, lon0 = q[0]
+        if not ZERO_BASE_S <= t - t0 <= ZERO_MAX_S:
+            return speed_kt
+        return _distance(lat0, lon0, lat, lon) / (t - t0) / 0.514444
+
+    def prune(self, cutoff):
+        self.recent = {k: q for k, q in list(self.recent.items()) if q and q[-1][0] >= cutoff}
+
+
 def msl_band(alt_m):
     return UNKNOWN_BAND if alt_m is None else min(4, max(0, int(alt_m // 1000)))
 
@@ -1110,6 +1201,7 @@ class SourceTracker:
         self.history = {}         # (device, source, via) -> deque of recent fixes
         self.scored_at = {}       # (device, source, via) -> time of the last scored fix
         self.rot_devices = set()  # devices that have reported a non-zero turn rate
+        self.zero = ZeroSpeed()   # FLARM's 0 on moving free-flight instruments (9 October 2026)
         # Flying time per aircraft, whatever source or channel each fix came
         # by: last fix per 24-bit address, and seconds per (month, category).
         self.addr_fix = {}
@@ -1321,7 +1413,7 @@ class SourceTracker:
         if day is None:
             day = self._days[dn] = datetime.datetime.utcfromtimestamp(dn * 86400).strftime("%Y-%m-%d")
         tot = self.totals[(day, tocall, via, category)]
-        if implausible(category, speed, alt_m):
+        if implausible(category, speed, alt_m) or impossible_fix(category, speed, alt_m):
             # The device is sending, so no silence may run across this fix:
             # it ends the track, and the next plausible fix starts a new one.
             tot[4] += 1
@@ -1336,28 +1428,33 @@ class SourceTracker:
             return                          # older than what we already have
         if calendar.timegm(now.timetuple()) - t > STALE_SECONDS:
             return                          # relayed late; would open a false gap
-        self.count_hours(day[:7], src[-6:], category, t, lat, lon, speed)
+        # The speed that decides flight: FLARM's 0 on a moving free-flight
+        # instrument is replaced by the speed from positions (9 October 2026).
+        # The reported one still drives the projections and the cadence.
+        fly = self.zero.speed(key, tocall, category, t, lat, lon, speed)
+        self.count_hours(day[:7], src[-6:], category, t, lat, lon, fly)
         if via == "radio" and tocall in RADIO_CADENCE:
-            self.count_radio_aircraft(day[:7], src[-6:], category, tocall, t, lat, lon, speed, alt_m)
+            self.count_radio_aircraft(day[:7], src[-6:], category, tocall, t, lat, lon, fly, alt_m)
         if station is not None and course is not None:
-            self.record_pattern(day[:7], tocall, category, station, lat, lon, t, course, rot, prev, body, speed)
+            self.record_pattern(day[:7], tocall, category, station, lat, lon, t, course, rot, prev, body, fly)
         self.record_prediction(day[:7], tocall, category, key, (t, lat, lon, course, speed, rot))
-        self.last_fix[key] = (t, lat, lon, course, speed, rot, alt_m, category, day[:7])
+        self.last_fix[key] = (t, lat, lon, course, speed, rot, alt_m, category, day[:7], fly)
         if prev is None:
             return
         pt, plat, plon, pcourse, pspeed, prot, palt = prev[:7]
+        pfly = prev[9]
         seconds = t - pt
-        if seconds > VANISH_MINUTES[0] * 60 and (pspeed or 0) >= FLYING_KT.get(category, AIRBORNE_KT):
+        if seconds > VANISH_MINUTES[0] * 60 and (pfly or 0) >= FLYING_KT.get(category, AIRBORNE_KT):
             self.count_vanish(day[:7], tocall, via, category, plat, plon, palt, seconds)
         if seconds > SESSION_BREAK:
             tot[3] += 1
             return
         # Last-point estimator: the error is the distance actually covered.
         e0 = _distance(plat, plon, lat, lon)
-        if e0 > IMPLAUSIBLE_MS * max(seconds, 1):
+        if impossible_jump(category, e0, seconds):
             tot[4] += 1
             return
-        if not flying(category, pspeed, speed):
+        if not flying(category, pfly, fly):
             return
         tot[2] += 1
         tot[5] += seconds
@@ -1451,7 +1548,7 @@ class SourceTracker:
         seconds = t - prev[0]
         if seconds > SESSION_BREAK:
             return
-        if _distance(prev[1], prev[2], lat, lon) > IMPLAUSIBLE_MS * max(seconds, 1):
+        if impossible_jump(category, _distance(prev[1], prev[2], lat, lon), seconds):
             return
         if not flying(category, prev[3], speed):
             return
@@ -1489,7 +1586,7 @@ class SourceTracker:
         seconds = t - prev[0]
         if seconds > SESSION_BREAK:
             return
-        if _distance(prev[1], prev[2], lat, lon) > IMPLAUSIBLE_MS * max(seconds, 1):
+        if impossible_jump(category, _distance(prev[1], prev[2], lat, lon), seconds):
             return
         if not flying(category, prev[3], speed):
             return
@@ -1646,10 +1743,11 @@ class SourceTracker:
             for k, v in list(self.last_fix.items()):
                 if v[0] > cutoff:
                     keep[k] = v
-                elif (v[4] or 0) >= FLYING_KT.get(v[7], AIRBORNE_KT):
+                elif (v[9] or 0) >= FLYING_KT.get(v[7], AIRBORNE_KT):
                     # Silent for more than SESSION_BREAK and last seen flying: gone.
                     self.count_vanish(v[8], k[1], k[2], v[7], v[1], v[2], v[6], SESSION_BREAK + 1)
             self.last_fix = keep
+            self.zero.prune(cutoff)
             if not totals and not detail and not grid and not pattern and not prediction and not hours:
                 continue
             flushed = datetime.datetime.utcnow().replace(microsecond=0)
@@ -2593,6 +2691,10 @@ class SourceTracker:
     # Which devices declaring a drone are drones (nightly.py, METHOD.md 10.1).
     DRONE_EVIDENCE = {1: "confirmed", 2: "uncertain", 3: "crewed_adsb_emitter", 4: "crewed_ddb_thermal",
                       5: "stray", 6: "crewed_climb_extent"}
+    # How an uncertain drone flies (nightly.py FLIGHT_CLASS_NAMES, from 9 October 2026); 0 for every
+    # other class, and for the days computed before.
+    DRONE_FLIGHT = {0: "not_judged", 2: "never_above_30m", 3: "probably_crewed", 4: "probably_multirotor",
+                    5: "probably_fixed_wing", 6: "uncertain"}
 
     def drones_stats(self):
         """Drones per 1-degree cell, height and speed band, systems, extent and encounters.
@@ -2601,7 +2703,11 @@ class SourceTracker:
         with crewed evidence, and those whose category 13 was a stray packet
         among others, are in none of them and appear only in `classes`, with
         how many and how long they flew, so the page can say how many were
-        set aside and on what grounds.
+        set aside and on what grounds. `classes_by_flight`, `bands_by_flight`,
+        `extent_by_flight` and `encounters_by_flight` repeat them split by
+        `flight_class` as well (from 9 October
+        2026): the class by flight of an uncertain drone, "not_judged" for the
+        others and for days computed before.
         """
         def compute(cur):
             name = self.DRONE_EVIDENCE.get
@@ -2632,10 +2738,35 @@ class SourceTracker:
                                FROM daily_drone_classes GROUP BY 1, 2""")
             classes = [{"month": r[0], "evidence": name(int(r[1])), "address_days": int(r[2]),
                         "air_seconds": float(r[3])} for r in cur.fetchall()]
+            # From 9 October 2026, the class an uncertain drone flies like
+            # (METHOD.md 10.1): the same figures split by it, in lists of
+            # their own so that the lists above keep their shape.
+            flight = self.DRONE_FLIGHT.get
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, SUM(addresses), SUM(air_seconds)
+                               FROM daily_drone_classes GROUP BY 1, 2, 3""")
+            by_flight = {"classes_by_flight": [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
+                                      "address_days": int(r[3]), "air_seconds": float(r[4])} for r in cur.fetchall()]}
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, height_band, speed_band,
+                                  SUM(air_seconds)
+                               FROM daily_drones GROUP BY 1, 2, 3, 4, 5""")
+            by_flight["bands_by_flight"] = [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
+                                   "height_band": None if r[3] == UNKNOWN_BAND else int(r[3]),
+                                   "speed_band": int(r[4]), "air_seconds": float(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, extent_band, SUM(drones)
+                               FROM daily_drone_extent GROUP BY 1, 2, 3, 4""")
+            by_flight["extent_by_flight"] = [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
+                                    "extent_band": int(r[3]), "drone_days": int(r[4])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, other_category, distance_band,
+                                  SUM(encounters)
+                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5""")
+            by_flight["encounters_by_flight"] = [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
+                                        "other_category": int(r[3]), "distance_band": int(r[4]),
+                                        "encounters": int(r[5])} for r in cur.fetchall()]
             return {"days": self._nightly_days(cur), "height_bands_m": [0, 50, 120, 300],
                     "speed_bands_kmh": [0, 20, 50, 100], "extent_bands_m": [0, 1000, 3000, 10000],
                     "distance_bands_m": [0, 300, 600, 1000], "classes": classes, "cells": cells, "bands": bands,
-                    "systems": systems, "extent": extent, "encounters": encounters}
+                    "systems": systems, "extent": extent, "encounters": encounters,
+                    "flight_classes": list(self.DRONE_FLIGHT.values()), **by_flight}
         return self._cached("drones", "drones_cache", compute)
 
     def encounters_stats(self):

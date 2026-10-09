@@ -128,6 +128,30 @@ measures that count flying time (flying time itself, the distances of section
 on 6 October 2026 under the 10 km/h rule: the raw feed was not recorded then
 (section 9), so it cannot be computed again.
 
+**FLARM's ground speed 0** (from 9 October 2026). Instruments that send
+several protocols under one address send a ground speed of 0 on their FLARM
+half while their FANET and ADS-L halves give the true speed: on 6 October
+2026, 291 of 1,111 FLARM free-flight devices did so in most of their fast
+segments, against none of 557 gliders and 1,095 powered aircraft. The
+airborne rule takes the slower end of a segment, so every segment touching
+such a fix failed, and flying time of free flight was short by 149 h, 8.3%
+of the 1,797 h it should have had, on 6 October 2026 and 22.5 h (3.4%) on 7 October. On a FLARM fix of a
+paraglider or hang glider a speed of 0 is therefore taken as missing, and
+the speed that decides whether the segment is flown is computed from
+positions: the distance to the same device's FLARM fix at least 5 and at
+most 60 seconds earlier, divided by the time between them. The 5 seconds are
+what keeps a parked instrument parked. Its position wanders by a few metres,
+which over 5 seconds is under 1 m/s, while 15 km/h is 4 m/s; over the single
+second between two FLARM fixes the same wander could read as flight. On
+6 October 2026, of the 398 h of FLARM free-flight segments
+ending at a 0, 1.2 h came out at 15 km/h or more within
+30 m of the terrain model with the address's other systems silent or on the
+ground, which is the most a pilot walking, a car or a wandering fix can have
+added. The reported speed still serves wherever a speed is projected forward
+(the estimators of section 2 and the predictions of section 6), since a speed
+over 5 seconds of a circle is the chord and reads short. Other systems and
+kinds keep the reported speed, because none of them showed the pattern.
+
 **New session.** A segment longer than 20 minutes is treated as a new session
 (the device was switched off, or the pilot drove to another site) by the
 measures of sections 2, 3 and 5. Section 4 counts it as a disappearance.
@@ -140,6 +164,45 @@ position of a paraglider faster than 100 km/h, of a hang glider faster than
 150 km/h, or of either above 6,000 m is excluded too: the feed carried a
 "paraglider" at 8,150 m and 157 km/h, most likely a sounding balloon with a
 tracker set to that category, and another reporting 702 km/h.
+
+**Impossible tracks** (from 9 October 2026). Every kind of aircraft now has
+limits of its own, a ground speed and an altitude above sea level that no
+aircraft of the declared category reaches even with a strong tailwind:
+paraglider 100 km/h and 6,000 m, hang glider 150 km/h and 6,000 m (both as
+above), glider 400 km/h and 15,000 m, tow plane, powered aircraft and drop
+plane 800 km/h and 15,000 m, helicopter 400 km/h and 8,000 m, skydiver
+400 km/h and 10,000 m, airship 200 km/h and 10,000 m, drone 350 km/h and
+10,000 m, jet 1,300 km/h and 20,000 m, balloon 400 km/h and 40,000 m, any
+other 1,300 km/h and 40,000 m. A fix beyond its category's speed or altitude
+is excluded like an implausible one, and a segment longer than 2 km that
+implies more than the category's speed is excluded like an implausible
+segment; under 2 km the 500 km/h rule alone applies, since a short step
+between the fixes of two systems with slightly different clocks can look fast
+without the aircraft having gone that far. Where a category's limit is above
+500 km/h, the segment rule uses the limit instead: until 9 October 2026 a jet
+or a fast turboprop sending FLARM lost every segment flown above 500 km/h. The raw recording of 6 October 2026 showed the need:
+97 of 2,665 powered streams, 26 glider, 20 free-flight, 16 helicopter and 6
+drone streams had impossible tracks, among them altitudes of 64.5 to
+65.5 km, which is 2¹⁶ m, a small negative altitude in an unsigned 16-bit
+field, and drones whose "flights" reached 65 km above the ground and
+980 km/h. The limits are physical ones on purpose. A threshold drawn from
+how a kind usually flies, such as the 350 km/h and 300 km of extent first
+used for drones, would cut honest flying: a powered aircraft covers 300 km
+in a day, and a turboprop declared as a powered aircraft cruises at
+550 km/h. The nightly measures (section 10) also set aside a whole stream,
+one address on one system, for its day when at least half of its fixes (and
+at least 20) are impossible, by an altitude beyond the limits or by an
+impossible segment from the stream's previous fix: such a stream is an
+address shared by two devices
+far apart, or a device sending garbage, and its possible fixes are as likely
+to belong to the wrong aircraft as to the right one. A stream with fewer
+impossible fixes keeps the rest as honest flying. A reported speed beyond the
+limit drops its fix and takes no part in this verdict, because a speed field
+in the wrong unit leaves the positions right. SafeSky devices sending km/h
+in the knots field are the known case: with the reported speed in the
+verdict, 7 SafeSky streams were set aside whole on 6 October 2026. What each step removed on
+6 and 7 October 2026: the fixes beyond the limits cut 2.3 and 0.7 h of drone flight (6.7% and 3.3% of it), 0.4 and 0.3 h of gliders, 0.3 and 0.04 h of helicopters, 0.2 and 0.5 h of powered aircraft; the segments beyond the limits cut another 0.2 and 0.02 h of gliders, 0.3 and 0.25 h of helicopters and 0.07 h of free flight; jets gained 10 and 8 h that the 500 km/h rule had cut. Two streams were set aside on 6 October and none on 7 October, and the flying time they would have kept was under 0.1 h, so the whole-day verdict changes almost nothing on these days and is there for the day a shared address flies. All of it is counted on the
+data-quality page (10.4).
 
 **ADS-B** is counted among the sources but left out of the measures of
 visibility and of flying time, being almost entirely airliners.
@@ -626,9 +689,9 @@ figures of the day written, and the day's record says what failed (from the
 evening of 7 October 2026). They answer questions that need a whole day of an
 aircraft's positions at once. The rules of sections 1 and 2 apply unchanged:
 the same sources and exclusions, the time written in the fix, the 5-minute
-rules for stale and future fixes, the airborne speeds per kind, the
-implausible segments and fixes, one timeline per 24-bit address for flying
-time. Devices whose owners asked not to be tracked are never recorded.
+rules for stale and future fixes, the airborne speeds per kind and FLARM's
+0, the implausible segments and fixes and the limits of every kind (from
+9 October 2026), one timeline per 24-bit address for flying time. Devices whose owners asked not to be tracked are never recorded.
 
 One rule differs from the live measures. These take the category of every
 packet; the nightly measures take, from 7 October 2026, the category the
@@ -747,6 +810,56 @@ under unknown category rather than as a drone,
 since neither the transponder nor the database gives an OGN category. The database is honoured as everywhere: a device whose owner asked
 not to be tracked is left out, and the type of one not to be identified is
 not used.
+
+**How an uncertain drone flies** (from 9 October 2026). An uncertain drone
+is sorted further by how it flew that day, which is weaker evidence than any
+of the above and is used only where none of it decided: a confirmed drone
+stays confirmed, and an address with crewed evidence stays out, however
+either flew. Impossible tracks are taken out first, for every aircraft
+(section 1). The fixes left are read once the day is in, the airborne ones
+being those at 10 km/h or more or more than 20 m above the terrain model,
+and the first rule that matches decides:
+
+1. Impossible tracks, section 1, for every aircraft.
+2. **Never above 30 m**: not judged, since a drone on the ground and a
+   crewed aircraft taxiing look alike.
+3. **Probably crewed**: it began or ended within 1 km of an aerodrome and
+   flew at a median speed of at least 80 km/h or for 5 minutes more than
+   500 m above the ground; or it flew 5 minutes above 500 m anywhere; or its
+   median speed was at least 100 km/h and it rose at least 300 m above the
+   ground. Five minutes above 500 m is far above the 120 m of the open
+   category, and a light aircraft on a circuit does it in every circuit.
+4. **Probably a multirotor**: it stayed under 500 m, nine tenths of its
+   speeds were under 120 km/h, and it either hovered for 60 seconds (under
+   5 km/h more than 20 m above the ground) or climbed through 30 m above the
+   ground at under 15 km/h within 2 minutes of its first airborne fix, a
+   vertical take-off that no aeroplane makes.
+5. **Probably a fixed-wing drone**: under 500 m, a median speed of 40 to
+   130 km/h, never more than 5 km from its first airborne fix, and at least
+   2 minutes in the air.
+6. Otherwise it **stays uncertain**.
+
+The rules were drawn on 6 and 7 October 2026, when the exploration of every
+address-day with drone evidence found that the fast "uncertain" time which
+looked crewed came almost entirely from 7 address-days with impossible
+tracks (15.8 h, heights up to 65 km above the ground, speeds up to
+980 km/h), and that no uncertain address-day flew like a light aircraft,
+none with an aerodrome circuit and none more than 5 minutes above 500 m. On
+the confirmed drones rule 3 would have called 2 of 26 crewed, a UAV-declared
+ADS-B emitter flying from aerodrome to aerodrome at 200 km/h and 1,588 m and
+a drone of the device database at 91 km/h: flight cannot separate a
+fixed-wing drone from a light aircraft, which is why it never overrides a
+declaration. Each class is published beside the others, and a probably
+crewed drone stays in the question's figures, counted apart, so that a
+reader can leave it out. The classes held 56 uncertain
+address-days (19.7 h) on 6 October: 17 never above 30 m (0.3 h), 4 probably
+crewed (6.2 h), 25 probably multirotors (10.3 h), 3 probably fixed-wing drones
+(2.1 h) and 7 still uncertain (0.8 h); and 43 (11.7 h) on 7 October: 13, 1
+(2.4 h), 16 (5.1 h), 4 (2.3 h) and 9 (1.9 h). The exploration had found no
+uncertain address-day flying like a light aircraft once the impossible ones
+were left out whole; with only the impossible fixes dropped, 4 address-days of
+6 October and 1 of 7 October come out probably crewed, and whether their
+remaining fixes are sound has still to be checked.
 
 Each airborne segment is filed by the **1-degree cell** where it began
 (about 110 by 77 km at the latitude of the Alps; a finer map of so few
@@ -894,6 +1007,15 @@ Per system:
 - **Stray categories**: packets declaring another category than their
   address's majority on the system that day (section 10), of the packets
   declaring one; ground mode and ADS-B's 0 are not strays.
+- **Impossible tracks** (section 1, from 9 October 2026), so that what the
+  limits take out stays visible: the fixes beyond their category's limits,
+  of the fixes reaching the measures; the seconds of the segments excluded
+  as impossible, the 500 km/h rule included, of all the seconds between
+  successive fixes of an address, each segment filed under the system of its
+  second fix; the streams set aside for the day, of the streams; and the
+  seconds between the fixes of those streams, of the seconds of all streams.
+  These four are filed by the time written in the fix, like the measures
+  they are taken out of.
 
 Per receiver, from its own position reports and from the radio packets it
 forwards (the receiver is the last element of the packet's path; ADS-B is
@@ -956,8 +1078,25 @@ Receivers are listed only when flagged, beside how many were judged.
 - The live service still files a crewed aircraft declared as a drone under
   drones in the monthly flying time (section 1, `monthly_hours`); only the
   nightly measures of section 10 set it aside.
-- A declared drone heard by no ADS-B and with no database entry stays
-  uncertain however it flies: the method does not judge identity from
-  flight, except for a thermal against a crewed database entry.
+- A declared drone heard by no ADS-B and with no database entry is
+  classed by how it flies (10.1, from 9 October 2026), which gives a
+  probable identity and leaves its declaration standing: a fixed-wing drone and a light aircraft
+  fly alike, a paraglider's instrument set to drone and soaring in a strong
+  wind can hover like a multirotor, and the classes count address-days, so one
+  device can fall in two classes on two days. Before 9 October 2026 the
+  method judged identity from flight only by a thermal against a crewed
+  database entry.
+- The limits of section 1 catch only what no aircraft of the kind can do.
+  A wrong fix within them, a paraglider placed 1 km off its track or an
+  altitude 300 m too high, passes as flight. They rest on the declared
+  category, so an aircraft declaring the wrong one is judged by its limits:
+  a jet set up as a glider loses everything above 400 km/h.
+- FLARM's 0 is replaced only for paragliders and hang gliders, the only
+  kinds where it was measured. The live service applies the replacement and
+  the limits from the deploy of 9 October 2026 on; the days before keep the
+  figures they had, except those recomputed from the raw recording, which
+  covers seven days. The whole-day verdict on a stream needs the whole day,
+  so only the nightly measures apply it, and the live flying time keeps the
+  possible fixes of such a stream.
 - The nightly measures need the raw recording: a day the service was stopped
   for has its missing hours missing for good.

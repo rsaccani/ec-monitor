@@ -14,7 +14,10 @@ substance the same day.
 
 The rules of METHOD.md apply throughout: the same sources and exclusions,
 the owners' choices in the OGN device database, the time written in the
-fix, the airborne speeds per kind (section 1), the implausible fixes, one
+fix, the airborne speeds per kind (section 1) with FLARM's 0 on free-flight
+instruments replaced by the speed from positions, the implausible fixes and
+the limits of every kind with the impossible stream-days set aside (section 1
+there, from 9 October 2026), one
 aircraft one 24-bit address, the day's majority category (section 10), and
 ADS-B left out of every measure of sections 1 to 8 (sections 9 to 11
 use it, for powered aircraft and helicopters). Only aggregates are kept and
@@ -146,7 +149,13 @@ airspeed (about 3% with a wind of a third of the airspeed). A thermal has at lea
 two full turns, so the method uses whole thermals and never a single fix's
 speed and turn rate, which the wind would bias by up to its own speed. The
 radius is binned under 30, 30–50, 50–80, 80–120, 120–200 and over 200 m: a
-paraglider circles at 30 to 50 m, a glider at 60 to 120.
+paraglider circles at 30 to 50 m, a glider at 60 to 120. From 9 October 2026
+a FLARM free-flight instrument that reports 0 (METHOD.md, section 1) is
+followed while circling too, which it never was before since its segments
+never counted as flown; between two of its fixes the distance flown is the
+straight line between them, at most 5 seconds apart, because the speed
+computed over 5 seconds of a circle is the chord and would make the thermal
+look narrower than it is.
 
 **Strength.** The climb of a thermal is its largest climb (section 2):
 the largest altitude gain from a position sampled while circling (every
@@ -702,3 +711,11 @@ wide sits in mountains, a high plateau in plain and hills.
   In the evening, peaks and passes from OpenStreetMap with three or more
   Wikidata sitelinks name take-offs and wave cells that no town is close
   to (sections 3 and 8).
+- **9 October 2026.** Three changes of METHOD.md reach every figure here.
+  FLARM's ground speed 0 on multi-protocol free-flight instruments is
+  replaced by the speed from positions, which gives back to paragliders and
+  hang gliders the time, flights, thermals and heights above the ground those
+  instruments had lost (on 6 October 2026 149 h of free flight, 35 more paraglider flights of 2 minutes or more and 15 more paraglider thermals; on 7 October 22.5 h, 25 flights and 4 thermals). Every kind has a speed and altitude
+  limit, and a stream that is mostly impossible is set aside for the day
+  (under 1 h for any kind of crewed aircraft on 6 and 7 October 2026, 2.3 and 0.7 h of drones; jets gain the segments above 500 km/h they used to lose, 10 and 8 h). Drones of uncertain identity are classed by how they fly
+  (METHOD.md 10.1); here they stay apart from crewed aircraft as before.

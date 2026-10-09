@@ -33,6 +33,7 @@ importing it starts the listener.
 """
 import argparse
 import array
+import bisect
 import calendar
 import collections
 import csv
@@ -178,6 +179,45 @@ RELAY_MIN_SHARED = 50
 RELAY_LATE_SHARE, RELAY_LATE_MIN = 0.05, 100
 RELAY_GROUP_S = 20              # seconds after the first reception of a fix to wait for other receivers
 RELAY_SOURCES = {"OGFLR"}       # FLARM: the receiver converts ellipsoid height to MSL itself
+
+# Impossible tracks (METHOD.md, sections 1 and 10.4, from 9 October 2026).
+# Every fix beyond the limits of its category (sources.CEILINGS) is dropped,
+# and every segment faster than them is not flown, as in the service. A
+# stream, one address on one system, is set aside for the whole day when at
+# least half of its fixes are impossible: then it is an address shared by two
+# devices far apart, or a device sending garbage, and its possible fixes are
+# as likely to belong to the wrong aircraft as to the right one. A stream
+# with a minority of impossible fixes keeps the rest, which is honest flying
+# with a few bad packets. For this verdict a fix counts as impossible when
+# its altitude is beyond the limits or the step from the stream's previous fix
+# is, so an address alternating between two places has nearly every fix
+# impossible; a reported speed beyond them drops that fix alone (prepass).
+# Judged in the first pass (vote), before any measure sees the stream.
+STREAM_DROP_SHARE = 0.5
+STREAM_DROP_MIN = 20            # fixes; a shorter stream loses its impossible fixes only
+SPEED_LEVELS = sorted({v[0] for v in sources.CEILINGS.values()} | {sources.CEILING_OTHER[0]})
+ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING_OTHER[1]})
+
+# How a drone of the uncertain class flies (METHOD.md 10.1, from 9 October
+# 2026). Direct evidence (ADS-B emitter category, device database, Remote ID,
+# a thermal) always comes first; this only sorts what it leaves uncertain.
+# First match wins; the numbers are the rules' numbers in METHOD.md, rule 1
+# being the impossible tracks above, applied to every aircraft.
+FLIGHT_NOT_JUDGED, FLIGHT_LOW, FLIGHT_CREWED, FLIGHT_MULTIROTOR, FLIGHT_FIXED_WING, FLIGHT_UNCERTAIN = 0, 2, 3, 4, 5, 6
+FLIGHT_CLASS_NAMES = {FLIGHT_NOT_JUDGED: "not_judged", FLIGHT_LOW: "never_above_30m",
+                      FLIGHT_CREWED: "probably_crewed", FLIGHT_MULTIROTOR: "probably_multirotor",
+                      FLIGHT_FIXED_WING: "probably_fixed_wing", FLIGHT_UNCERTAIN: "uncertain"}
+DF_AIR_KMH, DF_AIR_AGL = 10, 20          # an airborne fix: at least 10 km/h, or more than 20 m above ground
+DF_MAX_GAP = 60                          # s; a longer silence is not flown time
+DF_LOW_AGL = 30                          # rule 2: never higher than this, not judged
+DF_HIGH_AGL, DF_HIGH_S = 500, 300        # rule 3: five minutes above 500 m, which no open-category drone may fly
+DF_AERODROME_M, DF_AERODROME_KMH = 1000, 80
+DF_CREWED_KMH, DF_CREWED_AGL = 100, 300
+DF_MULTI_P90 = 120                       # rule 4: a multirotor
+DF_HOVER_KMH, DF_HOVER_AGL, DF_HOVER_S = 5, 20, 60
+DF_TAKEOFF_AGL, DF_TAKEOFF_KMH, DF_TAKEOFF_WINDOW = 30, 15, 120
+DF_FIXED_KMH = (40, 130)                 # rule 5: a fixed-wing drone
+DF_FIXED_EXTENT_M, DF_FIXED_S = 5000, 120
 
 # The two families of tables (7 October 2026), written by the same run in two
 # transactions, conspicuity (METHOD.md) first: an error in one is logged and
@@ -336,7 +376,7 @@ class CircleTrack:
 
     def __init__(self, cat):
         self.cat = cat
-        self.last = None          # (t, course, kt, lat, lon)
+        self.last = None          # (t, course, kt, lat, lon, speed from positions)
         self.run = 0.0            # degrees turned on one side, signed (+ = right, clockwise from above)
         self.run_s = 0.0
         self.run_m = 0.0          # metres flown along the circles (ground speed times time)
@@ -791,7 +831,16 @@ class Nightly:
         self.lines = 0
         # stream state, as in the service
         self.last_fix = {}                     # (src, tocall, via) -> (t, lat, lon)
-        self.addr_fix = {}                     # address -> (t, lat, lon, kt, alt)
+        self.addr_fix = {}                     # address -> (t, lat, lon, kt, alt, reported kt)
+        self.zero = sources.ZeroSpeed()        # FLARM's 0 on moving free-flight instruments
+        self.zero_gain = collections.Counter() # category -> s flown only thanks to the speed from positions
+        # impossible tracks: the first pass's per-stream record and its verdict
+        self.streams = {}                      # (address, tocall) -> [t, lat, lon, fixes, seconds, levels]
+        self.dropped = set()                   # (address, tocall) set aside for the day
+        self.imp = collections.Counter()       # (label, check) -> count, for daily_quality
+        self.imp_cat = collections.Counter()   # (category, what) -> fixes, streams or seconds, for the log
+        self.cut = {}                          # address -> its last fix before an impossible one
+        self.drone_fx = {}                     # address declaring a drone -> array of (t, lat, lon, kt, alt)
         self.addr_systems = collections.defaultdict(set)     # address -> systems, platforms left out
         self.addr_platforms = collections.defaultdict(set)   # address -> platforms that relayed it
         # 1. hours
@@ -867,10 +916,17 @@ class Nightly:
                 if raw in sources.EXCLUDED or raw in ("OGNSDR", "OGNSXR"):
                     continue
                 cat, no_track = sources.id_info(body)
-                if cat is None or no_track:
+                if no_track:
                     continue
                 tocall = sources.same_system(raw, src)
-                if sources.rebroadcast(tocall, src, cat) or sources.UNKNOWN_YET.get(tocall) == cat:
+                if cat is None:
+                    if tocall not in sources.AIRCRAFT_ONLY:
+                        self.prepass(epoch, src, tocall, body)
+                    continue
+                if sources.rebroadcast(tocall, src, cat):
+                    continue
+                self.prepass(epoch, src, tocall, body)
+                if sources.UNKNOWN_YET.get(tocall) == cat:
                     continue
                 votes[(src[-6:], tocall)][cat] += 1
         self.major = {k: c.most_common(1)[0][0] for k, c in votes.items()}
@@ -881,6 +937,99 @@ class Nightly:
         self.major13 = {a for (a, _), m in self.major.items() if m == DRONE}
         logger.info(f"Majority categories: {len(self.major):,} address-systems, {len(self.major13):,} addresses "
                     f"declaring a drone on at least one system")
+        self.judge_streams()
+
+    def prepass(self, epoch, src, tocall, body):
+        """First pass: one fix of a stream, for the impossible-track verdict.
+
+        The same exclusions and the same packet time as the measures. Only
+        what the verdict needs is kept: the fixes, the seconds between them,
+        and, for each fix beyond the lowest limit of any category, how far
+        beyond (as levels of SPEED_LEVELS and ALT_LEVELS), since the stream's
+        category is known only once the vote is over.
+        """
+        label, kind = sources.source_info(tocall)
+        if kind == "adsb" or body[1:7] == "______" or "h" not in body[:8] or (body[8:10] == "00" and body[17:20] == "000"):
+            return
+        address = src[-6:]
+        if address in self.notrack:
+            return
+        m = sources._position.match(body)
+        if not m:
+            return
+        hh, mi, ss, latd, latm, ns, _table, lond, lonm, ew, _symbol, _course, _speed = m.groups()
+        sod = int(hh) * 3600 + int(mi) * 60 + int(ss)
+        now = int(epoch)
+        t = now - now % 86400 + sod
+        if t - epoch > STALE:
+            t -= 86400
+        if epoch - t > STALE or not (self.d0 <= t < self.d1):
+            return
+        key = (address, tocall)
+        st = self.streams.get(key)
+        if st is not None and t <= st[0]:
+            return
+        latm, lonm = float(latm), float(lonm)
+        w = sources._extra_precision.search(body)
+        if w:
+            latm += int(w.group(1)) / 1000
+            lonm += int(w.group(2)) / 1000
+        lat = (int(latd) + latm / 60) * (-1 if ns == "S" else 1)
+        lon = (int(lond) + lonm / 60) * (-1 if ew == "W" else 1)
+        a = sources._alt.search(body)
+        alt = int(a.group(1)) * 0.3048 if a else 0.0
+        # The verdict rests on where the stream puts the aircraft: positions
+        # and altitude. A reported speed beyond the limit drops that fix only,
+        # since a speed field in the wrong unit (SafeSky's km/h sent as knots,
+        # 7 paraglider streams on 6 October 2026) leaves the positions right.
+        need = 0.0
+        if st is None:
+            st = self.streams[key] = [t, lat, lon, 0, 0, None]
+        else:
+            dt = t - st[0]
+            if dt <= sources.SESSION_BREAK:
+                st[4] += dt
+            d = dist(st[1], st[2], lat, lon)
+            v = d * 3.6 / max(dt, 1)
+            if d > sources.JUMP_MIN_M or v > sources.IMPLAUSIBLE_MS * 3.6:
+                need = max(need, v)             # judged against the category as in sources.impossible_jump
+            st[0], st[1], st[2] = t, lat, lon
+        st[3] += 1
+        lv = (bisect.bisect_left(SPEED_LEVELS, need), bisect.bisect_left(ALT_LEVELS, alt))
+        if lv != (0, 0):
+            if st[5] is None:
+                st[5] = collections.Counter()
+            st[5][lv] += 1
+
+    def judge_streams(self):
+        """The impossible-track verdict per stream, once the categories are voted."""
+        shares = collections.Counter()
+        for (address, tocall), st in self.streams.items():
+            label = sources.source_info(tocall)[0]
+            cat = DRONE if tocall == REMOTE_ID else self.major.get((address, tocall), sources.UNKNOWN_CATEGORY)
+            self.imp[(label, "streams")] += 1
+            self.imp[(label, "stream_seconds")] += st[4]
+            if not st[5]:
+                continue
+            kmh, top = sources.CEILINGS.get(cat, sources.CEILING_OTHER)
+            i, j = SPEED_LEVELS.index(kmh), ALT_LEVELS.index(top)
+            bad = sum(n for (a, b), n in st[5].items() if a > i or b > j)
+            if not bad:
+                continue
+            share = bad / st[3]
+            if st[3] >= STREAM_DROP_MIN:
+                shares[min(4, int(share * 4)) if share < 1 else 4] += 1
+            if st[3] >= STREAM_DROP_MIN and share >= STREAM_DROP_SHARE:
+                self.dropped.add((address, tocall))
+                self.imp[(label, "dropped_streams")] += 1
+                self.imp[(label, "dropped_stream_seconds")] += st[4]
+                self.imp_cat[(cat, "dropped_streams")] += 1
+                self.imp_cat[(cat, "dropped_stream_seconds")] += st[4]
+        self.streams = {}
+        logger.info(f"Impossible tracks: {len(self.dropped):,} streams set aside for the day; streams of "
+                    f"{STREAM_DROP_MIN}+ fixes with some impossible, by share of impossible fixes "
+                    f"(under 25%, 25-50%, 50-75%, 75-100%, all): "
+                    + ", ".join(str(shares[k]) for k in range(5)))
 
     def run(self, raw_dir, hours=range(24)):
         files = [(hour_path(raw_dir, self.day, h) if h in hours else None, None) for h in range(24)]
@@ -1028,6 +1177,8 @@ class Nightly:
         # --- the measures: fixes of this day, received in time ---------------
         if epoch - t > STALE or not (self.d0 <= t < self.d1):
             return
+        if kind != "adsb" and (address, tocall) in self.dropped:
+            return                              # an impossible stream-day (9 October 2026), counted in 10.4
         raw_category = category
         m = self.major.get((address, tocall))
         if (m is not None and tocall != REMOTE_ID and not fanet_ground(tocall, m, category)
@@ -1040,8 +1191,18 @@ class Nightly:
             e = EMITTER.search(body)
             if e:
                 self.emitters[address].add(e.group(1))
-        if sources.implausible(category, kt, alt_m):
+        if kind != "adsb":
+            self.imp[(label, "fixes")] += 1
+        old = sources.implausible(category, kt, alt_m)
+        if old or (kind != "adsb" and sources.impossible_fix(category, kt, alt_m)):
             # The device is sending, so no silence may run across this fix.
+            if not old:
+                # Beyond its category's limits (9 October 2026): counted, and
+                # the time it cuts out is measured at the address's next fix.
+                self.imp[(label, "impossible_fixes")] += 1
+                self.imp_cat[(category, "fixes")] += 1
+                if address in self.addr_fix:
+                    self.cut[address] = self.addr_fix[address]
             self.last_fix.pop((src, tocall, via), None)
             self.addr_fix.pop(address, None)
             return
@@ -1050,6 +1211,12 @@ class Nightly:
         if prev is not None and t <= prev[0]:
             return                              # a copy through another receiver, or older
         self.last_fix[key] = (t, lat, lon)
+        # FLARM's 0 on a moving free-flight instrument: the speed from positions
+        # decides flight from here on (9 October 2026); `reported` is kept to
+        # count what that changes.
+        reported = kt
+        kt = self.zero.speed(key, tocall, category, t, lat, lon, kt)
+        moved = kt is not reported
         if kind != "platform":
             self.addr_systems[address].add(label)
         else:
@@ -1086,11 +1253,11 @@ class Nightly:
                          float(f.group(1)) * 100 if f else None)
         if kind == "adsb":
             return                              # ADS-B: only the other aircraft of an encounter
-        self.timeline(address, category, t, lat, lon, kt, alt_m)
+        self.timeline(address, category, t, lat, lon, kt, alt_m, label, reported)
         if self.p and category == 1 and course and alt_m is not None:
             self.pattern(self.wave_fix, address, t, lat, lon, alt_m, course)
         if (category in CIRCLE_CATEGORIES or category == DRONE) and course:
-            self.circle(address, tocall, category, t, course, kt, lat, lon, alt_m)
+            self.circle(address, tocall, category, t, course, kt, lat, lon, alt_m, moved)
         if self.c and category in PARKED_CATEGORIES:
             self.park(address, label, category, t, lat, lon, alt_m)
 
@@ -1336,19 +1503,39 @@ class Nightly:
 
     # --- 1. flying time per aircraft, and drone time ------------------------------
 
-    def timeline(self, address, category, t, lat, lon, kt, alt_m):
-        """sources.SourceTracker.count_hours, filed by local solar hour."""
+    def timeline(self, address, category, t, lat, lon, kt, alt_m, label=None, reported=None):
+        """sources.SourceTracker.count_hours, filed by local solar hour.
+
+        `kt` is the speed that decides flight, `reported` the one the packet
+        carried (they differ only for FLARM's 0, sources.ZeroSpeed); `label`
+        files the impossible segments by system for daily_quality."""
         prev = self.addr_fix.get(address)
         if prev is not None and t <= prev[0]:
             return
-        self.addr_fix[address] = (t, lat, lon, kt, alt_m)
+        self.addr_fix[address] = (t, lat, lon, kt, alt_m, kt if reported is None else reported)
         if prev is None:
+            cut = self.cut.pop(address, None)
+            if (cut is not None and 0 < t - cut[0] <= sources.SESSION_BREAK and category not in GROUND_CATEGORIES
+                    and sources.flying(category, cut[3], kt)):
+                self.imp_cat[(category, "fix_seconds")] += t - cut[0]
+            self.drone_track(address, t, lat, lon, kt, alt_m)
             return
         seconds = t - prev[0]
         if seconds > sources.SESSION_BREAK:
+            self.drone_track(address, t, lat, lon, kt, alt_m)
             return
-        if dist(prev[1], prev[2], lat, lon) > sources.IMPLAUSIBLE_MS * max(seconds, 1):
+        d = dist(prev[1], prev[2], lat, lon)
+        if label is not None:
+            self.imp[(label, "segment_seconds")] += seconds
+        if sources.impossible_jump(category, d, seconds):
+            if label is not None:
+                self.imp[(label, "impossible_jump_seconds")] += seconds
+            top = max(sources.IMPLAUSIBLE_MS * 3.6, sources.CEILINGS.get(category, sources.CEILING_OTHER)[0])
+            if (d * 3.6 / max(seconds, 1) <= top and category not in GROUND_CATEGORIES
+                    and sources.flying(category, prev[3], kt)):
+                self.imp_cat[(category, "jump_seconds")] += seconds    # flying time the 9 October limits cut
             return
+        self.drone_track(address, t, lat, lon, kt, alt_m)
         if not sources.flying(category, prev[3], kt):
             if self.p and category in FLIGHT_STOP_CATEGORIES and (kt or 0) <= FLIGHT_STOP_KT and alt_m is not None:
                 f = self.flight.get(address)
@@ -1361,6 +1548,8 @@ class Nightly:
             return
         if category in GROUND_CATEGORIES:
             return
+        if reported is not None and not sources.flying(category, prev[5], reported):
+            self.zero_gain[category] += seconds
         local = prev[0] + seconds / 2 + prev[2] * SOLAR_SECONDS_PER_DEGREE
         if self.p:
             self.pattern(self.pattern_segment, address, category, prev, t, lat, lon, kt, seconds, local, alt_m)
@@ -1370,6 +1559,100 @@ class Nightly:
             kmh = ((prev[3] or 0) + (kt or 0)) / 2 * 1.852
             self.drone_air[(math.floor(prev[1]), math.floor(prev[2]), band(agl, DRONE_HEIGHT_EDGES),
                             band(kmh, DRONE_SPEED_EDGES), address)] += seconds
+
+    def drone_track(self, address, t, lat, lon, kt, alt_m):
+        """The fixes of an address declaring a drone, for its flight class
+        (METHOD.md 10.1): every fix of the timeline but those reached by an
+        impossible jump."""
+        if address not in self.major13 or not self.d0 <= t < self.d1:
+            return
+        a = self.drone_fx.get(address)
+        if a is None:
+            a = self.drone_fx[address] = array.array("d")
+        a.extend((t, lat, lon, kt if kt is not None else -1.0, alt_m if alt_m is not None else -9999.0))
+
+    def drone_features(self, a):
+        """How one address-day flew, from its fixes (drone_track): seconds
+        flown, the median and 90th percentile of its speed, its largest height
+        above ground, time above DF_HIGH_AGL, time hovering, its speed when it
+        first climbed through DF_TAKEOFF_AGL, its largest distance from the
+        first airborne fix, and whether it began or ended at an aerodrome.
+        None when fewer than two fixes were airborne."""
+        rows = []
+        for i in range(0, len(a), 5):
+            t, lat, lon, kt, alt = a[i:i + 5]
+            ground = self.terrain.elevation(lat, lon)
+            agl = alt - ground if alt > -9000 and ground is not None else None
+            rows.append((t, lat, lon, kt * 1.852 if kt >= 0 else None, agl))
+        def airborne(r):
+            return (r[3] or 0) >= DF_AIR_KMH or (r[4] or 0) > DF_AIR_AGL
+        air = [r for r in rows if airborne(r)]
+        if len(air) < 2:
+            return None
+        sec = high = hover = 0.0
+        speeds = []
+        for p, q in zip(rows, rows[1:]):
+            dt = q[0] - p[0]
+            if dt > DF_MAX_GAP or not airborne(p):
+                continue
+            sec += dt
+            if p[3] is not None:
+                speeds.append(p[3])
+                if p[3] < DF_HOVER_KMH and (p[4] or 0) > DF_HOVER_AGL:
+                    hover += dt
+            if (p[4] or 0) > DF_HIGH_AGL:
+                high += dt
+        first, last = air[0], air[-1]
+        shape = None
+        for r in air:
+            if r[0] - first[0] > DF_TAKEOFF_WINDOW:
+                break
+            if r[4] is not None and r[4] > DF_TAKEOFF_AGL:
+                shape = r[3]
+                break
+        speeds.sort()
+        q = lambda f: speeds[min(len(speeds) - 1, int(f * len(speeds)))] if speeds else None
+        agls = [r[4] for r in air if r[4] is not None]
+        return {"sec": sec, "v50": q(0.5), "v90": q(0.9), "agl_max": max(agls) if agls else None,
+                "sec_high": high, "hover": hover, "shape_kmh": shape,
+                "extent": max(dist(first[1], first[2], r[1], r[2]) for r in air),
+                "aerodrome": bool(self.site_near("airfield", first[1], first[2], DF_AERODROME_M)
+                                  or self.site_near("airfield", last[1], last[2], DF_AERODROME_M))}
+
+    @staticmethod
+    def drone_flight_class(f):
+        """Rules 2 to 6 of METHOD.md 10.1 on one address-day's features."""
+        if f is None:
+            return FLIGHT_LOW
+        v50, v90, agl = f["v50"] or 0, f["v90"] or 0, f["agl_max"] or 0
+        if agl < DF_LOW_AGL:
+            return FLIGHT_LOW
+        if f["aerodrome"] and (v50 >= DF_AERODROME_KMH or f["sec_high"] >= DF_HIGH_S):
+            return FLIGHT_CREWED
+        if f["sec_high"] >= DF_HIGH_S or (v50 >= DF_CREWED_KMH and agl >= DF_CREWED_AGL):
+            return FLIGHT_CREWED
+        rotor = f["hover"] >= DF_HOVER_S or (f["shape_kmh"] is not None and f["shape_kmh"] < DF_TAKEOFF_KMH)
+        if agl < DF_HIGH_AGL and v90 < DF_MULTI_P90 and rotor:
+            return FLIGHT_MULTIROTOR
+        if (agl < DF_HIGH_AGL and DF_FIXED_KMH[0] <= v50 <= DF_FIXED_KMH[1] and f["extent"] < DF_FIXED_EXTENT_M
+                and f["sec"] >= DF_FIXED_S):
+            return FLIGHT_FIXED_WING
+        return FLIGHT_UNCERTAIN
+
+    def drone_flights(self):
+        """address declaring a drone -> its flight class; FLIGHT_NOT_JUDGED unless uncertain."""
+        if getattr(self, "_flights", None) is not None:
+            return self._flights
+        ev = self.evidence()
+        out = {}
+        for address in self.declared:
+            if ev.get(address, UNCERTAIN) != UNCERTAIN:
+                out[address] = FLIGHT_NOT_JUDGED
+                continue
+            a = self.drone_fx.get(address)
+            out[address] = self.drone_flight_class(self.drone_features(a) if a else None)
+        self._flights = out
+        return out
 
     def pattern(self, f, *args):
         """Run a piece of the patterns family's per-fix work. If it fails, the
@@ -1697,7 +1980,7 @@ class Nightly:
 
     # --- 2. circling ----------------------------------------------------------------
 
-    def circle(self, address, tocall, category, t, course, kt, lat, lon, alt_m):
+    def circle(self, address, tocall, category, t, course, kt, lat, lon, alt_m, moved=False):
         key = (address, tocall)
         tr = self.circles.get(key)
         if tr is None:
@@ -1705,7 +1988,7 @@ class Nightly:
         p = tr.last
         if p is not None and t <= p[0]:
             return
-        tr.last = (t, course, kt, lat, lon)
+        tr.last = (t, course, kt, lat, lon, moved)
         if p is None:
             return
         gap = t - p[0]
@@ -1722,7 +2005,13 @@ class Nightly:
                 tr.run_t0, tr.run_pos = p[0], (p[3], p[4])
             tr.run += d
             tr.run_s += gap
-            tr.run_m += ((kt or 0) + (p[2] or 0)) / 2 * 0.514444 * gap
+            if moved or p[5]:
+                # A speed from positions over 5 s is a chord of the circle and
+                # reads short; between two fixes at most CIRCLE_MAX_GAP apart
+                # the chord is the path (FLARM's 0, 9 October 2026).
+                tr.run_m += dist(p[3], p[4], lat, lon)
+            else:
+                tr.run_m += ((kt or 0) + (p[2] or 0)) / 2 * 0.514444 * gap
             if alt_m is not None:
                 b = int(t // GAGGLE_BUCKET)
                 if b not in tr.run_samples:
@@ -2102,7 +2391,10 @@ class Nightly:
 
         # 4. drones
         # Crewed evidence takes an address out of every drone measure; the
-        # others carry their evidence (confirmed or uncertain) as a dimension.
+        # others carry their evidence (confirmed or uncertain) as a dimension,
+        # and from 9 October 2026 the class the uncertain ones fly like
+        # (FLIGHT_CLASS_NAMES; 0 for the others).
+        fc = self.drone_flights()
         def drone_class(address):
             e = ev.get(address, UNCERTAIN)
             return None if e in SET_ASIDE else e
@@ -2110,29 +2402,30 @@ class Nightly:
         cells = collections.defaultdict(lambda: [0.0, set()])
         classes = collections.defaultdict(lambda: [set(), 0.0])
         for (la, lo, hb, sb, address), sec in self.drone_air.items():
-            classes[ev.get(address, UNCERTAIN)][1] += sec
+            classes[(ev.get(address, UNCERTAIN), fc.get(address, FLIGHT_NOT_JUDGED))][1] += sec
             e = drone_class(address)
             if e is None:
                 continue
-            f = fine[(e, la, lo, hb, sb, self.systems_of(address))]
+            k = (e, fc.get(address, FLIGHT_NOT_JUDGED))
+            f = fine[k + (la, lo, hb, sb, self.systems_of(address))]
             f[0] += sec
             f[1].add(address)
-            c = cells[(e, la, lo)]
+            c = cells[k + (la, lo)]
             c[0] += sec
             c[1].add(address)
         for address in self.declared:
-            classes[ev.get(address, UNCERTAIN)][0].add(address)
-        out["daily_drones"] = (("day", "evidence", "lat_idx", "lon_idx", "height_band", "speed_band", "systems",
-                                "air_seconds", "aircraft"),
+            classes[(ev.get(address, UNCERTAIN), fc.get(address, FLIGHT_NOT_JUDGED))][0].add(address)
+        out["daily_drones"] = (("day", "evidence", "flight_class", "lat_idx", "lon_idx", "height_band", "speed_band",
+                                "systems", "air_seconds", "aircraft"),
                                [(day,) + k + (round(v[0], 1), len(v[1])) for k, v in sorted(fine.items())])
-        out["daily_drone_cells"] = (("day", "evidence", "lat_idx", "lon_idx", "air_seconds", "aircraft"),
+        out["daily_drone_cells"] = (("day", "evidence", "flight_class", "lat_idx", "lon_idx", "air_seconds", "aircraft"),
                                     [(day,) + k + (round(v[0], 1), len(v[1])) for k, v in sorted(cells.items())])
         ext = collections.Counter()
         for address, d in self.drone_extent.items():
             e = drone_class(address)
             if e is not None:
-                ext[(e, band(d, DRONE_EXTENT_EDGES))] += 1
-        out["daily_drone_extent"] = (("day", "evidence", "extent_band", "drones"),
+                ext[(e, fc.get(address, FLIGHT_NOT_JUDGED), band(d, DRONE_EXTENT_EDGES))] += 1
+        out["daily_drone_extent"] = (("day", "evidence", "flight_class", "extent_band", "drones"),
                                      [(day,) + k + (n,) for k, n in sorted(ext.items())])
         enc = collections.Counter()
         for drone, other, ocat, d in self.encounters:
@@ -2140,13 +2433,13 @@ class Nightly:
             if e is None:
                 continue                        # the "drone" was a crewed aircraft
             ds, os_ = self.addr_systems.get(drone, set()), self.addr_systems.get(other, set())
-            enc[(e, self.systems_of(drone), ocat, self.systems_of(other), band(d, ENCOUNTER_BANDS),
-                 int(bool(ds & os_)))] += 1
-        out["daily_drone_encounters"] = (("day", "evidence", "drone_systems", "other_category", "other_systems",
-                                          "distance_band", "shared_system", "encounters"),
+            enc[(e, fc.get(drone, FLIGHT_NOT_JUDGED), self.systems_of(drone), ocat, self.systems_of(other),
+                 band(d, ENCOUNTER_BANDS), int(bool(ds & os_)))] += 1
+        out["daily_drone_encounters"] = (("day", "evidence", "flight_class", "drone_systems", "other_category",
+                                          "other_systems", "distance_band", "shared_system", "encounters"),
                                          [(day,) + k + (n,) for k, n in sorted(enc.items())])
-        out["daily_drone_classes"] = (("day", "evidence", "addresses", "air_seconds"),
-                                      [(day, e, len(v[0]), round(v[1], 1)) for e, v in sorted(classes.items())])
+        out["daily_drone_classes"] = (("day", "evidence", "flight_class", "addresses", "air_seconds"),
+                                      [(day,) + k + (len(v[0]), round(v[1], 1)) for k, v in sorted(classes.items())])
         self.encounters_all = len(self.encounters)
 
         # 6. crewed aircraft of different kinds (METHOD.md 10.2)
@@ -2394,6 +2687,19 @@ class Nightly:
             for name, n, total in checks:
                 if total:
                     rows.append((day, "system", label, name, n, total, None))
+        # Impossible tracks (9 October 2026), by the time written in the fix
+        # like the measures they are taken out of; seconds are whole seconds.
+        imp = self.imp
+        for label in sorted({k[0] for k in imp}):
+            for name, n, total in (
+                    ("impossible_fixes", imp[(label, "impossible_fixes")], imp[(label, "fixes")]),
+                    ("impossible_jump_seconds", imp[(label, "impossible_jump_seconds")],
+                     imp[(label, "segment_seconds")]),
+                    ("impossible_streams", imp[(label, "dropped_streams")], imp[(label, "streams")]),
+                    ("impossible_stream_seconds", imp[(label, "dropped_stream_seconds")],
+                     imp[(label, "stream_seconds")])):
+                if total:
+                    rows.append((day, "system", label, name, int(n), int(total), None))
 
         # Receivers: one row per receiver flagged, and one per check with the
         # number flagged among those judged (name '*').
@@ -2666,6 +2972,28 @@ def main():
                     + ", ".join(f"{c}/{o}: {v}" for (c, o), v in sorted(CircleTrack.outcomes.items())))
     if getattr(n, "first_climb_starts", None):
         logger.info(f"Flights classed from the top of their first climb: {dict(n.first_climb_starts)}")
+    kinds = {6: "free_flight", 7: "free_flight", 1: "glider", 2: "powered", 8: "powered", 9: "jet",
+             3: "helicopter", DRONE: "drone"}
+    by = collections.Counter()
+    for (cat, what), v in n.imp_cat.items():
+        by[(kinds.get(cat, "other"), what)] += v
+    for kind in sorted({k for k, _ in by}):
+        logger.info(f"Impossible tracks, {kind}: fixes dropped {by[(kind, 'fixes')]:,} cutting "
+                    f"{by[(kind, 'fix_seconds')] / 3600:.2f} h of flight, jump segments that were flight "
+                    f"{by[(kind, 'jump_seconds')] / 3600:.2f} h, streams set aside {by[(kind, 'dropped_streams')]:,} "
+                    f"with {by[(kind, 'dropped_stream_seconds')] / 3600:.2f} h between their fixes")
+    gain = collections.Counter()
+    for cat, sec in n.zero_gain.items():
+        gain[kinds.get(cat, "other")] += sec
+    logger.info("Flight found only by the speed from positions (FLARM's 0): "
+                + (", ".join(f"{k} {v / 3600:.2f} h" for k, v in sorted(gain.items())) or "none"))
+    if "daily_drone_classes" in tables:
+        fl = collections.defaultdict(lambda: [0, 0.0])
+        for r in tables["daily_drone_classes"][1]:
+            fl[(EVIDENCE_NAMES.get(r[1], r[1]), FLIGHT_CLASS_NAMES.get(r[2], r[2]))][0] += r[3]
+            fl[(EVIDENCE_NAMES.get(r[1], r[1]), FLIGHT_CLASS_NAMES.get(r[2], r[2]))][1] += r[4]
+        logger.info("Declared drones by evidence and flight class (address-days, hours): "
+                    + "; ".join(f"{e}/{f} {v[0]} {v[1] / 3600:.1f} h" for (e, f), v in sorted(fl.items())))
     if "daily_drone_encounters" in tables:
         kept = sum(r[-1] for r in tables["daily_drone_encounters"][1])
         logger.info(f"Drone encounters: {n.encounters_all} found, {kept} kept once crewed aircraft declared drones "
