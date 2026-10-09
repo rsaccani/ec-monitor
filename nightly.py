@@ -203,10 +203,24 @@ ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING
 # a thermal) always comes first; this only sorts what it leaves uncertain.
 # First match wins; the numbers are the rules' numbers in METHOD.md, rule 1
 # being the impossible tracks above, applied to every aircraft.
-FLIGHT_NOT_JUDGED, FLIGHT_LOW, FLIGHT_CREWED, FLIGHT_MULTIROTOR, FLIGHT_FIXED_WING, FLIGHT_UNCERTAIN = 0, 2, 3, 4, 5, 6
-FLIGHT_CLASS_NAMES = {FLIGHT_NOT_JUDGED: "not_judged", FLIGHT_LOW: "never_above_30m",
+FLIGHT_NOT_JUDGED, FLIGHT_SHARED, FLIGHT_LOW, FLIGHT_CREWED, FLIGHT_MULTIROTOR, FLIGHT_FIXED_WING, FLIGHT_UNCERTAIN = \
+    0, 1, 2, 3, 4, 5, 6
+FLIGHT_CLASS_NAMES = {FLIGHT_NOT_JUDGED: "not_judged", FLIGHT_SHARED: "shared_address", FLIGHT_LOW: "never_above_30m",
                       FLIGHT_CREWED: "probably_crewed", FLIGHT_MULTIROTOR: "probably_multirotor",
                       FLIGHT_FIXED_WING: "probably_fixed_wing", FLIGHT_UNCERTAIN: "uncertain"}
+# Rule 1b (9 October 2026): an address carrying other aircraft far away as
+# well. Dropping only the fix an impossible jump reaches lets a foreign
+# aircraft that stays for minutes in, since the next fix is compared with the
+# dropped one; the 4 probably crewed address-days of 6 October were a drone
+# under 125 m plus tracks of other aircraft 100-600 km away. 50 km is more
+# than eight minutes of a drone at its 350 km/h ceiling, which no GPS error
+# makes; three jumps keep one corrupt packet from sinking a genuine drone. A
+# switch is two consecutive kept fixes more than 20 km apart, where the track
+# went over to the other aircraft; single corrupt fixes jump out and back
+# and leave none. On 6-8 October every shared drone address-day had 9 or more
+# such jumps, and no confirmed drone had one.
+DF_SHARED_JUMP_M, DF_SHARED_JUMPS = 50000, 3
+DF_SHARED_SWITCH_M, DF_SHARED_SWITCHES = 20000, 3
 DF_AIR_KMH, DF_AIR_AGL = 10, 20          # an airborne fix: at least 10 km/h, or more than 20 m above ground
 DF_MAX_GAP = 60                          # s; a longer silence is not flown time
 DF_LOW_AGL = 30                          # rule 2: never higher than this, not judged
@@ -841,6 +855,7 @@ class Nightly:
         self.imp_cat = collections.Counter()   # (category, what) -> fixes, streams or seconds, for the log
         self.cut = {}                          # address -> its last fix before an impossible one
         self.drone_fx = {}                     # address declaring a drone -> array of (t, lat, lon, kt, alt)
+        self.drone_far = collections.Counter() # address declaring a drone -> impossible jumps over DF_SHARED_JUMP_M
         self.addr_systems = collections.defaultdict(set)     # address -> systems, platforms left out
         self.addr_platforms = collections.defaultdict(set)   # address -> platforms that relayed it
         # 1. hours
@@ -1530,6 +1545,8 @@ class Nightly:
         if sources.impossible_jump(category, d, seconds):
             if label is not None:
                 self.imp[(label, "impossible_jump_seconds")] += seconds
+            if d > DF_SHARED_JUMP_M and address in self.major13 and self.d0 <= t < self.d1:
+                self.drone_far[address] += 1
             top = max(sources.IMPLAUSIBLE_MS * 3.6, sources.CEILINGS.get(category, sources.CEILING_OTHER)[0])
             if (d * 3.6 / max(seconds, 1) <= top and category not in GROUND_CATEGORIES
                     and sources.flying(category, prev[3], kt)):
@@ -1619,6 +1636,15 @@ class Nightly:
                 "aerodrome": bool(self.site_near("airfield", first[1], first[2], DF_AERODROME_M)
                                   or self.site_near("airfield", last[1], last[2], DF_AERODROME_M))}
 
+    def drone_shared(self, address, a):
+        """Rule 1b of METHOD.md 10.1: the address carried other aircraft far
+        away as well (DF_SHARED_JUMP_M)."""
+        if self.drone_far[address] < DF_SHARED_JUMPS or not a:
+            return False
+        switches = sum(1 for i in range(5, len(a), 5)
+                       if dist(a[i - 4], a[i - 3], a[i + 1], a[i + 2]) > DF_SHARED_SWITCH_M)
+        return switches >= DF_SHARED_SWITCHES
+
     @staticmethod
     def drone_flight_class(f):
         """Rules 2 to 6 of METHOD.md 10.1 on one address-day's features."""
@@ -1650,6 +1676,9 @@ class Nightly:
                 out[address] = FLIGHT_NOT_JUDGED
                 continue
             a = self.drone_fx.get(address)
+            if self.drone_shared(address, a):
+                out[address] = FLIGHT_SHARED
+                continue
             out[address] = self.drone_flight_class(self.drone_features(a) if a else None)
         self._flights = out
         return out
@@ -2393,11 +2422,12 @@ class Nightly:
         # Crewed evidence takes an address out of every drone measure; the
         # others carry their evidence (confirmed or uncertain) as a dimension,
         # and from 9 October 2026 the class the uncertain ones fly like
-        # (FLIGHT_CLASS_NAMES; 0 for the others).
+        # (FLIGHT_CLASS_NAMES; 0 for the others). A shared address (rule 1b)
+        # is set aside like crewed evidence and counted only in its class.
         fc = self.drone_flights()
         def drone_class(address):
             e = ev.get(address, UNCERTAIN)
-            return None if e in SET_ASIDE else e
+            return None if e in SET_ASIDE or fc.get(address) == FLIGHT_SHARED else e
         fine = collections.defaultdict(lambda: [0.0, set()])
         cells = collections.defaultdict(lambda: [0.0, set()])
         classes = collections.defaultdict(lambda: [set(), 0.0])

@@ -2693,7 +2693,7 @@ class SourceTracker:
                       5: "stray", 6: "crewed_climb_extent"}
     # How an uncertain drone flies (nightly.py FLIGHT_CLASS_NAMES, from 9 October 2026); 0 for every
     # other class, and for the days computed before.
-    DRONE_FLIGHT = {0: "not_judged", 2: "never_above_30m", 3: "probably_crewed", 4: "probably_multirotor",
+    DRONE_FLIGHT = {0: "not_judged", 1: "shared_address", 2: "never_above_30m", 3: "probably_crewed", 4: "probably_multirotor",
                     5: "probably_fixed_wing", 6: "uncertain"}
 
     def drones_stats(self):

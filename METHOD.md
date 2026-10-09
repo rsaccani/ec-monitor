@@ -820,7 +820,16 @@ either flew. Impossible tracks are taken out first, for every aircraft
 being those at 10 km/h or more or more than 20 m above the terrain model,
 and the first rule that matches decides:
 
-1. Impossible tracks, section 1, for every aircraft.
+1. Impossible tracks, section 1, for every aircraft. And, from 9 October
+   2026, a **shared address**: an address-day with at least 3 impossible
+   jumps of more than 50 km and at least 3 switches, a switch being two
+   consecutive kept fixes more than 20 km apart. Such an address carries
+   other aircraft far away besides the drone, and section 1 drops only the
+   fix that a jump reaches, so another aircraft that stays on the address
+   for minutes is kept whole. 50 km is more than eight minutes of a drone at
+   its 350 km/h ceiling, which no GPS error makes, and three jumps keep a
+   single corrupt packet from sinking a genuine drone. A shared address is
+   set aside like crewed evidence and counted only in its own class.
 2. **Never above 30 m**: not judged, since a drone on the ground and a
    crewed aircraft taxiing look alike.
 3. **Probably crewed**: it began or ended within 1 km of an aerodrome and
@@ -858,8 +867,21 @@ crewed (6.2 h), 25 probably multirotors (10.3 h), 3 probably fixed-wing drones
 (2.4 h), 16 (5.1 h), 4 (2.3 h) and 9 (1.9 h). The exploration had found no
 uncertain address-day flying like a light aircraft once the impossible ones
 were left out whole; with only the impossible fixes dropped, 4 address-days of
-6 October and 1 of 7 October come out probably crewed, and whether their
-remaining fixes are sound has still to be checked.
+6 October and 1 of 7 October came out probably crewed. All five were shared
+addresses: a device declaring a drone under 125 m above the ground in an
+area 15 to 30 km across, and under the same address, mostly through one
+receiver, tracks of gliders, powered aircraft and helicopters 100 to 600 km
+away at up to 9 km of altitude, which supplied every crewed trait. The
+shared-address rule took them out with 1 more of 6 October and 1 of
+8 October: 5 address-days (6.2 h), 1 (2.4 h) and 1 (1.3 h) on 6, 7 and
+8 October, and no multirotor, fixed-wing or low address-day. On those three
+days every shared address had at least 9 jumps over 50 km, and no confirmed
+drone had one. One other uncertain address-day of 7 October had 26, each a
+single corrupt fix that section 1 dropped together with the fix after it, so
+its kept track never switched, no foreign aircraft entered it, and it stays
+in its class with no flying time. Probably crewed then held none on
+6 and 7 October and 1 on 8 October (1.1 h, a single coherent track at a
+median of 142 km/h and up to 425 m above the ground).
 
 Each airborne segment is filed by the **1-degree cell** where it began
 (about 110 by 77 km at the latitude of the Alps; a finer map of so few
