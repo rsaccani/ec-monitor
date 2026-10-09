@@ -1,5 +1,8 @@
 # One-off tools
 
+`schema_doc.py` is the exception: it is run after every migration, and regenerates `schema.sql` and
+`SCHEMA.md` from the production database (README.md, Running it). The rest are described below.
+
 Scripts that changed stored figures after the fact, or checked them, kept
 here because METHOD.md cites what they did and the code behind every figure
 is meant to be public. Until 7 October 2026 they lived in a private

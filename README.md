@@ -200,12 +200,33 @@ python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
 
-Create the database and its tables from [schema.sql](schema.sql), which is taken from the production
-tables:
+Create the database and its tables from [schema.sql](schema.sql):
 
 ```bash
 mysql < schema.sql
 ```
+
+`schema.sql` is generated, and complete: `tools/schema_doc.py` writes it from `SHOW CREATE TABLE` on
+every table of the production database, together with [SCHEMA.md](SCHEMA.md), which says for each
+table what a row is, which section of METHOD.md or PATTERNS.md defines it, which code writes and reads
+it, which endpoints publish it, which files of `schema/` created or changed it and what the service user
+may do with it. Until 9 October 2026 `schema.sql` was kept by hand and still described the ten tables
+of 3 October, while every later table and column was only in `schema/`.
+
+The files in [schema/](schema/) stay the dated record of each change, with the reason for it, and they
+are what is applied to a running database: by the owner, as root, before deploying the code that needs
+them (`mysql < schema/<file>.sql`). After each one, run on the host
+
+```bash
+cd ~/ads-l-map && python3 tools/schema_doc.py --out ~/schemadoc
+```
+
+and commit the `schema.sql` and `SCHEMA.md` it writes, in the same commit as the migration where
+possible. The script reads only `SHOW` output and `information_schema`, never a row, and refuses to
+write into the checkout. It reports on stderr a table with no description in it, a description of a
+table that is gone, a table no code names, a table the code names that the database lacks, and any
+column whose name or type the migrations (replayed in commit order over the last hand-written
+`schema.sql`) do not account for.
 
 Then the service user. It needs exactly these grants and nothing more. `monthly_devices` and
 `monthly_sources` are updated one column at a time, while `monthly_visibility_detail`,
@@ -230,8 +251,9 @@ GRANT UPDATE ON ads_l.monthly_hours TO 'ads_user'@'localhost';
 
 The tables of the nightly measures, the `DELETE` that lets `nightly.py` replace a day, and
 `UPDATE (category)` on `monthly_sources` (a later aircraft category replacing a ground one) are in
-[schema/2026-10-07-nightly.sql](schema/2026-10-07-nightly.sql); how the nightly runs is in
-[deploy/README.md](deploy/README.md).
+[schema/2026-10-07-nightly.sql](schema/2026-10-07-nightly.sql), and the grants on each table added
+after it are in the file that creates the table; SCHEMA.md lists the whole set as production has it.
+How the nightly runs is in [deploy/README.md](deploy/README.md).
 
 The service connects to `localhost` over TCP, port 3306, and reads the user and password from a `.env`
 file beside `app.py`, which should be readable only by the user the service runs as:
@@ -275,7 +297,9 @@ that re-imports the code. If the code does not compile, if the new worker does n
 minute, or if it logs a database write error in its first 30 seconds, the script checks the previous
 commit out again and reloads that. Deploy right after a 15-minute write, since a reload loses what
 accumulated since the last one. Changes to `requirements.txt`, to the systemd unit or to the schema are
-not covered and are applied by hand, a schema change before the code that needs it.
+not covered and are applied by hand, a schema change before the code that needs it. After a schema
+change, regenerate `schema.sql` and `SCHEMA.md` with `tools/schema_doc.py` (see Running it) and commit
+them.
 
 ## Data from others
 
