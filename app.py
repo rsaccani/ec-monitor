@@ -778,7 +778,7 @@ def get_drones():
 
 @app.route(API + "/encounters")
 def get_encounters():
-    """Crewed aircraft of different kinds coming close, as monthly aggregates (METHOD.md, section 10.2)."""
+    """Crewed aircraft coming close, and where, as monthly aggregates (METHOD.md, section 10.2)."""
     if tracker is None or SKIP_STATS_DATABASE:
         return jsonify({})
     try:

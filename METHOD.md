@@ -913,6 +913,19 @@ a system means both were heard on it by the network. Whether either could
 have shown the other to its pilot depends on what each device decodes and
 displays, which the feed does not say, so nothing more is claimed from it.
 
+**Where** (from 9 October 2026). Each encounter is also filed by the
+1-degree cell of the point midway between the two aircraft at its closest
+approach, the cells of the drones' flying time above, so that a map can set
+the encounters of a cell against the drone time flown there. The cell is as
+coarse as the rest of this question for the same reason: drones are few, and
+a finer one could point at one operator. From the same day each encounter
+also carries the relative speed and the geometry at its closest approach,
+in the bands of section 10.2, when both the drone and the other aircraft
+sent a course and a speed, and one that looks like a single aircraft under
+two addresses is left out by the rule of section 10.2. Days computed before have no cell;
+their rows stay as recorded, counted in every figure that does not ask where,
+until a day still in the raw recording (kept seven days) is computed again.
+
 ### 10.2 Sharing the air: crewed aircraft of different kinds (experimental)
 
 The question: how often do aircraft of different kinds, free flight,
@@ -933,9 +946,60 @@ closest horizontal distance, by the closing speed at that moment (the
 difference of the two velocities: under 50, 50–100, 100–200, 200–400, over
 400 km/h), by the systems each address was heard on that day, and by
 whether the two share at least one radio system (ADS-B counts as one) or
-any system at all. Two aircraft of the same kind are left out: the
-question is about kinds that fly under different rules and carry
-different equipment.
+any system at all. Until 9 October 2026 two aircraft of the same kind were
+left out, since the question began with kinds that fly under different
+rules and carry different equipment.
+
+**Same kind** (from 9 October 2026, decided with Rodolfo). Two powered
+aircraft or two helicopters count as well, and are published apart from the
+pairs of different kinds, so that those keep their meaning. Two free-flight
+aircraft and two gliders still do not: two paragliders 200 m apart in one
+thermal, or gliders circling in a gaggle, are how those kinds fly, and on a
+good day they would outnumber every other encounter put together without
+saying anything about sharing the air. A paraglider and a hang glider are
+one kind here, free flight, so they are left out together. The rule for
+flying together below applies to the same-kind pairs as to the others, and
+is what keeps a formation, a pilot with two devices and a tug with the
+glider it tows out of them.
+
+**Geometry** (from 9 October 2026, decided with Rodolfo). Each encounter is
+also filed by the angle between the two ground tracks at its closest
+approach: **same way** under 45 degrees, which includes one overtaking the
+other, **crossing** from 45 to 135, **head on** over 135, and unknown when
+either aircraft sent no course or a speed of zero. The closing speed above,
+the difference of the two velocities, stays beside it, and the two are
+meant to be read together. Same way is not the benign case it sounds:
+in an overtake the slower aircraft cannot see behind it, and the faster one
+sees an almost motionless dot ahead, the hardest thing for an eye to pick
+out, which is how a Cessna struck a paraglider from behind in a recent
+accident, at a very high speed difference in the same direction. What the
+pilots have is time: at a closing speed of v km/h two aircraft cover the
+last kilometre in 3,600 / v seconds, 25 s at 145 km/h and 9 s at 400, while
+the FAA puts the time needed to see another aircraft, recognise it and
+avoid it at about 12.5 s. The course is the one each fix carries, a
+moment's heading over the ground, except where the device sends rarely:
+the phone apps that send a position every 150 m or so give a course that is
+only approximately the one at the closest approach, and the geometry of
+their encounters is approximate in proportion.
+
+**Where** (from 9 October 2026). Each encounter is also filed by the
+0.25-degree cell (about 28 by 19 km at the latitude of the Alps, the cells
+of the thermals in PATTERNS.md, section 3) of the point midway between the
+two aircraft at its closest approach. Beside it is recorded the
+denominator, the flying time of each kind per cell and day over the same
+fixes the encounters are looked for in (every system, one fix per address
+and second, airborne at the speed of the kind, the kind as above), with the
+number of distinct aircraft. The time between two consecutive fixes counts
+only when they are at most 2 minutes apart, filed by the cell of the first:
+an encounter can be seen only while both aircraft are heard, and only
+airborne fixes enter, so a longer silence may hide a landing. A cell with
+many encounters for its hours is a place where aircraft come close more
+often than the traffic there explains, which is the point of the map; a
+cell flown by a handful of aircraft gives a rate of chance, and the pages
+leave out cells below a minimum number of aircraft. Days computed before
+have no cell and no flying time per cell; their rows stay as recorded,
+counted in every figure that does not ask where, until a day still in the
+raw recording (kept seven days) is computed again.
 
 **Flying together.** A pair that stays within 300 m at a relative speed
 under 20 km/h for at least 60 seconds (contacts at most 20 s apart) is
@@ -948,6 +1012,23 @@ rule is needed: the close encounters between gliders and powered aircraft
 had a median closing speed of 7 km/h, and 212 of 259 were under 100 m. A
 second rule, kept beside it, catches pairs within 300 m for more than
 5 minutes over more than 3 km whatever their relative speed.
+
+**Probably one aircraft under two addresses** (from 9 October 2026, decided
+with Rodolfo). An encounter whose closest approach is the same way (the two
+tracks within 45 degrees), under 150 m apart and under 20 km/h relative is
+left out, however briefly the two were in contact, and counted per kind pair
+and day as a data-quality figure instead. At 20 km/h two real aircraft that
+close stay side by side for more than 25 seconds, which only a formation or
+a tow does, and those are left out by the rule above. On 7 October 2026 the
+pattern made most of the same-kind encounters and 135 of the 165 close
+encounters between gliders and powered aircraft: a median relative speed of
+4 km/h, 16 to 140 m apart, one encounter per pair across hundreds of
+distinct pairs. That is what a device changing its address in flight, or one
+aircraft heard under two addresses on two systems, would produce, and it is
+probably what these are; it has not yet been verified device by device. An
+overtake at a real speed difference, 145 km/h say, is untouched, and so is
+an encounter without a velocity for both aircraft, where the rule cannot be
+applied. The same rule applies to the drone encounters of section 10.1.
 
 **What this measure cannot see.** An encounter is counted only when both
 aircraft transmit something the OGN network hears. The encounters most
@@ -963,8 +1044,11 @@ from the manufacturers' documentation in a table of its own. Shared
 systems are reported as a fact about the network, nothing more.
 
 Encounters are published as monthly aggregates by kind pair, band and
-systems only, never as events, dates, times or fine maps, so that no
-encounter between two identifiable aircraft can be read from them.
+systems, and from 9 October 2026 by 0.25-degree cell, never as events,
+dates or times, so that no encounter between two identifiable aircraft can
+be read from them. The cells carry the number of aircraft that flew there
+for that reason as well: a month's encounters in a cell flown by two or
+three aircraft would name them to anyone who knows the place.
 
 ### 10.3 Parked aircraft transmitting
 

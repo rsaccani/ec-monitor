@@ -114,6 +114,11 @@ DRONE_EXTENT_EDGES = (1000, 3000, 10000)   # m from the first fix of a session
 ENCOUNTER_S, ENCOUNTER_M, ENCOUNTER_VERT_M = 10, 1000, 150
 ENCOUNTER_EVERY = 600                      # one encounter per pair of aircraft per 10 minutes
 ENCOUNTER_BANDS = (300, 600, 1000)
+# The dry run ranks a quarter-degree cell by crewed encounters per hour flown
+# only with this many aircraft in it that day (9 October 2026): with one or
+# two the rate is chance. The pages choose their own minimum from the
+# aircraft counts of sources.encounters_stats.
+ENCOUNTER_CELL_MIN = 5
 ENCOUNTER_WINDOW = STALE + 2 * ENCOUNTER_S  # fixes kept for matching, by packet time
 ENCOUNTER_ACTIVE = 900                      # crewed fixes are indexed near drones heard this recently
 CELL_LAT, CELL_LON = 0.02, 0.04             # index cells, at least 1.2 km wide up to 72 N
@@ -239,7 +244,9 @@ DF_FIXED_EXTENT_M, DF_FIXED_S = 5000, 120
 # while the day is read stops both, since both are computed from it.
 FAMILIES = {
     "conspicuity": ("daily_drone_classes", "daily_drones", "daily_drone_cells", "daily_drone_extent",
-                    "daily_drone_encounters", "daily_crewed_encounters", "daily_parked", "daily_quality"),
+                    "daily_drone_encounters", "daily_crewed_encounters", "daily_air_cells", "daily_same_aircraft_pairs",
+                    "daily_parked",
+                    "daily_quality"),
     "patterns": ("daily_thermal_sites", "daily_flight_classes", "daily_routes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
                  "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
                  "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
@@ -258,6 +265,52 @@ def band(value, edges):
 
 def dist(lat1, lon1, lat2, lon2):
     return sources._distance(lat1, lon1, lat2, lon2)
+
+
+# Geometry of an encounter (9 October 2026, with Rodolfo): the angle between
+# the two ground tracks at the closest approach, 0 under 45 degrees (one
+# overtaking the other, or flying the same way), 1 45-135 (crossing), 2 over
+# 135 (head on), UNKNOWN_BAND without a velocity for both. Read together with
+# the closing speed: overtaking is not benign when the speeds differ, since the
+# slower aircraft cannot see behind and the faster one sees a dot that hardly
+# moves (a Cessna that hit a paraglider from behind).
+GEOMETRY_EDGES = (45, 135)
+# Probably one aircraft under two addresses (9 October 2026, with Rodolfo): an
+# encounter whose closest approach is the same way (geometry 0), under 150 m
+# and under 20 km/h relative is left out, however briefly the two were in
+# contact. At 20 km/h two real aircraft 150 m apart stay side by side for more
+# than 25 s, which only a formation or a tow does, and those are left out
+# already. On 7 October 2026 this pattern made most of the same-kind
+# encounters and 135 of the 165 close glider-powered ones: median 4 km/h, 16
+# to 140 m, one encounter per pair over hundreds of pairs, which is what a
+# device changing its address in flight, or one aircraft heard under two
+# addresses on two systems, would give (not yet verified device by device).
+# Without a velocity for both (geometry unknown) the rule cannot apply and the
+# encounter is kept. Counted per kind pair in daily_same_aircraft_pairs.
+SAME_AIRCRAFT_M, SAME_AIRCRAFT_KMH = 150, 20
+
+
+def same_aircraft(d, rel, geom):
+    """True when an encounter looks like one aircraft under two addresses (SAME_AIRCRAFT_*)."""
+    return geom == 0 and d < SAME_AIRCRAFT_M and rel is not None and rel < SAME_AIRCRAFT_KMH
+
+
+def velocity(course, kt):
+    """(east, north) in km/h from a course and a speed, None if either is missing."""
+    if not course or kt is None:
+        return None
+    return (kt * 1.852 * math.sin(math.radians(course)), kt * 1.852 * math.cos(math.radians(course)))
+
+
+def geometry(v1, v2):
+    """GEOMETRY_EDGES band of the angle between two velocities; UNKNOWN_BAND if either is missing or still."""
+    if v1 is None or v2 is None:
+        return UNKNOWN_BAND
+    n = math.hypot(*v1) * math.hypot(*v2)
+    if n == 0:
+        return UNKNOWN_BAND
+    c = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / n))
+    return band(math.degrees(math.acos(c)), GEOMETRY_EDGES)
 
 
 def hour_path(raw_dir, day, hour):
@@ -626,7 +679,7 @@ class PoweredTrack:
 
 
 class CrewedEncounters:
-    """Crewed aircraft of different kinds coming close (METHOD.md 10.2, 7 October 2026).
+    """Crewed aircraft coming close (METHOD.md 10.2, 7 October 2026).
 
     One aircraft is one address, its kind the majority category of its
     packets that day over all its systems, ADS-B included. Fixes of every
@@ -636,9 +689,25 @@ class CrewedEncounters:
     and ENCOUNTER_EVERY, filed by its closest approach. A pair that flies
     together (FORMATION) is left out for the day: aerotows, formations and
     one pilot carrying two devices under two addresses.
+
+    From 9 October 2026 pairs of the same kind count too, except those in
+    SAME_KIND_SKIP, and every encounter carries the midpoint of the two
+    fixes at its closest approach, filed in quarter-degree cells; `air`
+    keeps the denominator, the flying time of the same fixes per kind and
+    cell (daily_air_cells).
     """
     KIND = {6: "free_flight", 7: "free_flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered",
             3: "helicopter"}
+    # Same-kind pairs left out (9 October 2026, with Rodolfo): two paragliders
+    # 200 m apart in one thermal, or gliders in a gaggle, are how these kinds
+    # fly, and would swamp every other count. Two powered aircraft or two
+    # helicopters that close are not routine, and count.
+    SAME_KIND_SKIP = {"free_flight", "glider"}
+    # Flying time between two consecutive fixes counts for the denominator
+    # only across a silence of at most this: an encounter can be seen only
+    # while both aircraft are heard, and a longer silence also hides a
+    # landing, since only airborne fixes reach this class.
+    AIR_GAP = 120
     THRESHOLDS = {"wide": (1000, 150), "close": (300, 100)}
     DISTANCE_EDGES = {"wide": (300, 600), "close": (100, 200)}
     # Closing speed, km/h: from two paragliders converging to two powered
@@ -669,8 +738,10 @@ class CrewedEncounters:
         self.slow = {}                          # pair -> [first t, last t]
         self.near = {}                          # pair -> [first t, lat, lon, last t]
         self.formation, self.escort = set(), set()
-        self.open = {}                          # (pair, threshold) -> [t0, d, closing, kinds]
+        self.open = {}                          # (pair, threshold) -> [t0, d, closing, kinds, lat, lon, geometry]
         self.done = []
+        # (kind, lat_idx, lon_idx) at THERMAL_CELLS_PER_DEG -> [seconds, addresses]
+        self.air = collections.defaultdict(lambda: [0.0, set()])
         # (towed address, tug address, towed category, t0, t1, start lat, lon, release height above ground)
         self.tows = []
 
@@ -682,15 +753,19 @@ class CrewedEncounters:
             if dist(prev[1], prev[2], lat, lon) > sources.IMPLAUSIBLE_MS * max(t - prev[0], 1):
                 self.last[address] = (t, lat, lon)
                 return
+            if t - prev[0] <= self.AIR_GAP:
+                # Filed by the segment's first fix, as the timeline does.
+                a = self.air[(kind, math.floor(prev[1] * THERMAL_CELLS_PER_DEG),
+                              math.floor(prev[2] * THERMAL_CELLS_PER_DEG))]
+                a[0] += t - prev[0]
+                a[1].add(address)
         self.last[address] = (t, lat, lon)
         fl, fo, ft = lat / self.CELL_LAT, lon / self.CELL_LON, t / self.BUCKET
         cl, co, tb = int(fl // 1), int(fo // 1), int(ft // 1)
         nl = (cl, cl - 1 if fl - cl < 0.5 else cl + 1)
         no = (co, co - 1 if fo - co < 0.5 else co + 1)
         nt = (tb, tb - 1 if ft - tb < 0.5 else tb + 1)
-        vel = None
-        if course and kt is not None:
-            vel = (kt * 1.852 * math.sin(math.radians(course)), kt * 1.852 * math.cos(math.radians(course)))
+        vel = velocity(course, kt)
         wide_m, wide_v = self.THRESHOLDS["wide"]
         for a_ in nl:
             for b_ in no:
@@ -738,7 +813,7 @@ class CrewedEncounters:
                                 e[3] = max(e[3], t)
                                 if e[3] - e[0] > self.ESCORT_S and dist(e[1], e[2], lat, lon) > self.ESCORT_KM * 1000:
                                     self.escort.add(pair)
-                        if okind == kind:
+                        if okind == kind and kind in self.SAME_KIND_SKIP:
                             continue
                         kinds = tuple(sorted((kind, okind)))
                         for name, (hm, vm) in self.THRESHOLDS.items():
@@ -750,10 +825,13 @@ class CrewedEncounters:
                             if enc is not None and start - enc[0] <= ENCOUNTER_EVERY:
                                 if d < enc[1]:
                                     enc[1], enc[2] = d, rel
+                                    enc[4], enc[5] = (lat + olat) / 2, (lon + olon) / 2
+                                    enc[6] = geometry(vel, ovel)
                                 continue
                             if enc is not None:
                                 self.done.append((key,) + tuple(enc))
-                            self.open[key] = [start, d, rel, kinds]
+                            self.open[key] = [start, d, rel, kinds, (lat + olat) / 2, (lon + olon) / 2,
+                                              geometry(vel, ovel)]
         k = (cl, co, tb)
         if k not in self.index:
             self.order.append(k)
@@ -875,8 +953,8 @@ class Nightly:
         self.drone_active = {}                 # 0.1-degree square -> last packet time of a drone in it
         self.swept_at = -1e18
         self.last_drone_t = -1e18
-        self.encounters_open = {}              # (drone, other) -> [t0, min distance, other category]
-        self.encounters = []                   # (drone, other, other category, min distance)
+        self.encounters_open = {}              # (drone, other) -> [t0, min distance, other category, lat, lon, km/h, geometry]
+        self.encounters = []                   # (drone, other, other category, min distance, lat, lon, km/h, geometry)
         # 5. quality
         self.q = collections.defaultdict(lambda: collections.Counter())  # label -> check -> count
         self.categories = collections.defaultdict(collections.Counter)   # (label, address) -> category -> n
@@ -1249,9 +1327,9 @@ class Nightly:
             self.addr_cats[address][raw_category] += 1
         crewed_airborne = category in CREWED and (kt or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT)
         if category == DRONE:
-            self.drone_fix(address, t, lat, lon, alt_m)
+            self.drone_fix(address, t, lat, lon, alt_m, course, kt)
         elif self.c and crewed_airborne and alt_m is not None and t - self.last_drone_t <= ENCOUNTER_ACTIVE:
-            self.crewed_fix(address, category, t, lat, lon, alt_m)
+            self.crewed_fix(address, category, t, lat, lon, alt_m, course, kt)
         am = self.addr_major.get(address)
         ck = CrewedEncounters.KIND.get(am)
         agl = None
@@ -2085,7 +2163,7 @@ class Nightly:
 
     # --- 4. drones ----------------------------------------------------------------------
 
-    def drone_fix(self, address, t, lat, lon, alt_m):
+    def drone_fix(self, address, t, lat, lon, alt_m, course=None, kt=None):
         s = self.drone_session.get(address)
         if s is None or t - s[0] > sources.SESSION_BREAK:
             if s is not None:
@@ -2100,15 +2178,16 @@ class Nightly:
         if alt_m is None:
             return
         cell = (int(lat // CELL_LAT), int(lon // CELL_LON))
-        self.drone_index[cell].append((t, lat, lon, alt_m, address))
+        vel = velocity(course, kt)
+        self.drone_index[cell].append((t, lat, lon, alt_m, address, vel))
         self.prune(self.drone_index[cell], t)
         for dc in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)):
             q = self.crewed_index.get((cell[0] + dc[0], cell[1] + dc[1]))
             if q:
-                for ct, clat, clon, calt, caddr, ccat in q:
-                    self.match(address, t, lat, lon, alt_m, caddr, ccat, ct, clat, clon, calt)
+                for ct, clat, clon, calt, caddr, ccat, cvel in q:
+                    self.match(address, t, lat, lon, alt_m, caddr, ccat, ct, clat, clon, calt, vel, cvel)
 
-    def crewed_fix(self, address, category, t, lat, lon, alt_m):
+    def crewed_fix(self, address, category, t, lat, lon, alt_m, course=None, kt=None):
         if t - self.swept_at >= SWEEP_EVERY:
             self.sweep(t)
         c1 = (int(lat // ACTIVE_DEG), int(lon // ACTIVE_DEG))
@@ -2122,13 +2201,14 @@ class Nightly:
             return
         cell = (int(lat // CELL_LAT), int(lon // CELL_LON))
         q = self.crewed_index[cell]
-        q.append((t, lat, lon, alt_m, address, category))
+        vel = velocity(course, kt)
+        q.append((t, lat, lon, alt_m, address, category, vel))
         self.prune(q, t)
         for dc in ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)):
             dq = self.drone_index.get((cell[0] + dc[0], cell[1] + dc[1]))
             if dq:
-                for dt_, dlat, dlon, dalt, daddr in dq:
-                    self.match(daddr, dt_, dlat, dlon, dalt, address, category, t, lat, lon, alt_m)
+                for dt_, dlat, dlon, dalt, daddr, dvel in dq:
+                    self.match(daddr, dt_, dlat, dlon, dalt, address, category, t, lat, lon, alt_m, dvel, vel)
 
     def sweep(self, t):
         """Drop what no longer can match from both indexes. A cell is pruned on
@@ -2149,7 +2229,7 @@ class Nightly:
         while q and q[0][0] < t - ENCOUNTER_WINDOW:
             q.popleft()
 
-    def match(self, drone, dt_, dlat, dlon, dalt, other, ocat, ot, olat, olon, oalt):
+    def match(self, drone, dt_, dlat, dlon, dalt, other, ocat, ot, olat, olon, oalt, dvel=None, ovel=None):
         if drone == other or abs(dt_ - ot) > ENCOUNTER_S or abs(dalt - oalt) > ENCOUNTER_VERT_M:
             return
         d = dist(dlat, dlon, olat, olon)
@@ -2158,12 +2238,17 @@ class Nightly:
         key = (drone, other)
         e = self.encounters_open.get(key)
         start = min(dt_, ot)
+        # Where, how fast the two closed and at what angle, at the closest
+        # approach (9 October 2026): the midpoint, the relative speed and the
+        # geometry of the crewed encounters.
+        rel = math.hypot(dvel[0] - ovel[0], dvel[1] - ovel[1]) if dvel is not None and ovel is not None else None
         if e is not None and start - e[0] <= ENCOUNTER_EVERY:
-            e[1] = min(e[1], d)
+            if d < e[1]:
+                e[1], e[3], e[4], e[5], e[6] = d, (dlat + olat) / 2, (dlon + olon) / 2, rel, geometry(dvel, ovel)
             return
         if e is not None:
-            self.encounters.append((drone, other, e[2], e[1]))
-        self.encounters_open[key] = [start, d, ocat]
+            self.encounters.append((drone, other, e[2], e[1], e[3], e[4], e[5], e[6]))
+        self.encounters_open[key] = [start, d, ocat, (dlat + olat) / 2, (dlon + olon) / 2, rel, geometry(dvel, ovel)]
 
     # --- 5. quality: receivers ------------------------------------------------------------
 
@@ -2232,7 +2317,7 @@ class Nightly:
         for address, s in self.drone_session.items():
             self.drone_extent[address] = max(self.drone_extent.get(address, 0), s[3])
         for key, e in self.encounters_open.items():
-            self.encounters.append((key[0], key[1], e[2], e[1]))
+            self.encounters.append((key[0], key[1], e[2], e[1], e[3], e[4], e[5], e[6]))
         for tr in self.circles.values():
             tr.finish()
         self.crewed.finish()
@@ -2457,25 +2542,52 @@ class Nightly:
                 ext[(e, fc.get(address, FLIGHT_NOT_JUDGED), band(d, DRONE_EXTENT_EDGES))] += 1
         out["daily_drone_extent"] = (("day", "evidence", "flight_class", "extent_band", "drones"),
                                      [(day,) + k + (n,) for k, n in sorted(ext.items())])
+        # From 9 October 2026 an encounter is filed where it happened: the
+        # 1-degree cell of the midpoint at the closest approach, as coarse as
+        # the other drone tables, since drones are few.
         enc = collections.Counter()
-        for drone, other, ocat, d in self.encounters:
+        # (kind a, kind b, threshold) -> [pairs, encounters] left out as
+        # probably one aircraft under two addresses (SAME_AIRCRAFT_*); filled
+        # here for drones and in crewed_rows for crewed aircraft.
+        self.same_aircraft = collections.defaultdict(lambda: [set(), 0])
+        self.drone_geometry_unknown = 0
+        for drone, other, ocat, d, la, lo, rel, geom in self.encounters:
             e = drone_class(drone)
             if e is None:
                 continue                        # the "drone" was a crewed aircraft
+            if same_aircraft(d, rel, geom):
+                s = self.same_aircraft[("drone", CrewedEncounters.KIND.get(ocat, "other"), "wide")]
+                s[0].add((drone, other))
+                s[1] += 1
+                continue
+            if geom == UNKNOWN_BAND:
+                self.drone_geometry_unknown += 1
             ds, os_ = self.addr_systems.get(drone, set()), self.addr_systems.get(other, set())
-            enc[(e, fc.get(drone, FLIGHT_NOT_JUDGED), self.systems_of(drone), ocat, self.systems_of(other),
-                 band(d, ENCOUNTER_BANDS), int(bool(ds & os_)))] += 1
-        out["daily_drone_encounters"] = (("day", "evidence", "flight_class", "drone_systems", "other_category",
-                                          "other_systems", "distance_band", "shared_system", "encounters"),
+            enc[(e, fc.get(drone, FLIGHT_NOT_JUDGED), math.floor(la), math.floor(lo), self.systems_of(drone), ocat,
+                 self.systems_of(other), band(d, ENCOUNTER_BANDS), band(rel, CrewedEncounters.CLOSING_EDGES), geom,
+                 int(bool(ds & os_)))] += 1
+        out["daily_drone_encounters"] = (("day", "evidence", "flight_class", "lat_idx", "lon_idx", "drone_systems",
+                                          "other_category", "other_systems", "distance_band", "closing_band",
+                                          "geometry", "shared_system", "encounters"),
                                          [(day,) + k + (n,) for k, n in sorted(enc.items())])
         out["daily_drone_classes"] = (("day", "evidence", "flight_class", "addresses", "air_seconds"),
                                       [(day,) + k + (len(v[0]), round(v[1], 1)) for k, v in sorted(classes.items())])
         self.encounters_all = len(self.encounters)
 
-        # 6. crewed aircraft of different kinds (METHOD.md 10.2)
-        out["daily_crewed_encounters"] = (("day", "kind_a", "kind_b", "threshold", "distance_band", "closing_band",
-                                           "systems_a", "systems_b", "shares_radio", "shares_any", "encounters"),
+        # 6. crewed aircraft coming close (METHOD.md 10.2); from 9 October
+        # 2026 in quarter-degree cells, same-kind pairs included but for free
+        # flight and gliders, with the flying time per kind and cell beside
+        # them so that a place can be judged by encounters per hour flown.
+        out["daily_crewed_encounters"] = (("day", "kind_a", "kind_b", "threshold", "lat_idx", "lon_idx",
+                                           "distance_band", "closing_band", "geometry", "systems_a", "systems_b",
+                                           "shares_radio", "shares_any", "encounters"),
                                           self.crewed_rows(day))
+        out["daily_same_aircraft_pairs"] = (("day", "kind_a", "kind_b", "threshold", "pairs", "encounters"),
+                                            [(day,) + k + (len(v[0]), v[1])
+                                             for k, v in sorted(self.same_aircraft.items())])
+        out["daily_air_cells"] = (("day", "kind", "lat_idx", "lon_idx", "air_seconds", "aircraft"),
+                                  [(day,) + k + (round(v[0], 1), len(v[1]))
+                                   for k, v in sorted(self.crewed.air.items())])
 
         # 5. quality
         out["daily_quality"] = (("day", "scope", "name", "check_name", "count", "total", "value"), self.quality(day))
@@ -2609,7 +2721,7 @@ class Nightly:
                  if kind in ("adsl", "flarm", "fanet", "adsb", "radio")}
         rows = collections.Counter()
         self.crewed_summary = collections.Counter()
-        for (pair, name), t0, d, rel, kinds in ce.done:
+        for (pair, name), t0, d, rel, kinds, la, lo, geom in ce.done:
             together = pair in ce.formation or pair in ce.escort
             self.crewed_summary[(kinds, name, "all")] += 1
             if pair in self.tow_pairs:
@@ -2620,13 +2732,23 @@ class Nightly:
                 self.crewed_summary[(kinds, name, "escort only")] += 1
             if together:
                 continue
+            if same_aircraft(d, rel, geom):
+                s = self.same_aircraft[(kinds[0], kinds[1], name)]
+                s[0].add(pair)
+                s[1] += 1
+                continue
+            if geom == UNKNOWN_BAND:
+                self.crewed_summary[(kinds, name, "kept, geometry unknown")] += 1
             a, b = pair
             if CrewedEncounters.KIND[self.addr_major[a]] != kinds[0]:
                 a, b = b, a
+            elif kinds[0] == kinds[1] and self.systems_of(a) > self.systems_of(b):
+                a, b = b, a                     # same kind: side a has the systems that sort first
             sa, sb = self.addr_systems.get(a, set()), self.addr_systems.get(b, set())
             dband = band(d, CrewedEncounters.DISTANCE_EDGES[name])
             cband = band(rel, CrewedEncounters.CLOSING_EDGES)
-            rows[(kinds[0], kinds[1], name, dband, cband, self.systems_of(a), self.systems_of(b),
+            rows[(kinds[0], kinds[1], name, math.floor(la * THERMAL_CELLS_PER_DEG),
+                  math.floor(lo * THERMAL_CELLS_PER_DEG), dband, cband, geom, self.systems_of(a), self.systems_of(b),
                   int(bool(sa & sb & radio)), int(bool(sa & sb)))] += 1
         self.crewed_pairs = (len(ce.formation), len(ce.escort - ce.formation), len(ce.formation - ce.escort))
         return [(day,) + k + (n,) for k, n in sorted(rows.items())]
@@ -2942,12 +3064,56 @@ def print_dry_run(tables, run_row):
             for n_ac, n_fl, (a, b) in shown[:15]:
                 print(f"   {n_ac:3d} aircraft {n_fl:3d} flights  {a} - {b}")
             continue
+        if table in ("daily_crewed_encounters", "daily_drone_encounters"):
+            # Totals by kind pair and threshold (drones: by evidence and other
+            # category) and the cells they fall in (9 October 2026).
+            by, cells = collections.Counter(), collections.defaultdict(set)
+            for r in rows:
+                k = (r[1], r[2], r[3]) if table == "daily_crewed_encounters" else (r[1], r[6])
+                by[k] += r[-1]
+                cells[k].add((r[4], r[5]) if table == "daily_crewed_encounters" else (r[3], r[4]))
+            for k, v in sorted(by.items()):
+                print(f"   total {' x '.join(str(x) for x in k)}: {v} encounters in {len(cells[k])} cells")
+            print(f"   distinct cells: {len(set().union(*cells.values())) if cells else 0}")
+            # Geometry x closing-speed band (255: unknown), per kind pair and
+            # threshold for crewed aircraft, all together for drones.
+            gc = collections.Counter()
+            for r in rows:
+                if table == "daily_crewed_encounters":
+                    gc[(r[1], r[2], r[3], r[8], r[7])] += r[-1]
+                else:
+                    gc[("drone", "any", "wide", r[10], r[9])] += r[-1]
+            print("   by geometry (0 same way, 1 crossing, 2 head on) x closing band: "
+                  + "; ".join(f"{a} x {b} {t} g{g} c{c}: {v}" for (a, b, t, g, c), v in sorted(gc.items())))
+        if table == "daily_air_cells":
+            # The denominator of the crewed encounters, and the cells with the
+            # most encounters per hour flown there (9 October 2026); a cell
+            # needs ENCOUNTER_CELL_MIN aircraft of the day to be ranked.
+            hours, cells = collections.Counter(), collections.defaultdict(lambda: [0.0, 0])
+            for r in rows:
+                hours[r[1]] += r[4]
+                cells[(r[2], r[3])][0] += r[4]
+                cells[(r[2], r[3])][1] += r[5]
+            print("   hours by kind: " + ", ".join(f"{k}: {v / 3600:.1f}" for k, v in sorted(hours.items()))
+                  + f"; cells {len(cells)}")
+            enc = collections.defaultdict(collections.Counter)
+            for r in tables.get("daily_crewed_encounters", ((), []))[1]:
+                enc[r[3]][(r[4], r[5])] += r[-1]
+            for name, by_cell in sorted(enc.items()):
+                ranked = sorted(((n / (cells[c][0] / 3600), n, cells[c][0] / 3600, cells[c][1], c)
+                                 for c, n in by_cell.items() if cells[c][1] >= ENCOUNTER_CELL_MIN
+                                 and cells[c][0] > 0), reverse=True)
+                print(f"   {name}: {sum(by_cell.values())} encounters in {len(by_cell)} cells; top by "
+                      f"encounters per hour flown (cells with {ENCOUNTER_CELL_MIN}+ aircraft):")
+                for rate, n, h, ac, (la, lo) in ranked[:15]:
+                    print(f"      cell {la},{lo}: {n} encounters, {h:.1f} h, {ac} aircraft, {rate:.3f}/h")
+            continue
         if table == "daily_circling_pilot":
             n = collections.Counter(min(r[3] + r[4], 10) for r in rows)
             print("   pilots by thermals (10 = 10 or more): " + ", ".join(f"{k}:{v}" for k, v in sorted(n.items())))
             continue
         print("   " + " | ".join(cols[1:]))
-        shown = rows if table not in ("daily_hours_solar", "daily_drones") else rows[:40]
+        shown = rows if table not in ("daily_hours_solar", "daily_drones", "daily_crewed_encounters") else rows[:40]
         for r in shown:
             print("   " + " | ".join(str(x) for x in r[1:]))
         if len(shown) < len(rows):
@@ -3027,7 +3193,8 @@ def main():
     if "daily_drone_encounters" in tables:
         kept = sum(r[-1] for r in tables["daily_drone_encounters"][1])
         logger.info(f"Drone encounters: {n.encounters_all} found, {kept} kept once crewed aircraft declared drones "
-                    f"are set aside")
+                    f"and probably single aircraft under two addresses are set aside; {n.drone_geometry_unknown} "
+                    f"kept with geometry unknown")
         f, escort_only, formation_only = n.crewed_pairs
         logger.info(f"Crewed pairs flying together: {f} by the formation rule ({formation_only} of them missed by the "
                     f"5-minute rule), {escort_only} more by the 5-minute rule alone")
