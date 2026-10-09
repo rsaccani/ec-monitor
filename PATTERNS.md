@@ -532,7 +532,7 @@ per km), nor did the glider's track against the wind or its ground speed.
 lenticular clouds, has been checked against it, and it rests on the
 pattern of those two days. If the wind cannot be fetched (the request is
 retried once), no climb of that day is counted and the day's notes say
-so; the raw recording, kept four days, allows the day to be recomputed.
+so; the raw recording, kept seven days, allows the day to be recomputed.
 Climbs are counted per day and cell, in cells of a **quarter of a degree**
 from 8 October 2026, filed at the midpoint of the climb (1 degree and its
 start before). A cell is named by geography, never by a take-off, since

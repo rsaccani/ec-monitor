@@ -60,7 +60,7 @@ def from_env(hidden):
     path = os.getenv("EC_RAW_DIR")
     if not path:
         return None
-    days = float(os.getenv("EC_RAW_DAYS", "4"))
+    days = float(os.getenv("EC_RAW_DAYS", "7"))
     keep = {k.strip() for k in os.getenv("EC_RAW_KEEP", "europe,no-airliners").split(",") if k.strip()}
     unknown = keep - {"europe", "world", "no-airliners", "no-jets", "no-adsb"}
     if unknown:

@@ -64,7 +64,7 @@ each address was heard on each system, for one hour, and leaves the service only
 | Device addresses (`monthly_devices`, `monthly_sources`), with the first and last time each was heard in the month | the current and the previous month; then reduced to counts and deleted |
 | Counts of devices per month, address type, category, source and channel (`*_summary`) | indefinitely |
 | Totals of the measures per day, month, source, category, height band and 0.25-degree cell | indefinitely |
-| The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | four days |
+| The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | seven days |
 | Thermals to each side per device address and day (`daily_circling_pilot`, `nightly.py`) | the current and the previous month; then reduced to counts and deleted |
 | The nightly totals (`daily_*`: hours, circling, gaggles, parked aircraft, drones, data quality) | indefinitely |
 
@@ -246,7 +246,7 @@ section 9, which is off unless `EC_RAW_DIR` is set (`recorder.py` documents ever
 
 ```
 EC_RAW_DIR=/home/rsa/ec-raw     # hourly files, compressed with zstd once the hour is over
-EC_RAW_DAYS=4                   # files older than this are deleted
+EC_RAW_DAYS=7                   # files older than this are deleted
 EC_RAW_KEEP=europe,no-airliners # or world; no-adsb drops every ADS-B packet
 ```
 

@@ -18,7 +18,7 @@ install -d -o rsa -g rsa -m 700 ~rsa/ec-nightly
 Credentials come from `~/ads-l-map/.env` (`DB_USER`, `DB_PASSWORD`,
 `EC_RAW_DIR`), read by the script from its own directory, so neither the
 working directory nor `HOME` decides which file is used. A day can be
-recomputed at any time while its files exist (four days): its rows are
+recomputed at any time while its files exist (seven days): its rows are
 replaced, never added to.
 
 ```sh

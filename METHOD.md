@@ -524,7 +524,7 @@ devices; daily and monthly totals per source, channel, category, height band
 and cell for the measures above; reception counts by angle; prediction errors
 by bin; the daily totals of section 10 and of PATTERNS.md, and for each
 aircraft that circled,
-its thermals to each side per day. Apart from the raw feed kept for four
+its thermals to each side per day. Apart from the raw feed kept for seven
 days, described below, no track and no position of any aircraft is stored.
 
 A device address can be traced to an aircraft and its pilot, so the lists of
@@ -589,8 +589,11 @@ reveal.
 From 6 October 2026 the service therefore keeps the feed it receives for four
 days, so that a new or corrected algorithm can be run on real data before it
 replaces the old one. It is a tool for the setting-up of the measures, and
-its size on disk is the price of that. It is not designed to retain data, and
-nothing older than four days exists.
+its size on disk is the price of that. It is not designed to retain data.
+From 9 October 2026 the files are kept for seven days instead of four,
+because while the measures are being set up a correction has to be tested
+against more than three days of traffic, and a day it changes has to be
+recomputed before its files are gone. Nothing older than seven days exists.
 
 The recording holds the lines of the OGN feed as they arrive, with their time
 of reception, limited to positions inside 35–72° N and 25° W–45° E, together
@@ -600,7 +603,7 @@ left out: those that declare a jet, fly above 15,000 ft or faster than
 packet from a device that asks not to be tracked, in its own id or in the
 OGN device database. The files stay on the server,
 readable by the service account alone; each hour is compressed once it is
-over and deleted after four days. Only the aggregates of this method leave
+over and deleted after seven days. Only the aggregates of this method leave
 the server, as with the live feed.
 
 The recording was meant to be switched off once the measures had settled.
@@ -609,8 +612,8 @@ computed from it: each night a batch reads the previous day of the recording
 once and keeps only its aggregates. Some of those questions need a whole day
 of an aircraft's positions at once (where a thermal begins and ends, whether
 an aircraft sat still for half an hour), which the live service cannot hold
-in memory for every aircraft. The retention does not change: nothing older
-than four days exists, and the batch needs only the last day and a half.
+in memory for every aircraft. The batch itself needs only the last day and a half;
+the rest of the retention is there to recompute a day.
 
 ## 10. Measured each night from the recording
 
