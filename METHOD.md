@@ -562,9 +562,14 @@ fly, above all where carriage cannot be enforced. For each month:
 
 - A cell counts as **covered by apps** when phone apps logged at least 2 hours
   of airborne time in it and had signal for at least 95% of that time. Each
-  app sends at its own pace: SafeSky every 2 seconds and Naviter every 60, as
-  measured on the feed, and VarioVoice once the aircraft has moved 150 m, but
-  never sooner than 10 seconds nor later than 45. For each interval between
+  app sends at its own pace, and each is allowed an interval: SafeSky 2
+  seconds, Naviter 60, and VarioVoice once the aircraft has moved 150 m, but
+  never sooner than 10 seconds nor later than 45. Measured on the feed in
+  flight on 6-9 October 2026, SafeSky's positions reach OGN every second
+  (for 92% of 1,356 devices), except some SafeSky-assigned ids in free flight
+  in France and Switzerland, at 6-10 seconds; Naviter's every 60 to 62. The
+  2 seconds are slightly lenient and the 60 strict by a second or two, both
+  well inside the 10 seconds added below. For each interval between
   two fixes, only the part beyond the interval the app is expected to keep at
   the slower of the two speeds, plus 10 seconds, counts as time without
   signal. An app whose cadence is not known is left out of the judgement.
