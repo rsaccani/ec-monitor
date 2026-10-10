@@ -946,6 +946,7 @@ class Nightly:
         self.parked = collections.defaultdict(lambda: [set(), 0.0, 0])   # (label, cat) -> [addresses, s, packets]
         # 4. drones
         self.drone_air = collections.defaultdict(float)     # (lat, lon, hband, sband, address) -> s
+        self.drone_air_q = collections.defaultdict(float)   # (lat_idx, lon_idx, address) -> s, 0.25-degree cells
         self.drone_session = {}                # address -> [last t, lat0, lon0, max distance]
         self.drone_extent = {}                 # address -> largest distance from a session's first fix
         self.drone_index = collections.defaultdict(collections.deque)    # cell -> (t, lat, lon, alt, address)
@@ -1654,6 +1655,7 @@ class Nightly:
             kmh = ((prev[3] or 0) + (kt or 0)) / 2 * 1.852
             self.drone_air[(math.floor(prev[1]), math.floor(prev[2]), band(agl, DRONE_HEIGHT_EDGES),
                             band(kmh, DRONE_SPEED_EDGES), address)] += seconds
+            self.drone_air_q[(math.floor(prev[1] * 4), math.floor(prev[2] * 4), address)] += seconds
 
     def drone_track(self, address, t, lat, lon, kt, alt_m):
         """The fixes of an address declaring a drone, for its flight class
@@ -2585,9 +2587,21 @@ class Nightly:
         out["daily_same_aircraft_pairs"] = (("day", "kind_a", "kind_b", "threshold", "pairs", "encounters"),
                                             [(day,) + k + (len(v[0]), v[1])
                                              for k, v in sorted(self.same_aircraft.items())])
+        # From 10 October 2026 drones join the flying time per cell as kind
+        # "drone", for the traffic map: the confirmed ones, and the uncertain
+        # ones that flew like a drone (probably multirotor or fixed wing).
+        # Set-aside and shared addresses stay out, as in every drone measure.
+        air = dict(self.crewed.air)
+        for (la, lo, address), sec in self.drone_air_q.items():
+            e = drone_class(address)
+            if e is None or (e != CONFIRMED and fc.get(address) not in (FLIGHT_MULTIROTOR, FLIGHT_FIXED_WING)):
+                continue
+            a = air.setdefault(("drone", la, lo), [0.0, set()])
+            a[0] += sec
+            a[1].add(address)
         out["daily_air_cells"] = (("day", "kind", "lat_idx", "lon_idx", "air_seconds", "aircraft"),
                                   [(day,) + k + (round(v[0], 1), len(v[1]))
-                                   for k, v in sorted(self.crewed.air.items())])
+                                   for k, v in sorted(air.items())])
 
         # 5. quality
         out["daily_quality"] = (("day", "scope", "name", "check_name", "count", "total", "value"), self.quality(day))

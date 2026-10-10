@@ -1002,7 +1002,12 @@ two aircraft at its closest approach. Beside it is recorded the
 denominator, the flying time of each kind per cell and day over the same
 fixes the encounters are looked for in (every system, one fix per address
 and second, airborne at the speed of the kind, the kind as above), with the
-number of distinct aircraft. The time between two consecutive fixes counts
+number of distinct aircraft. From 10 October 2026 (recomputed from 6
+October) drones are filed there too, as kind `drone`: the confirmed ones
+(section 10.1) and the uncertain ones whose flight class that day is
+probably multirotor or probably fixed wing, with set-aside and shared
+addresses left out as in every drone measure. They feed the traffic map on
+the patterns page and no crewed encounter rate. The time between two consecutive fixes counts
 only when they are at most 2 minutes apart, filed by the cell of the first:
 an encounter can be seen only while both aircraft are heard, and only
 airborne fixes enter, so a longer silence may hide a landing. A cell with
