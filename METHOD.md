@@ -39,11 +39,12 @@ and counted its flying time twice; the October 2026 figures mix the two rules
 up to that time.
 FLARM's privacy mode gives the aircraft a random address (OGN prefix RND)
 that changes about every ten seconds, so one aircraft in that mode shows up
-as hundreds of addresses: 19,448 of them in October 2026 to the 10th, more
-than the 15,637 other FLARM addresses of the month. From 10 October 2026 they
-are left out of every device count, whenever the counts are computed, and the
-month's number of random addresses is given apart. Archived months before
-September 2026 held 14 to 412 a month and include them.
+as hundreds of addresses: 18,531 of them in October 2026 to the 10th, more
+than the other FLARM addresses of the month, and 89% heard for under a
+minute. ADS-B's random addresses rotate the same way. From 10 October 2026
+these are left out of every device count, whenever the counts are computed,
+and the month's number of them is given apart. On ADS-L and the trackers a
+random address lasts like a fixed one, so it is a device and stays counted.
 
 Three kinds of packet are left out because they describe no aircraft. FANET
 forwards the reports of its weather stations and the beacons of its ground

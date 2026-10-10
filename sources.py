@@ -133,11 +133,17 @@ def rebroadcast(tocall, device_id, category):
 
 
 # FLARM's random-address privacy mode (callsign prefix RND) changes address
-# about every ten seconds, so one aircraft becomes hundreds of "devices": 18,080
-# of the 33,883 OGFLR addresses of 1-10 October 2026. They are left out of every
-# device count and reported apart (monthly_stats, `random_addresses`) until the
+# about every ten seconds, so one aircraft becomes hundreds of "devices": 18,083
+# of the 33,886 OGFLR addresses of 1-10 October 2026, 89% of them heard for
+# under a minute. ADS-B's RND addresses rotate the same way (662 of 783). On
+# ADS-L and the trackers an RND address lives like a fixed one, so it is a
+# device and stays counted. The rotating ones are left out of every device
+# count and reported apart (monthly_stats, `random_addresses`) until the
 # addresses of one aircraft can be joined into a chain.
 RANDOM_PREFIX = "RND"
+RANDOM_ROTATING = ("OGFLR", "OGNFLR", "OGFLR6", "OGFLR7", "OGADSB")
+ROTATING_SQL = "LEFT(device_id, 3) = '{}' AND source IN ({})".format(
+    RANDOM_PREFIX, ", ".join(f"'{s}'" for s in RANDOM_ROTATING))
 
 # The rules in SQL, applied whenever devices are counted, so rows written
 # before a rule applied are filtered too. COALESCE: a NULL category would make
@@ -145,7 +151,7 @@ RANDOM_PREFIX = "RND"
 COUNTED_SQL = ("NOT (source IN ({}) AND category IS NULL)".format(", ".join(f"'{s}'" for s in AIRCRAFT_ONLY))
                + " AND NOT (LEFT(device_id, 3) = '{}' AND COALESCE(category, 255) = {} AND source IN ({}))".format(
                    REBROADCAST_PREFIX, REBROADCAST_CATEGORY, ", ".join(f"'{s}'" for s in REBROADCAST_SOURCES))
-               + f" AND LEFT(device_id, 3) <> '{RANDOM_PREFIX}'")
+               + f" AND NOT ({ROTATING_SQL})")
 
 # FANET instruments switch to ground tracking once the pilot has landed and
 # then send category 15 (static object); some trackers send 14 on the ground.
@@ -3137,10 +3143,10 @@ class SourceTracker:
                             FROM monthly_sources_summary
                     """)
                     cat_rows = cur.fetchall()
-                    # Random addresses, left out above (RANDOM_PREFIX); not
+                    # Rotating random addresses, left out above (ROTATING_SQL); not
                     # kept when a month is archived.
                     cur.execute(f"""SELECT month, COUNT(DISTINCT device_id) FROM monthly_sources
-                                     WHERE LEFT(device_id, 3) = '{RANDOM_PREFIX}' GROUP BY month""")
+                                     WHERE {ROTATING_SQL} GROUP BY month""")
                     random_ids = dict(cur.fetchall())
                     # Of a month's devices, how many were heard again the month
                     # after, kept when the month was archived (from 7 October 2026).
