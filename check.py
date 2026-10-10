@@ -40,6 +40,19 @@ WINDOW = 24 * 3600          # the OGN terms: nothing older than 24 hours is show
 CACHE_S = 60                # one answer per address per minute
 SAVE_EVERY = 300
 GAP_S = 60                  # a silence longer than this (or 3 heartbeats) is listed
+# After a pause longer than this the system's samples start again, so that a
+# pilot flying every day never sees yesterday's samples in today's medians.
+# The pause itself is listed as a silence only if the aircraft was flying at
+# both ends: an aircraft can stay out of every receiver's range for hours
+# (56% of lost tracks came back after 20 minutes to over 2 hours, 6-8
+# October 2026), while a pause that starts or ends on the ground is the
+# time between two flights. So is any pause over FLIGHT_MAX_S, longer than a
+# day's flight, even when both ends are airborne: a pilot who landed out of
+# range yesterday and took off out of range today. Every sample that could outlive a session (signal, frequency
+# offset, the reference of other devices) also carries its time and is
+# dropped after WINDOW.
+SESSION_S = 3 * 3600
+FLIGHT_MAX_S = 12 * 3600
 ACTIVE_S = 3600             # a receiver that relayed nothing for an hour is not "nearest"
 # Distance bands for the signal comparison, km. Signal falls with distance,
 # so a device's dB means something only next to other devices at the same
@@ -50,6 +63,7 @@ N_SIGNAL = 15               # per (receiver, band)
 N_SAMPLES = 20              # frequency offset, delay
 N_GAPS = 10
 N_REF = 40                  # reference samples per (receiver, system, band)
+STATE_VERSION = 2           # 2: samples carry their time (10 October 2026)
 STATE_PATH = os.environ.get("EC_CHECK_STATE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "check-state.pickle"))
 
@@ -91,8 +105,8 @@ class System:
         self.stealth = False
         self.fix = None         # (t_fix, lat, lon, alt_m, course, speed_kt, station, snr, err)
         self.intervals = []
-        self.signal = {}        # (station, band) -> [dB]
-        self.khz = []           # offset minus the receiver's own median, kHz
+        self.signal = {}        # (station, band) -> [(epoch, dB)]
+        self.khz = []           # (epoch, offset minus the receiver's own median, kHz)
         self.delay = []         # seconds between the fix and its arrival
         self.err_packets = 0    # packets with corrected bit errors
         self.radio_packets = 0
@@ -109,8 +123,8 @@ class DeviceCheck:
         self.path = path
         self.devices = {}           # address -> {label: System}
         self.active = {}            # receiver -> last epoch it relayed a packet
-        self.ref = {}               # (receiver, label, band) -> [dB], every device
-        self.ref_khz = {}           # receiver -> [kHz], every device
+        self.ref = {}               # (receiver, label, band) -> [(epoch, address, dB)], every device
+        self.ref_khz = {}           # receiver -> [(epoch, kHz)], every device
         self.cache = {}
         self.lock = threading.Lock()
         self.load()
@@ -148,6 +162,9 @@ class DeviceCheck:
             s = systems.get(label)
             if s is None:
                 s = systems[label] = System(label, kind, via, tocall)
+            if s.last is not None and tick - s.last > SESSION_S:
+                s.intervals, s.signal, s.khz, s.delay = [], {}, [], []
+                s.err_packets = s.radio_packets = 0
             s.src = src
             if via == "radio":
                 s.via = "radio"     # a system relayed once over the net is still radio
@@ -169,7 +186,11 @@ class DeviceCheck:
             if prev is not None:
                 dt = t_fix - prev[0]
                 cadence = sources.cadence_of(tocall, kind, via)
-                if dt > max(GAP_S, 3 * cadence[2] if cadence else 0):
+                if dt > SESSION_S:
+                    floor = sources.FLYING_KT.get(category, sources.AIRBORNE_KT)
+                    if dt <= FLIGHT_MAX_S and min(prev[5] or 0, speed or 0) >= floor:
+                        _push(s.gaps, (prev[0], t_fix), N_GAPS)
+                elif dt > max(GAP_S, 3 * cadence[2] if cadence else 0):
                     _push(s.gaps, (prev[0], t_fix), N_GAPS)
                 else:
                     _push(s.intervals, int(dt), N_INTERVALS)
@@ -197,12 +218,13 @@ class DeviceCheck:
                 st[3] = km if st[3] is None else max(st[3], km)
             if khz is not None:
                 ref = self.ref_khz.setdefault(station, [])
-                _push(ref, round(khz, 1), N_REF)
-                _push(s.khz, round(khz - statistics.median(ref), 1), N_SAMPLES)
+                _push(ref, (tick, round(khz, 1)), N_REF)
+                base = statistics.median(v for t, v in ref)
+                _push(s.khz, (tick, round(khz - base, 1)), N_SAMPLES)
             if snr is not None and km is not None:
                 b = band_of(km)
-                _push(s.signal.setdefault((station, b), []), round(snr), N_SIGNAL)
-                _push(self.ref.setdefault((station, label, b), []), (address, round(snr)), N_REF)
+                _push(s.signal.setdefault((station, b), []), (tick, round(snr)), N_SIGNAL)
+                _push(self.ref.setdefault((station, label, b), []), (tick, address, round(snr)), N_REF)
 
     # --- housekeeping (prune thread) ----------------------------------------
 
@@ -216,14 +238,29 @@ class DeviceCheck:
                     if s.last < cutoff:
                         del systems[label]
                         continue
-                    s.hours = {h: n for h, n in s.hours.items() if h + 3600 > cutoff}
-                    s.gaps = [g for g in s.gaps if g[1] > cutoff]
+                    s.hours = {h: n for h, n in s.hours.items() if h >= cutoff}
+                    s.gaps = [g for g in s.gaps if g[0] >= cutoff]
+                    s.khz = [x for x in s.khz if x[0] >= cutoff]
+                    s.signal = {k: [x for x in v if x[0] >= cutoff] for k, v in s.signal.items()}
+                    s.signal = {k: v for k, v in s.signal.items() if v}
                     s.jumps = [j for j in s.jumps if j > cutoff]
                     s.stations = {k: v for k, v in s.stations.items() if v[1] > cutoff}
                     s.first = max(s.first, min(s.hours) if s.hours else s.last)
                 if not systems:
                     del self.devices[address]
             self.active = {k: v for k, v in self.active.items() if v > cutoff}
+            for k in list(self.ref):
+                v = [x for x in self.ref[k] if x[0] >= cutoff]
+                if v:
+                    self.ref[k] = v
+                else:
+                    del self.ref[k]
+            for k in list(self.ref_khz):
+                v = [x for x in self.ref_khz[k] if x[0] >= cutoff]
+                if v:
+                    self.ref_khz[k] = v
+                else:
+                    del self.ref_khz[k]
             now = time.time()
             self.cache = {k: v for k, v in self.cache.items() if now - v[0] < CACHE_S}
 
@@ -243,7 +280,7 @@ class DeviceCheck:
         try:
             with self.lock:
                 blob = pickle.dumps((time.time(), self.devices, self.active, self.ref, self.ref_khz,
-                                     dict(self.stations)),
+                                     dict(self.stations), STATE_VERSION),
                                     protocol=pickle.HIGHEST_PROTOCOL)
             tmp = self.path + ".tmp"
             with open(tmp, "wb") as f:
@@ -270,8 +307,13 @@ class DeviceCheck:
         if len(saved) > 5:
             for name, where in saved[5].items():
                 self.stations.setdefault(name, where)
-        # Before 10 October 2026, 21:00 UTC the samples carried no address.
-        ref = {k: [x for x in v if isinstance(x, tuple)] for k, v in ref.items()}
+        if len(saved) < 7 or saved[6] < 2:
+            # Saved before samples carried their time (10 October 2026): the
+            # samples are dropped, the rest is kept.
+            ref, ref_khz = {}, {}
+            for systems in devices.values():
+                for s in systems.values():
+                    s.signal, s.khz = {}, []
         self.devices, self.active, self.ref, self.ref_khz = devices, active, ref, ref_khz
         self.prune()
         logger.info("Device check: %d addresses read back", len(self.devices))
@@ -325,27 +367,32 @@ class DeviceCheck:
         cadence = sources.cadence_of(s.tocall, s.kind, s.via)
         cat = max(s.cats, key=s.cats.get) if s.cats else None
         sig = []
-        for (station, b), values in sorted(s.signal.items(), key=lambda kv: -len(kv[1]))[:4]:
+        cutoff = now - WINDOW
+        for (station, b), samples in sorted(s.signal.items(), key=lambda kv: -len(kv[1]))[:4]:
+            values = [v for t, v in samples if t >= cutoff]
+            if not values:
+                continue
             # Other devices only: near a receiver with little traffic the
             # device itself would otherwise fill its own reference.
-            ref = [v for a, v in self.ref.get((station, s.label, b), []) if a != address]
+            ref = [v for t, a, v in self.ref.get((station, s.label, b), []) if a != address and t >= cutoff]
             sig.append({"receiver": station, "band": band_label(b), "n": len(values),
                         "snr_db": _median(values), "others_db": _median(ref), "others_n": len(ref)})
         return {
             "system": s.label, "kind": s.kind, "via": s.via, "tocall": s.tocall, "callsign": s.src,
             "first": max(s.first, now - WINDOW), "last_heard": s.last,
-            "packets": sum(s.hours.values()),
+            "packets": sum(n for h, n in s.hours.items() if h >= cutoff),
             "category": cat, "category_name": sources.CATEGORY_NAMES.get(cat) if cat is not None else None,
             "categories": {sources.CATEGORY_NAMES.get(c, str(c)): n for c, n in s.cats.items()},
             "address_type": ADDRESS_TYPES.get(s.atype), "stealth": s.stealth,
             "interval_s": _median(s.intervals),
             "nominal_s": cadence[2] if cadence and cadence[0] is None else None,
             "delay_s": _median(s.delay),
-            "khz_offset": round(_median(s.khz), 1) if s.khz else None,
+            "khz_offset": round(_median([v for t, v in s.khz if t >= cutoff]), 1)
+                          if any(t >= cutoff for t, v in s.khz) else None,
             "error_share": round(s.err_packets / s.radio_packets, 2) if s.radio_packets else None,
             "receivers": len(s.stations),
             "signal": sig,
-            "gaps": [{"from": a, "to": b, "s": int(b - a)} for a, b in s.gaps if b > now - WINDOW],
+            "gaps": [{"from": a, "to": b, "s": int(b - a)} for a, b in s.gaps if a >= cutoff],
             "jumps": len(s.jumps),
             "last": last,
         }
