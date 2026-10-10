@@ -132,12 +132,20 @@ def rebroadcast(tocall, device_id, category):
             and tocall in REBROADCAST_SOURCES)
 
 
-# The two rules in SQL, applied whenever devices are counted, so rows written
+# FLARM's random-address privacy mode (callsign prefix RND) changes address
+# about every ten seconds, so one aircraft becomes hundreds of "devices": 18,080
+# of the 33,883 OGFLR addresses of 1-10 October 2026. They are left out of every
+# device count and reported apart (monthly_stats, `random_addresses`) until the
+# addresses of one aircraft can be joined into a chain.
+RANDOM_PREFIX = "RND"
+
+# The rules in SQL, applied whenever devices are counted, so rows written
 # before a rule applied are filtered too. COALESCE: a NULL category would make
 # the second clause NULL and drop the row.
 COUNTED_SQL = ("NOT (source IN ({}) AND category IS NULL)".format(", ".join(f"'{s}'" for s in AIRCRAFT_ONLY))
                + " AND NOT (LEFT(device_id, 3) = '{}' AND COALESCE(category, 255) = {} AND source IN ({}))".format(
-                   REBROADCAST_PREFIX, REBROADCAST_CATEGORY, ", ".join(f"'{s}'" for s in REBROADCAST_SOURCES)))
+                   REBROADCAST_PREFIX, REBROADCAST_CATEGORY, ", ".join(f"'{s}'" for s in REBROADCAST_SOURCES))
+               + f" AND LEFT(device_id, 3) <> '{RANDOM_PREFIX}'")
 
 # FANET instruments switch to ground tracking once the pilot has landed and
 # then send category 15 (static object); some trackers send 14 on the ground.
@@ -3129,6 +3137,11 @@ class SourceTracker:
                             FROM monthly_sources_summary
                     """)
                     cat_rows = cur.fetchall()
+                    # Random addresses, left out above (RANDOM_PREFIX); not
+                    # kept when a month is archived.
+                    cur.execute(f"""SELECT month, COUNT(DISTINCT device_id) FROM monthly_sources
+                                     WHERE LEFT(device_id, 3) = '{RANDOM_PREFIX}' GROUP BY month""")
+                    random_ids = dict(cur.fetchall())
                     # Of a month's devices, how many were heard again the month
                     # after, kept when the month was archived (from 7 October 2026).
                     cur.execute("SELECT month, source, devices, returned FROM monthly_return_summary")
@@ -3155,7 +3168,8 @@ class SourceTracker:
                     "devices": int(n), "multi_day": int(multi or 0),
                 })
             out = [{"month": m, "partial": m == current, "sources": months[m],
-                    "by_category": by_cat.get(m, []), "return": returns.get(m, [])}
+                    "by_category": by_cat.get(m, []), "return": returns.get(m, []),
+                    "random_addresses": int(random_ids.get(m, 0))}
                    for m in sorted(months, reverse=True)]
             self.stats_cache = (time.time(), out)
             return out
