@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 import os
 import subprocess
 
+import check
 import recorder
 import sources
 
@@ -60,6 +61,9 @@ device_type_map = {}
 # Devices whose owners asked OGN not to track them, or not to identify them.
 ddb_notrack = set()
 ddb_noident = set()
+# Identified devices by registration and competition number, normalised
+# (upper case, no dashes or spaces), for the device check's shortcut.
+ddb_by_reg = {}
 
 
 def hidden(device_id):
@@ -476,7 +480,7 @@ def update_device_type_map():
         text = r.text
 
         reader = csv.DictReader(StringIO(text))
-        new_map, notrack, noident = {}, set(), set()
+        new_map, notrack, noident, by_reg = {}, set(), set(), {}
         for row in reader:
             device_id = row["DEVICE_ID"].strip().strip("'")  # remove quotes
             aircraft_model = row["AIRCRAFT_MODEL"].strip().strip("'")
@@ -488,6 +492,10 @@ def update_device_type_map():
             if row.get("IDENTIFIED", "").strip().strip("'") == "N":
                 noident.add(device_id)
                 continue
+            for key in ("REGISTRATION", "CN"):
+                name = re.sub(r"[\s-]", "", (row.get(key) or "").strip().strip("'")).upper()
+                if len(name) >= 2:
+                    by_reg.setdefault(name, device_id)
             new_map[device_id] = (
                 aircraft_model + " (" + registration + ")"
                 if aircraft_model
@@ -497,6 +505,7 @@ def update_device_type_map():
         device_type_map = new_map
         ddb_notrack.clear(); ddb_notrack.update(notrack)
         ddb_noident.clear(); ddb_noident.update(noident)
+        ddb_by_reg.clear(); ddb_by_reg.update(by_reg)
         main_logger.info(f"[Device map] Loaded {len(device_type_map)} entries, "
                          f"{len(notrack)} not to be tracked, {len(noident)} not to be identified")
 
@@ -637,6 +646,40 @@ def get_live():
     if tracker is None or not layers:
         return jsonify([])
     return jsonify(tracker.live_snapshot(layers, bbox))
+
+
+_check_id = re.compile(r"^(?:0X|[A-Z]{3})?([0-9A-F]{6})$")
+
+
+@app.route(API + "/check")
+def get_check():
+    """What the feed heard from one device in the last 24 hours (check.py).
+
+    ?id=DD1234 (the 24-bit address, with or without a prefix such as FLR or
+    0x) or a registration or competition number the OGN device database
+    shows as identified. Rate-limited per IP in nginx.
+    """
+    q = re.sub(r"[\s-]", "", request.args.get("id") or "").upper()[:16]
+    m = _check_id.match(q)
+    address = m.group(1) if m else ddb_by_reg.get(q)
+    if address is None:
+        return jsonify({"query": q, "found": False})
+    if address in ddb_notrack:
+        # The owner's choice in the OGN device database, public there too.
+        return jsonify({"query": q, "address": address, "found": True, "not_tracked": True})
+    if tracker is None or tracker.check is None:
+        return jsonify({"query": q, "address": address, "found": True, "unavailable": True})
+    out = dict(tracker.check.report(address))
+    out.update({"query": q, "found": True})
+    return jsonify(out)
+
+
+def ddb_info(address):
+    """The device database's model and registration, only for identified devices."""
+    if address in ddb_noident:
+        return {"identified": False}
+    model = device_type_map.get(address)
+    return {"identified": True, "model": model} if model else {}
 
 
 @app.route(API + "/sources")
@@ -903,6 +946,8 @@ def bootstrap():
         Thread(target=tracker.archive_loop, daemon=True).start()
         Thread(target=tracker.warm_loop, daemon=True).start()
     Thread(target=tracker.prune_loop, daemon=True).start()
+    tracker.check = check.DeviceCheck(tracker.stations, tracker.terrain, ddb_info)
+    Thread(target=tracker.check.loop, daemon=True).start()
 
     Thread(target=ads_l_listener, daemon=True).start()
     Thread(target=periodic_device_type_update, daemon=True).start()

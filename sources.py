@@ -1249,6 +1249,7 @@ class SourceTracker:
         self._stat_locks = {}
         self._stat_locks_guard = threading.Lock()
         self._force = threading.local()
+        self.check = None         # check.DeviceCheck, set by app.py
 
     # --- per packet ---------------------------------------------------------
 
@@ -1301,6 +1302,9 @@ class SourceTracker:
         now, month = self._now, self._month
         if kind != "adsb" and not rebroadcast(tocall, src, id_category):
             self.hear(src[-6:], label, id_category, tick)
+            if self.check is not None:
+                self.check.feed(src, tocall, label, kind, via, body,
+                                path[-1] if len(path) > 1 else None, id_category, tick, now)
         day = now.day
         if day != self.seen_day:
             self.seen = {}
