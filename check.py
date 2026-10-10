@@ -20,7 +20,8 @@ Random addresses (FLARM's privacy mode, callsign prefix RND) change every few
 seconds and can never be looked up, so they are not kept at all.
 
 The state is pickled every SAVE_EVERY seconds and at exit, and read back at
-start, because a deploy reloads the worker and would otherwise empty it.
+start, because a deploy reloads the worker and would otherwise empty it. The
+receivers' positions (SourceTracker.stations) are saved with it.
 """
 
 import atexit
@@ -201,7 +202,7 @@ class DeviceCheck:
             if snr is not None and km is not None:
                 b = band_of(km)
                 _push(s.signal.setdefault((station, b), []), round(snr), N_SIGNAL)
-                _push(self.ref.setdefault((station, label, b), []), round(snr), N_REF)
+                _push(self.ref.setdefault((station, label, b), []), (address, round(snr)), N_REF)
 
     # --- housekeeping (prune thread) ----------------------------------------
 
@@ -241,7 +242,8 @@ class DeviceCheck:
     def save(self):
         try:
             with self.lock:
-                blob = pickle.dumps((time.time(), self.devices, self.active, self.ref, self.ref_khz),
+                blob = pickle.dumps((time.time(), self.devices, self.active, self.ref, self.ref_khz,
+                                     dict(self.stations)),
                                     protocol=pickle.HIGHEST_PROTOCOL)
             tmp = self.path + ".tmp"
             with open(tmp, "wb") as f:
@@ -254,14 +256,22 @@ class DeviceCheck:
     def load(self):
         try:
             with open(self.path, "rb") as f:
-                saved_at, devices, active, ref, ref_khz = pickle.load(f)
+                saved = pickle.load(f)
         except FileNotFoundError:
             return
         except Exception as e:
             logger.error("Device check: could not read the saved state: %s", e)
             return
+        saved_at, devices, active, ref, ref_khz = saved[:5]
         if time.time() - saved_at > WINDOW:
             return
+        # Receiver positions come only from their beacons, every few minutes;
+        # without these, distances are missing for a while after each reload.
+        if len(saved) > 5:
+            for name, where in saved[5].items():
+                self.stations.setdefault(name, where)
+        # Before 10 October 2026, 21:00 UTC the samples carried no address.
+        ref = {k: [x for x in v if isinstance(x, tuple)] for k, v in ref.items()}
         self.devices, self.active, self.ref, self.ref_khz = devices, active, ref, ref_khz
         self.prune()
         logger.info("Device check: %d addresses read back", len(self.devices))
@@ -287,7 +297,7 @@ class DeviceCheck:
         for s in sorted(systems.values(), key=lambda s: -s.last):
             if s.last < now - WINDOW:
                 continue
-            out["systems"].append(self._system(s, now))
+            out["systems"].append(self._system(s, now, address))
             if latest is None or s.fix[0] > latest.fix[0]:
                 latest = s
         out["heard"] = latest is not None
@@ -296,7 +306,7 @@ class DeviceCheck:
             out["nearest_receiver"] = self._nearest(latest.fix[1], latest.fix[2], now)
         return out
 
-    def _system(self, s, now):
+    def _system(self, s, now, address):
         t_fix, lat, lon, alt_m, course, speed, station, snr, err = s.fix
         last = {"t": t_fix, "lat": round(lat, 5), "lon": round(lon, 5),
                 "alt_m": round(alt_m) if alt_m is not None else None,
@@ -316,7 +326,9 @@ class DeviceCheck:
         cat = max(s.cats, key=s.cats.get) if s.cats else None
         sig = []
         for (station, b), values in sorted(s.signal.items(), key=lambda kv: -len(kv[1]))[:4]:
-            ref = self.ref.get((station, s.label, b), [])
+            # Other devices only: near a receiver with little traffic the
+            # device itself would otherwise fill its own reference.
+            ref = [v for a, v in self.ref.get((station, s.label, b), []) if a != address]
             sig.append({"receiver": station, "band": band_label(b), "n": len(values),
                         "snr_db": _median(values), "others_db": _median(ref), "others_n": len(ref)})
         return {
