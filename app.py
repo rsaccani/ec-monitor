@@ -496,11 +496,12 @@ def update_device_type_map():
                 name = re.sub(r"[\s-]", "", (row.get(key) or "").strip().strip("'")).upper()
                 if len(name) >= 2:
                     by_reg.setdefault(name, device_id)
-            new_map[device_id] = (
-                aircraft_model + " (" + registration + ")"
-                if aircraft_model
-                else "Unknown"
-            )
+            if not aircraft_model:
+                new_map[device_id] = "Unknown"
+            elif registration:
+                new_map[device_id] = aircraft_model + " (" + registration + ")"
+            else:
+                new_map[device_id] = aircraft_model
 
         device_type_map = new_map
         ddb_notrack.clear(); ddb_notrack.update(notrack)
