@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate schema.sql and SCHEMA.md from the production database and the code.
 
-    cd ~/ads-l-map && python3 tools/schema_doc.py --out ~/schemadoc
+    cd <checkout> && python3 tools/schema_doc.py --out ~/schemadoc
 
 Run on the host, from the service's checkout, as the service user. It reads
 the database settings the way nightly.py does (DB_USER and DB_PASSWORD from
@@ -679,7 +679,7 @@ def render_schema_sql(db, today, commit):
         f"-- Schema of the Electronic Conspicuity Monitor, {GENERATED_MARK} on {today}",
         f"-- from the production database `{DATABASE}` (MariaDB {db['version']}), code at {commit}.",
         "-- Do not edit: change the database through a dated file in schema/, then run",
-        "--   cd ~/ads-l-map && python3 tools/schema_doc.py --out ~/schemadoc",
+        "--   cd <checkout> && python3 tools/schema_doc.py --out ~/schemadoc",
         "-- and commit this file and SCHEMA.md as it writes them. SCHEMA.md says what each",
         "-- table holds and which code reads and writes it.",
         "--",

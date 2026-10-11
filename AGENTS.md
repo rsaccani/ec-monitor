@@ -4,7 +4,7 @@ Read README.md and METHOD.md first. A change to what is measured is a change to 
 
 ## Project Overview
 
-The backend of the Electronic Conspicuity Monitor (https://www.saccani.net/conspicuity-monitor/). A Flask application that reads the Open Glider Network (OGN) APRS feed, serves a live map of every source, and measures how well each conspicuity system keeps light aircraft visible (`sources.py`).
+The backend of the Electronic Conspicuity Monitor (https://conspicuity.eu/). A Flask application that reads the Open Glider Network (OGN) APRS feed, serves a live map of every source, and measures how well each conspicuity system keeps light aircraft visible (`sources.py`).
 
 ## Build/Lint/Test Commands
 
@@ -237,6 +237,9 @@ def record_monthly_device(device_id, device_type):
 ```
 
 ## Agent-Specific Notes
+
+- This repository is public and describes how anyone can install and run the service. Nothing specific to the owner's own deployment belongs here: no user names, home directories, hostnames, crontabs, backup scripts or host sizes. Examples use the placeholder service user `ecmon` with its checkout in `/home/ecmon/ec-monitor`; the owner keeps the details of the live deployment in a separate private repository.
+- Commits are authored as `Rodolfo Saccani <rodolfo@saccani.net>`.
 
 - Always read existing code before making changes
 - Follow the existing architecture and patterns

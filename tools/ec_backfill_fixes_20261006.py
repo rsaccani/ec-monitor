@@ -41,8 +41,8 @@ def main():
     old_path, new_path, deploy, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
     if mode == "--write" and os.path.exists(MARKER):
         sys.exit("already written: " + MARKER)
-    paths = sorted(glob.glob(os.path.expanduser("~/ec-raw/20261006-*.aprs.zst")) +
-                   glob.glob(os.path.expanduser("~/ec-raw/20261006-*.aprs")))
+    paths = sorted(glob.glob(os.path.join(os.path.expanduser(os.getenv("EC_RAW_DIR", "~/ec-raw")), "20261006-*.aprs.zst")) +
+                   glob.glob(os.path.join(os.path.expanduser(os.getenv("EC_RAW_DIR", "~/ec-raw")), "20261006-*.aprs")))
     runs = {}
     for name, path in (("old", old_path), ("new", new_path)):
         mod = bf.load(name, path)
@@ -80,7 +80,7 @@ def main():
         print("dry run: nothing written")
         return
     import dotenv
-    env = dotenv.dotenv_values(os.path.expanduser("~/ads-l-map/.env"))
+    env = dotenv.dotenv_values(os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."), ".env"))
     conn = pymysql.connect(host="127.0.0.1", port=3306, user=env["DB_USER"], password=env["DB_PASSWORD"],
                            database="ads_l", autocommit=False)
     with conn.cursor() as cur:

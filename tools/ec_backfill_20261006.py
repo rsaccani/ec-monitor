@@ -145,8 +145,8 @@ def main():
     old_path, new_path, mode = sys.argv[1], sys.argv[2], sys.argv[3]
     if mode == "--write" and os.path.exists(MARKER):
         sys.exit("already written: " + MARKER)
-    paths = sorted(glob.glob(os.path.expanduser("~/ec-raw/20261006-0[6-9].aprs.zst")) +
-                   glob.glob(os.path.expanduser("~/ec-raw/20261006-1[01].aprs.zst")))
+    paths = sorted(glob.glob(os.path.join(os.path.expanduser(os.getenv("EC_RAW_DIR", "~/ec-raw")), "20261006-0[6-9].aprs.zst")) +
+                   glob.glob(os.path.join(os.path.expanduser(os.getenv("EC_RAW_DIR", "~/ec-raw")), "20261006-1[01].aprs.zst")))
     boots, end = [epoch(b) for b in BOOTS], epoch(END)
 
     old = load("old", old_path)
@@ -159,7 +159,7 @@ def main():
 
     # 2. The replayed old service against the database.
     import dotenv
-    env = dotenv.dotenv_values(os.path.expanduser("~/ads-l-map/.env"))
+    env = dotenv.dotenv_values(os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."), ".env"))
     conn = pymysql.connect(host="127.0.0.1", port=3306, user=env["DB_USER"], password=env["DB_PASSWORD"],
                            database="ads_l", autocommit=False)
     with conn.cursor() as cur:

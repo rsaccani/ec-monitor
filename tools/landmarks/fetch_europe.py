@@ -4,7 +4,7 @@ tile_<s>_<w>.csv exists is done; a tile that keeps failing is split into four
 2.5-degree sub-tiles (tile_<s>_<w>.csv named by their own corner). Failed tiles
 are listed in failed.txt at the end."""
 import urllib.request, urllib.parse, urllib.error, time, os, sys, json
-UA = "ec-monitor landmarks/1.0 (www.saccani.net/conspicuity-monitor; yearly refresh, serial, tiled)"
+UA = "ec-monitor landmarks/1.0 (conspicuity.eu; yearly refresh, serial, tiled)"
 BASE = os.environ.get("OVERPASS", "https://overpass-api.de/api")
 Q = '''[out:csv(::type,::id,::lat,::lon,name,ele,natural,mountain_pass,wikidata,wikipedia,prominence,"name:en";true;"\\t")][timeout:180][maxsize:67108864][bbox:{s},{w},{n},{e}];
 (node["natural"="peak"]["name"]; node["natural"="volcano"]["name"]; node["natural"="saddle"]["name"]; nwr["mountain_pass"="yes"]["name"];);

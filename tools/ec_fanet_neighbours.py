@@ -4,7 +4,7 @@
 Written on 2026-10-06 (ec-monitor.md). FANET.protocol.txt recommends a
 tracking interval of floor((neighbours/10 + 1) * 5 s): 5 s with fewer than
 ten FANET devices in range, 10 s with ten to nineteen, 15 s with twenty to
-twenty-nine. Reads the raw recording in ~/ec-raw; prints distributions only.
+twenty-nine. Reads the raw recording in $EC_RAW_DIR; prints distributions only.
 
 For every pair of consecutive radio packets of an airborne paraglider or hang
 glider on FANET (both ends at 10 km/h or more, at most 60 s apart), counts the

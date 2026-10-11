@@ -13,7 +13,7 @@ aeroplane rolls at 60-100 km/h first), session length, and whether the same
 Prints one line per session under a salted hash, with positions rounded to
 one degree, and a summary by verdict. No address leaves the server.
 
-Usage: (cd ~/ads-l-map && nice -n 19 python3 tools/drone_check.py <files>)
+Usage: (cd <checkout> && nice -n 19 python3 tools/drone_check.py <files>)
 """
 import collections
 import hashlib

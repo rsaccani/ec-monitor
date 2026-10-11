@@ -3,7 +3,7 @@
 
 Written on 2026-10-06 to test a change to what counts as flight before it
 goes live (ec-monitor.md). Runs on the host, next to the recording in
-~/ec-raw and the checkout in ~/ads-l-map; only aggregates are printed.
+$EC_RAW_DIR and the checkout this file belongs to; only aggregates are printed.
 
 The production sources.py is loaded once per rule, with the two airborne
 tests (the visibility measure and the flying hours) replaced by a call to the
@@ -31,7 +31,7 @@ import sys
 import time as real_time
 import types
 
-CHECKOUT = os.path.expanduser("~/ads-l-map")
+CHECKOUT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 KT = 1 / 1.852
 FREE, GLIDER, POWERED = (6, 7), (1,), (2, 8, 9)
 TYPE = {6: "free flight", 7: "free flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered"}

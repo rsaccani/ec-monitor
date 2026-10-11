@@ -21,7 +21,7 @@ rebroadcasts (sources.rebroadcast) are left out, as everywhere.
 Prints aggregates only: systems, receiver names (public), counts. No
 address, flight id or position leaves the server.
 
-Usage: (cd ~/ads-l-map && nice -n 19 python3 tools/stray_categories.py [--db-only] ~/ec-raw/*.aprs*)
+Usage: (cd <checkout> && nice -n 19 python3 tools/stray_categories.py [--db-only] $EC_RAW_DIR/*.aprs*)
 --db-only skips pass 2 and only compares monthly_sources with the majorities.
 """
 import collections

@@ -3,27 +3,29 @@
 # root:
 #   install -m 644 ec-monitor-nightly.service ec-monitor-nightly.timer /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now ec-monitor-nightly.timer
+# User, Group and the paths below are an example (service user ecmon, checkout
+# /home/ecmon/ec-monitor): set them to yours first.
 # Try it once by hand before trusting it unattended:
-#   systemctl start ec-monitor-nightly.service; tail ~rsa/ec-nightly/nightly.log
+#   systemctl start ec-monitor-nightly.service; tail ~ecmon/ec-nightly/nightly.log
 [Unit]
 Description=EC monitor: nightly measures from the raw recording
 After=mariadb.service
 
 [Service]
 Type=oneshot
-User=rsa
-Group=rsa
-WorkingDirectory=/home/rsa/ads-l-map
+User=ecmon
+Group=ecmon
+WorkingDirectory=/home/ecmon/ec-monitor
 # A unit starts with no HOME (the midnight reset of 4 October 2026 failed on
 # that). nightly.py finds .env by its own path and needs none, but anything
 # it calls should find the right one.
-Environment=HOME=/home/rsa
+Environment=HOME=/home/ecmon
 Environment=PYTHONUNBUFFERED=1
 Nice=19
 IOSchedulingClass=idle
-# The service shares the host's 2 GB; the batch measured under 500 MB.
+# The batch measured under 500 MB; the cap keeps it from starving the service.
 MemoryMax=700M
 # flock: never two runs at once, should one overrun into the next.
-ExecStart=/usr/bin/flock -n /home/rsa/ec-nightly/lock /usr/bin/python3 /home/rsa/ads-l-map/nightly.py
-StandardOutput=append:/home/rsa/ec-nightly/nightly.log
-StandardError=append:/home/rsa/ec-nightly/nightly.log
+ExecStart=/usr/bin/flock -n /home/ecmon/ec-nightly/lock /usr/bin/python3 /home/ecmon/ec-monitor/nightly.py
+StandardOutput=append:/home/ecmon/ec-nightly/nightly.log
+StandardError=append:/home/ecmon/ec-nightly/nightly.log

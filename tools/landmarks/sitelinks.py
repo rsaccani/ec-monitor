@@ -1,5 +1,5 @@
 import glob, json, os, urllib.request, urllib.parse, time, re
-UA="ec-monitor landmark test/0.1 (www.saccani.net/conspicuity-monitor)"
+UA="ec-monitor landmark test/0.1 (conspicuity.eu)"
 cache=json.load(open("sitelinks.json")) if os.path.exists("sitelinks.json") else {}
 ids=set()
 for fn in glob.glob("tile_*.csv"):

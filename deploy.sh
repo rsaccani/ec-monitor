@@ -1,8 +1,8 @@
 #!/bin/bash
 # Deploy origin/main to the running service, from inside the server's checkout.
 #
-#   ~/ads-l-map/deploy.sh            # deploy if origin/main moved
-#   ~/ads-l-map/deploy.sh --force    # reload even if nothing changed
+#   ./deploy.sh            # deploy if origin/main moved
+#   ./deploy.sh --force    # reload even if nothing changed
 #
 # Needs no root: the service runs as the same user, and gunicorn reloads its
 # worker (re-importing app.py) on SIGHUP. If the new worker does not answer

@@ -24,7 +24,7 @@ both the spread and the number of strongly one-sided pilots.
 Also checks the sign convention of the transmitted turn rate against the
 course change. Aggregates and counts only.
 
-Usage: (cd ~/ads-l-map && nice -n 19 python3 ~/ec-explore/ec_circling_direction.py OUTDIR <files>)
+Usage: (cd <checkout> && nice -n 19 python3 tools/ec_circling_direction.py OUTDIR <files>)
 """
 import collections
 import math

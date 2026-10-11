@@ -8,7 +8,7 @@ that day (both ends at 15 km/h or more, gaps up to 20 minutes, interval plus
 recording, and splits the late time by length of the silence, by device and
 by height above the ground at the start of the silence. Aggregates only.
 
-Usage: (cd ~/ads-l-map && python3 ~/ec-replay/ec_radio_silence_check.py <files>)
+Usage: (cd <checkout> && python3 tools/ec_radio_silence_check.py <files>)
 """
 import collections
 import re
@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, ".")
-import sources  # noqa: E402  (run from ~/ads-l-map for the terrain model)
+import sources  # noqa: E402  (run from the checkout for the terrain model)
 
 POS = re.compile(r"^/(\d{6})h(\d{2})(\d{2}\.\d{2})([NS]).(\d{3})(\d{2}\.\d{2})([EW]).(\d{3})/(\d{3})/A=(-?\d{6})")
 ID = re.compile(r" id([0-9A-F]{2})")

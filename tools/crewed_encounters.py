@@ -17,7 +17,7 @@ over more than 3 km: one pilot carrying two devices under two addresses
 
 Prints aggregates only: kind pairs, systems as combinations, counts.
 
-Usage: (cd ~/ads-l-map && nice -n 19 python3 tools/crewed_encounters.py ~/ec-raw/*.aprs.zst)
+Usage: (cd <checkout> && nice -n 19 python3 tools/crewed_encounters.py $EC_RAW_DIR/*.aprs.zst)
 """
 import collections
 import math

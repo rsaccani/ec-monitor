@@ -8,7 +8,7 @@ unmanned aerial vehicle), in the OGN ADS-B comment as "<cat>:<flight id>".
 Counts per address only; whether the flight id has the shape of a
 registration is reported as a yes/no, never the id itself.
 
-Usage: (cd ~/ads-l-map && nice -n 19 python3 tools/drone_adsb_emitter.py <files>)
+Usage: (cd <checkout> && nice -n 19 python3 tools/drone_adsb_emitter.py <files>)
 """
 import collections
 import re

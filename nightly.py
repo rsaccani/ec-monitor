@@ -25,7 +25,7 @@ computed from, and the rows of that day are deleted before the new ones are
 inserted, in one transaction. --dry-run prints the aggregates instead of
 writing them.
 
-Usage, from the service checkout (~/ads-l-map), as the service user:
+Usage, from the service checkout (the directory holding app.py), as the service user:
     nice -n 19 python3 nightly.py [--day YYYY-MM-DD] [--dry-run]
 The day defaults to yesterday (UTC). The database user and password come from
 .env beside this file, as for the service; app.py is not imported, since

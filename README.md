@@ -1,6 +1,6 @@
 # Electronic Conspicuity Monitor
 
-The backend of the [Electronic Conspicuity Monitor](https://www.saccani.net/conspicuity-monitor/), a public
+The backend of the [Electronic Conspicuity Monitor](https://conspicuity.eu/), a public
 measurement of how well the systems that make light aircraft visible to each other actually work: ADS-L
 over SRD860, ADS-L Mobile, FLARM, FANET, ADS-B, the OGN tracker and the phone apps that forward
 positions over the internet. It reads the Open Glider Network (OGN) feed, keeps a live map of every source
@@ -15,7 +15,7 @@ aircraft, a radio worn close to the pilot's body.
 ## Method
 
 The rules behind every figure are in [METHOD.md](METHOD.md), and its
-[rendered version](https://www.saccani.net/conspicuity-monitor/method/) shows them together with every
+[rendered version](https://conspicuity.eu/method/) shows them together with every
 change made since. Version 1 is the tag `method-v1`, in force from 4 October 2026 at 00:00 UTC; every
 later change to the method is a commit of its own, with its date and its reason. The rules were
 worked out and tested on the live feed on 3 October 2026, and the measurements of that day were
@@ -222,7 +222,7 @@ are what is applied to a running database: by the owner, as root, before deployi
 them (`mysql < schema/<file>.sql`). After each one, run on the host
 
 ```bash
-cd ~/ads-l-map && python3 tools/schema_doc.py --out ~/schemadoc
+cd <service checkout> && python3 tools/schema_doc.py --out ~/schemadoc
 ```
 
 and commit the `schema.sql` and `SCHEMA.md` it writes, in the same commit as the migration where
@@ -271,7 +271,7 @@ The same file can switch on the short-lived recording of the raw feed described 
 section 9, which is off unless `EC_RAW_DIR` is set (`recorder.py` documents every option):
 
 ```
-EC_RAW_DIR=/home/rsa/ec-raw     # hourly files, compressed with zstd once the hour is over
+EC_RAW_DIR=/home/ecmon/ec-raw   # hourly files, compressed with zstd once the hour is over
 EC_RAW_DAYS=7                   # files older than this are deleted
 EC_RAW_KEEP=europe,no-airliners # or world; no-adsb drops every ADS-B packet
 ```
@@ -295,7 +295,7 @@ database 15 minutes after the start. In production the same command runs as a sy
 
 ## Deploying updates
 
-On the production host the service directory is a git checkout of this repository, and `deploy.sh` moves
+In production the service directory is a git checkout of this repository, and `deploy.sh` moves
 it to `origin/main`. It needs no root: it sends SIGHUP to the gunicorn master, which starts a new worker
 that re-imports the code. If the code does not compile, if the new worker does not answer within a
 minute, or if it logs a database write error in its first 30 seconds, the script checks the previous

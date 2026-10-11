@@ -12,7 +12,7 @@ plausible kinds with counts and air hours.
 
 Prints aggregates and salted hashes only; positions to 1 degree.
 
-Usage: (cd ~/ads-l-map && nice -n 19 python3 tools/uncertain_drones.py 2026-10-06)
+Usage: (cd <checkout> && nice -n 19 python3 tools/uncertain_drones.py 2026-10-06)
 """
 import collections
 import datetime
