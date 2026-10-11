@@ -14,7 +14,12 @@ unheard for that long is dropped whole. The page must not turn into a track
 recorder, so no series of positions is kept: the last fix of each system,
 and small samples (intervals, signal, frequency offset, delay) from which
 medians are computed. Answers are cached per address for CACHE_S, so asking
-every second still yields one fix a minute.
+every second still yields one fix a minute. Only the "live" part of an
+answer is read fresh on every call: when each system was last heard and
+through which receiver, with no position and no distance, because a pilot
+who has just switched the device on needs to see it heard within seconds and
+already knows where the aircraft is. nginx caches the whole answer for a few
+seconds more, so this is as fresh as that.
 
 Random addresses (FLARM's privacy mode, callsign prefix RND) change every few
 seconds and can never be looked up, so they are not kept at all.
@@ -326,10 +331,21 @@ class DeviceCheck:
         with self.lock:
             hit = self.cache.get(address)
             if hit and now - hit[0] < CACHE_S:
-                return hit[1]
-            out = self._report(address, now)
-            self.cache[address] = (now, out)
-            return out
+                out = hit[1]
+            else:
+                out = self._report(address, now)
+                self.cache[address] = (now, out)
+            return dict(out, live=self._live(address, now))
+
+    def _live(self, address, now):
+        systems = []
+        for s in sorted(self.devices.get(address, {}).values(), key=lambda s: -s.last):
+            if s.last < now - WINDOW:
+                continue
+            station = s.fix[6] if s.fix and s.via == "radio" else None
+            systems.append({"system": s.label, "via": s.via, "last_heard": s.last,
+                            "receiver": station})
+        return {"now": int(now), "systems": systems}
 
     def _report(self, address, now):
         out = {"address": address, "now": int(now), "window_s": WINDOW, "cache_s": CACHE_S,
