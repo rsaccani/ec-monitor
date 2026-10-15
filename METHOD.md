@@ -46,6 +46,37 @@ these are left out of every device count, whenever the counts are computed,
 and the month's number of them is given apart. On ADS-L and the trackers a
 random address lasts like a fixed one, so it is a device and stays counted.
 
+The nightly measures of section 10 link FLARM's random addresses back into
+one aircraft, from 15 October 2026. The mode is FLARM's Enhanced-Privacy
+Random Address (FTD-116, the FLARM FAMP Public Protocol, section 3.3): every
+2 to 10 seconds the transmitter replaces its 32-bit address with
+mix32(address XOR r), where r is a small random number sent in each packet
+beside the address, so that an aircraft nearby can follow it. OGN forwards
+only the lower 24 bits of the address and neither r nor the top byte, but
+mix32 is linear over XOR, so the 256 possible top bytes and the four values
+of r that FLARM's default allows give 1,024 candidates for the next address,
+out of 16.8 million. A random address that starts within 30 seconds after
+another ends is taken as its continuation when one of those candidates is
+its address, the link is the only one leaving the first and the only one
+reaching the second, and the two are the same system. Tested on two hours of
+the recording of 10 and 11 October 2026: 522 and 722 links among pairs under
+2 km apart, none among 2,159 and 2,933 pairs over 50 km apart, and 82% and
+89% of the random addresses found their successor; the r found were spread
+evenly over the four values. Over whole days, 3,151 random addresses made
+1,133 chains on 10 October 2026 and 1,287 made 173 on 13 October, with no
+link left out as ambiguous. Looking past one or two unheard addresses would
+join about a quarter of the chains of 10 October and a sixth of those of
+13 October, again with no link between distant pairs; it is not done yet.
+The link uses no position, so it holds for an
+aircraft parked on the ground as for one flying, where the positions of a
+standing aircraft give nothing to follow. A chain breaks when a whole
+address goes unheard, and the aircraft then counts as two. The links serve
+the aggregates only: the live map and the device check keep showing the
+address as transmitted, since the owner chose that it should change, and no
+chain is stored. The device counts above keep leaving random addresses out,
+since a chain ends with every gap in reception and so cannot be followed
+from one day to the next.
+
 Three kinds of packet are left out because they describe no aircraft. FANET
 forwards the reports of its weather stations and the beacons of its ground
 stations under the same source as its aircraft. A position within 1 degree of
@@ -704,7 +735,9 @@ aircraft's positions at once. The rules of sections 1 and 2 apply unchanged:
 the same sources and exclusions, the time written in the fix, the 5-minute
 rules for stale and future fixes, the airborne speeds per kind and FLARM's
 0, the implausible segments and fixes and the limits of every kind (from
-9 October 2026), one timeline per 24-bit address for flying time. Devices whose owners asked not to be tracked are never recorded.
+9 October 2026), one timeline per 24-bit address for flying time, with
+FLARM's random addresses joined into one address per chain (section 1,
+from 15 October 2026). Devices whose owners asked not to be tracked are never recorded.
 
 One rule differs from the live measures. These take the category of every
 packet; the nightly measures take, from 7 October 2026, the category the
@@ -1183,8 +1216,10 @@ Receivers are listed only when flagged, beside how many were judged.
   the channel with the place and the pilot. The cleanest comparisons are the
   same device on both channels, the same pilot carrying two systems, and the
   same radio system on different aircraft.
-- Random addresses, which change at power-up, can count one device several
-  times; they are shown apart.
+- Random addresses, which change at power-up or every few seconds, can
+  count one device several times; they are shown apart in the device
+  counts, and in the nightly measures FLARM's are joined back only as far
+  as reception is unbroken (section 1).
 - Positions are only as good as the fix that produced them.
 - One aircraft is one 24-bit address, while Naviter's ids are unique only
   within Naviter: two Naviter users could in principle share an address with
