@@ -138,8 +138,10 @@ def rebroadcast(tocall, device_id, category):
 # under a minute. ADS-B's RND addresses rotate the same way (662 of 783). On
 # ADS-L and the trackers an RND address lives like a fixed one, so it is a
 # device and stays counted. The rotating ones are left out of every device
-# count and reported apart (monthly_stats, `random_addresses`) until the
-# addresses of one aircraft can be joined into a chain.
+# count and reported apart (monthly_stats, `random_addresses`): a chain of
+# FLARM's ends at every gap in reception, so it cannot be followed from one
+# day to the next. The nightly measures join FLARM's into chains within the
+# day (nightly.chain_pass, from 15 October 2026).
 RANDOM_PREFIX = "RND"
 RANDOM_ROTATING = ("OGFLR", "OGNFLR", "OGFLR6", "OGFLR7", "OGADSB")
 ROTATING_SQL = "LEFT(device_id, 3) = '{}' AND source IN ({})".format(

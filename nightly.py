@@ -203,6 +203,42 @@ STREAM_DROP_MIN = 20            # fixes; a shorter stream loses its impossible f
 SPEED_LEVELS = sorted({v[0] for v in sources.CEILINGS.values()} | {sources.CEILING_OTHER[0]})
 ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING_OTHER[1]})
 
+# FLARM's random addresses joined into chains (METHOD.md section 1, from
+# 15 October 2026). In FLARM's Enhanced-Privacy Random Address mode (FTD-116,
+# section 3.3) the transmitter replaces its 32-bit address every 2-10 s with
+# mix32(address ^ r), r being a nonce sent beside the address. OGN forwards
+# the lower 24 bits only, but mix32 is linear over XOR, so the 256 top bytes
+# and the four values of r of FLARM's default (Ne = 2) give 1,024 candidates
+# for the next address, out of 2^24. On 10 and 11 October 2026 no pair of
+# addresses over 50 km apart matched among 5,092, and 82-89% of the addresses
+# found their successor. The chain replaces the address in the nightly
+# measures only; the live map and the device check never see it.
+EPRA_TOCALLS = {"OGFLR"}        # after sources.same_system
+EPRA_GAP_S = 30                 # s from the end of one address to the start of the next
+EPRA_OVERLAP_S = 5              # s; a late copy of the old address may follow the new one
+EPRA_NONCES = 4                 # 2^Ne with FLARM's default Ne = 2
+
+
+def mix32(x):
+    """FTD-116's mix32: AES MixColumns on the four bytes of x."""
+    a = [(x >> s) & 0xFF for s in (0, 8, 16, 24)]
+    b = [((v << 1) & 0xFF) ^ (0x1B if v & 0x80 else 0) for v in a]
+    return ((b[0] ^ a[3] ^ a[2] ^ b[1] ^ a[1])
+            | (b[1] ^ a[0] ^ a[3] ^ b[2] ^ a[2]) << 8
+            | (b[2] ^ a[1] ^ a[0] ^ b[3] ^ a[3]) << 16
+            | (b[3] ^ a[2] ^ a[1] ^ b[0] ^ a[0]) << 24)
+
+
+# low24(mix32(address ^ r)) for every unknown top byte and nonce, less the
+# part the known lower 24 bits contribute (mix32 is linear over XOR).
+EPRA_KEYS = frozenset((mix32(m << 24) ^ mix32(r)) & 0xFFFFFF for m in range(256) for r in range(EPRA_NONCES))
+
+
+def epra_next(a, b):
+    """Whether the 24-bit address b can follow a under FLARM's EPRA."""
+    return ((mix32(a) & 0xFFFFFF) ^ b) in EPRA_KEYS
+
+
 # How a drone of the uncertain class flies (METHOD.md 10.1, from 9 October
 # 2026). Direct evidence (ADS-B emitter category, device database, Remote ID,
 # a thermal) always comes first; this only sorts what it leaves uncertain.
@@ -324,12 +360,15 @@ def hour_path(raw_dir, day, hour):
     return None
 
 
-def read_lines(path, stop=None):
-    """(reception epoch, line) of one hourly file, until `stop` if given."""
+def read_lines(path, stop=None, contains=None):
+    """(reception epoch, line) of one hourly file, until `stop` if given; only
+    the lines containing the bytes `contains` if given, checked before decoding."""
     cmd = ["zstdcat", "-q", path] if path.endswith(".zst") else ["cat", path]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         for raw in proc.stdout:
+            if contains is not None and contains not in raw:
+                continue
             line = raw.decode("utf-8", "replace")
             sp = line.find(" ")
             try:
@@ -877,6 +916,7 @@ class ParkedRun:
 class Nightly:
     def __init__(self, day, ddb=({}, set())):
         self.day = day
+        self.chain = {}           # FLARM random address -> first address of its chain; chain_pass()
         self.c = True             # METHOD.md: drones, encounters, parked, quality
         self.p = True             # PATTERNS.md; switched off if its work fails during the pass
         self.ddb_types, self.notrack = ddb[0], ddb[1]
@@ -988,6 +1028,64 @@ class Nightly:
                 f"relay pairs {len(self.relay_pairs):,} ({sum(len(v) for v in self.relay_pairs.values()):,}), "
                 f"device categories {len(self.categories):,}")
 
+    def chain_pass(self, files):
+        """Before the first pass: FLARM's random addresses joined into chains.
+
+        Each address is linked to the one that starts within EPRA_GAP_S of its
+        end and can follow it under EPRA, when that link is the only one
+        leaving it and the only one reaching the other. self.chain maps every
+        address of a chain to its first one.
+        """
+        first, last = {}, {}
+        for path, stop in files:
+            if path is None:
+                continue
+            for epoch, line in read_lines(path, stop, contains=(" " + sources.RANDOM_PREFIX).encode()):
+                if not line.startswith(sources.RANDOM_PREFIX):
+                    continue
+                try:
+                    src, rest = line.split(">", 1)
+                    head, body = rest.split(":", 1)
+                    address = int(src[3:], 16)
+                except ValueError:
+                    continue
+                if not body.startswith("/") or len(src) != 9:
+                    continue
+                if sources.same_system(head.split(",", 1)[0], src) not in EPRA_TOCALLS:
+                    continue
+                if sources.id_info(body)[1]:
+                    continue
+                if epoch < first.get(address, math.inf):
+                    first[address] = epoch
+                if epoch > last.get(address, -math.inf):
+                    last[address] = epoch
+        starts = sorted((t, a) for a, t in first.items())
+        times = [t for t, _ in starts]
+        links = []
+        for a, end in last.items():
+            lo = bisect.bisect_left(times, end - EPRA_OVERLAP_S)
+            hi = bisect.bisect_right(times, end + EPRA_GAP_S)
+            for t, b in starts[lo:hi]:
+                if b != a and t > first[a] and epra_next(a, b):
+                    links.append((a, b))
+        out = collections.Counter(a for a, _ in links)
+        into = collections.Counter(b for _, b in links)
+        prev = {b: a for a, b in links if out[a] == 1 and into[b] == 1}
+        self.chain = {}
+        for b in prev:
+            root, seen = b, set()
+            while root in prev and root not in seen:
+                seen.add(root)
+                root = prev[root]
+            self.chain[sources.RANDOM_PREFIX + "%06X" % b] = sources.RANDOM_PREFIX + "%06X" % root
+        roots = len(first) - len(prev)
+        logger.info(f"FLARM random addresses: {len(first):,} joined by {len(prev):,} links "
+                    f"({len(links) - len(prev):,} ambiguous left out) into {roots:,} chains")
+
+    def chained(self, src, tocall):
+        """The address the measures use: a FLARM random address's chain."""
+        return self.chain.get(src, src) if tocall in EPRA_TOCALLS else src
+
     def vote(self, files):
         """First pass: the category each address declares most often on each system.
 
@@ -1013,6 +1111,7 @@ class Nightly:
                 if no_track:
                     continue
                 tocall = sources.same_system(raw, src)
+                src = self.chained(src, tocall)
                 if cat is None:
                     if tocall not in sources.AIRCRAFT_ONLY:
                         self.prepass(epoch, src, tocall, body)
@@ -1131,6 +1230,7 @@ class Nightly:
         nxt = hour_path(raw_dir, self.day + datetime.timedelta(days=1), 0)
         if nxt is not None:
             files.append((nxt, self.d1 + STALE + 1))
+        self.chain_pass(files)
         self.vote(files)
         for path, stop in files:
             if path is None:
@@ -1166,6 +1266,7 @@ class Nightly:
         if body[26:27] == "_":
             return                              # weather stations
         tocall = sources.same_system(raw_tc, src)
+        src = self.chained(src, tocall)
         id_category, no_track = sources.id_info(body)
         if no_track:
             return
