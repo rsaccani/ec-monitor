@@ -2612,6 +2612,20 @@ class SourceTracker:
             # Paragliders and hang gliders apart since 7 October 2026 (the kind
             # "free_flight" before), and also together, summed here.
             thermals = self.with_free_flight(thermals, ("thermals", "climb_sum", "climbs", "radius_sum"))
+            # The climb by hour is drawn per kind and terrain only where no single
+            # 0.25-degree cell holds more than a third of an hour's climbs, so that
+            # one busy place cannot stand for a whole hour (17 October 2026,
+            # PATTERNS.md section 3). Over every stored day, as the page draws it.
+            cur.execute("""SELECT kind, terrain, solar_hour, lat_idx, lon_idx, SUM(climbs)
+                               FROM daily_thermals WHERE climbs > 0 GROUP BY 1, 2, 3, 4, 5""")
+            hour_top = {}
+            for kind, terrain, hour, _, _, climbs in cur.fetchall():
+                x = hour_top.setdefault((kind, terrain or None, int(hour)), [0, 0])
+                x[0] += int(climbs)
+                x[1] = max(x[1], int(climbs))
+            thermal_hour_places = [{"kind": k[0], "terrain": k[1], "solar_hour": k[2], "climbs": v[0],
+                                    "top_place_climbs": v[1]} for k, v in sorted(hour_top.items(),
+                                                                                 key=lambda i: (i[0][0], i[0][1] or "", i[0][2]))]
             # 1-degree cells, aggregated from the 0.25-degree cells stored since
             # 7 October 2026 (rows of 6 October were recomputed at 0.25).
             n = THERMAL_CELLS_PER_DEG
@@ -2692,6 +2706,7 @@ class SourceTracker:
                     "flight_classes": flight_classes, "routes": routes,
                     "preference": preference, "gaggles": gaggles, "parked": parked, "launches": launches,
                     "thermals": thermals, "thermal_cells": thermal_cells, "thermal_places": thermal_places,
+                    "thermal_hour_places": thermal_hour_places,
                     "mixed_thermals": mixed,
                     "agl_hours": agl, "circling_time": circling_time, "flights": flights, "wave": wave,
                     "cruise": cruise,

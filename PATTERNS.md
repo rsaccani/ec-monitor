@@ -167,7 +167,26 @@ sampled, which made a spiral descent a thermal with a negative climb
 (section 2). It is the average of the
 thermal, in bands of under 0.5, 0.5–1, 1–1.5, 1.5–2, 2–3, 3–4 and over 4 m/s,
 by kind, by local solar hour of the middle of the thermal (section 1), by
-month, and by cell. From 7 October 2026 thermals are kept in cells of a
+month, and by cell.
+
+**Climb by hour.** The climb by solar hour is shown per kind and terrain
+class (section 12), and an hour is drawn only while **no single 0.25-degree
+cell holds more than a third** of its thermals with a climb rate (from
+17 October 2026). Mixing places that fly at different hours made one site
+stand for a whole hour: in the first ten days of October 2026, 46 of the
+115 paraglider thermals at 10:00 solar time were flown in one cell above
+Algodonales, Spain, at 2.2 m/s, against 1.2 in the Alps, and gave the
+mountain curve a morning peak no place but that one had. In summer time Spanish clocks
+run more than two hours ahead of the sun, so 10:00 solar time there is
+past noon by the clock, which is probably why that site flies when the
+Alps are only starting. Weighting was tried and set aside: capping each
+cell at 10 thermals an hour left the peak at 1.32 against 1.31 at 11:00,
+and comparing each place with itself (a model of place plus hour) kept it
+at 1.46, because at Algodonales the morning genuinely climbs best; a cap
+also makes a site flown by fifty pilots weigh as much as one flown by ten.
+The share rule needs no tuning as places multiply. The API gives, per
+kind, terrain and hour over every stored day, the climbs and those of the
+busiest cell (`thermal_hour_places`). From 7 October 2026 thermals are kept in cells of a
 **quarter of a degree** (about 28 by 19 km in the Alps; 1 degree before),
 and given both as 1-degree cells and as **thermal places**: for the current
 and the previous month together, the busiest cells (most thermals) and the
@@ -719,3 +738,7 @@ wide sits in mountains, a high plateau in plain and hills.
   limit, and a stream that is mostly impossible is set aside for the day
   (under 1 h for any kind of crewed aircraft on 6 and 7 October 2026, 2.3 and 0.7 h of drones; jets gain the segments above 500 km/h they used to lose, 10 and 8 h). Drones of uncertain identity are classed by how they fly
   (METHOD.md 10.1); here they stay apart from crewed aircraft as before.
+- **17 October 2026.** The climb by hour is split by terrain class, and an
+  hour is left out while one 0.25-degree cell holds more than a third of
+  its thermals (section 3). The page draws every solar hour at its half
+  past, where it used to sit on the whole hour, half an hour early.
