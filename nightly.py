@@ -211,10 +211,13 @@ ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING
 # and the four values of r of FLARM's default (Ne = 2) give 1,024 candidates
 # for the next address, out of 2^24. On 10 and 11 October 2026 no pair of
 # addresses over 50 km apart matched among 5,092, and 82-89% of the addresses
-# found their successor. The chain replaces the address in the nightly
-# measures only; the live map and the device check never see it.
+# found their successor. From 16 October 2026 a chain also bridges one or two
+# addresses never heard, at 4,096 and 16,384 candidates and with more time
+# allowed; tried only on what one step leaves unlinked, and again no distant
+# pair matched. The chain replaces the address in the nightly measures only;
+# the live map and the device check never see it.
 EPRA_TOCALLS = {"OGFLR"}        # after sources.same_system
-EPRA_GAP_S = 30                 # s from the end of one address to the start of the next
+EPRA_STEPS = ((1, 30), (2, 60), (3, 90))   # address updates bridged, s from one end to the next start
 EPRA_OVERLAP_S = 5              # s; a late copy of the old address may follow the new one
 EPRA_NONCES = 4                 # 2^Ne with FLARM's default Ne = 2
 
@@ -229,14 +232,28 @@ def mix32(x):
             | (b[3] ^ a[2] ^ a[1] ^ b[0] ^ a[0]) << 24)
 
 
-# low24(mix32(address ^ r)) for every unknown top byte and nonce, less the
-# part the known lower 24 bits contribute (mix32 is linear over XOR).
-EPRA_KEYS = frozenset((mix32(m << 24) ^ mix32(r)) & 0xFFFFFF for m in range(256) for r in range(EPRA_NONCES))
+def mix32_times(x, k):
+    for _ in range(k):
+        x = mix32(x)
+    return x
 
 
-def epra_next(a, b):
-    """Whether the 24-bit address b can follow a under FLARM's EPRA."""
-    return ((mix32(a) & 0xFFFFFF) ^ b) in EPRA_KEYS
+def epra_keys(k):
+    """low24 of what k address updates add beyond mix32^k of the known lower
+    24 bits: the unknown top byte mixed k times, and the nonce of update j
+    mixed k - j times (mix32 is linear over XOR)."""
+    keys = {mix32_times(m << 24, k) for m in range(256)}
+    for j in range(k):
+        keys = {x ^ mix32_times(r, k - j) for x in keys for r in range(EPRA_NONCES)}
+    return frozenset(x & 0xFFFFFF for x in keys)
+
+
+EPRA_KEYS = {k: epra_keys(k) for k, _ in EPRA_STEPS}
+
+
+def epra_next(a, b, k=1):
+    """Whether the 24-bit address b can follow a after k updates under FLARM's EPRA."""
+    return ((mix32_times(a, k) & 0xFFFFFF) ^ b) in EPRA_KEYS[k]
 
 
 # How a drone of the uncertain class flies (METHOD.md 10.1, from 9 October
@@ -1031,10 +1048,12 @@ class Nightly:
     def chain_pass(self, files):
         """Before the first pass: FLARM's random addresses joined into chains.
 
-        Each address is linked to the one that starts within EPRA_GAP_S of its
+        Each address is linked to the one that starts within 30 s of its
         end and can follow it under EPRA, when that link is the only one
-        leaving it and the only one reaching the other. self.chain maps every
-        address of a chain to its first one.
+        leaving it and the only one reaching the other; then what is left
+        unlinked is tried again over two and three updates (EPRA_STEPS), one
+        or two addresses having gone unheard. self.chain maps every address
+        of a chain to its first one.
         """
         first, last = {}, {}
         for path, stop in files:
@@ -1061,16 +1080,24 @@ class Nightly:
                     last[address] = epoch
         starts = sorted((t, a) for a, t in first.items())
         times = [t for t, _ in starts]
-        links = []
-        for a, end in last.items():
-            lo = bisect.bisect_left(times, end - EPRA_OVERLAP_S)
-            hi = bisect.bisect_right(times, end + EPRA_GAP_S)
-            for t, b in starts[lo:hi]:
-                if b != a and t > first[a] and epra_next(a, b):
-                    links.append((a, b))
-        out = collections.Counter(a for a, _ in links)
-        into = collections.Counter(b for _, b in links)
-        prev = {b: a for a, b in links if out[a] == 1 and into[b] == 1}
+        prev, nxt, made, ambiguous = {}, {}, [], 0
+        for k, gap in EPRA_STEPS:
+            links = []
+            for a, end in last.items():
+                if a in nxt:
+                    continue
+                lo = bisect.bisect_left(times, end - EPRA_OVERLAP_S)
+                hi = bisect.bisect_right(times, end + gap)
+                for t, b in starts[lo:hi]:
+                    if b != a and b not in prev and t > first[a] and epra_next(a, b, k):
+                        links.append((a, b))
+            out = collections.Counter(a for a, _ in links)
+            into = collections.Counter(b for _, b in links)
+            kept = [(a, b) for a, b in links if out[a] == 1 and into[b] == 1]
+            for a, b in kept:
+                prev[b], nxt[a] = a, b
+            made.append(len(kept))
+            ambiguous += len(links) - len(kept)
         self.chain = {}
         for b in prev:
             root, seen = b, set()
@@ -1080,7 +1107,8 @@ class Nightly:
             self.chain[sources.RANDOM_PREFIX + "%06X" % b] = sources.RANDOM_PREFIX + "%06X" % root
         roots = len(first) - len(prev)
         logger.info(f"FLARM random addresses: {len(first):,} joined by {len(prev):,} links "
-                    f"({len(links) - len(prev):,} ambiguous left out) into {roots:,} chains")
+                    f"({' + '.join(f'{n:,}' for n in made)} over {', '.join(str(k) for k, _ in EPRA_STEPS)} updates; "
+                    f"{ambiguous:,} ambiguous left out) into {roots:,} chains")
 
     def chained(self, src, tocall):
         """The address the measures use: a FLARM random address's chain."""
