@@ -297,11 +297,15 @@ def read_database(conn):
             cur.execute(f"SHOW CREATE TABLE `{t}`")
             db["create"][t] = cur.fetchone()[1]
         cur.execute(
-            "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT "
-            "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME, ORDINAL_POSITION",
+            "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, "
+            "NULLIF(c.COLLATION_NAME, t.TABLE_COLLATION) "
+            "FROM information_schema.COLUMNS c JOIN information_schema.TABLES t "
+            "ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME "
+            "WHERE c.TABLE_SCHEMA = %s ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION",
             (DATABASE,))
-        for t, c, typ, nullable, default in cur.fetchall():
-            db["columns"][t].append({"name": c, "type": typ, "null": nullable == "YES", "default": default})
+        for t, c, typ, nullable, default, collation in cur.fetchall():
+            db["columns"][t].append({"name": c, "type": typ, "null": nullable == "YES", "default": default,
+                                     "collation": collation})
         cur.execute(
             "SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.STATISTICS "
             "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX", (DATABASE,))
@@ -330,6 +334,9 @@ def parse_grants(lines):
         out["user"] = m.group("user").replace("`", "'")
         obj = m.group("obj").replace("`", "")
         privs = [p.strip() for p in re.split(r",\s*(?![^()]*\))", m.group("privs"))]
+        # Column lists come back in no fixed order; sorted, so a rerun gives no spurious diff.
+        privs = [re.sub(r"\(([^)]*)\)", lambda c: "(" + ", ".join(sorted(x.strip() for x in c.group(1).split(","))) + ")", p)
+                 for p in privs]
         out["objects"][obj].extend(privs)
     return out
 
@@ -788,7 +795,7 @@ def render_table(t, db, trefs, endpoints, family, hist, baseline, origin, grants
             pk = ix["columns"]
     out += ["| Column | Type | Default | PK |", "|---|---|---|---|"]
     for c in db["columns"].get(t, []):
-        typ = c["type"] + (" NULL" if c["null"] else "")
+        typ = c["type"] + (f" {c['collation']}" if c.get("collation") else "") + (" NULL" if c["null"] else "")
         default = "" if c["default"] is None else c["default"]
         pos = str(pk.index(c["name"]) + 1) if c["name"] in pk else ""
         out.append(f"| `{c['name']}` | {md_escape(typ)} | {md_escape(default)} | {pos} |")

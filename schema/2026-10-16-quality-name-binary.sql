@@ -7,4 +7,4 @@
 -- day the insert failed with a duplicate entry and the whole conspicuity
 -- family of that day was rolled back (2026-10-14, in the nightly run and in
 -- its recompute). Recompute such a day with `nightly.py --day` afterwards.
-ALTER TABLE daily_quality MODIFY `name` varchar(64) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE `daily_quality` MODIFY `name` varchar(64) COLLATE utf8mb4_bin NOT NULL;
