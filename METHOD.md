@@ -64,13 +64,20 @@ the recording of 10 and 11 October 2026: 522 and 722 links among pairs under
 89% of the random addresses found their successor; the r found were spread
 evenly over the four values. Over whole days, 3,151 random addresses made
 1,133 chains on 10 October 2026 and 1,287 made 173 on 13 October, with no
-link left out as ambiguous. Looking past one or two unheard addresses would
-join about a quarter of the chains of 10 October and a sixth of those of
-13 October, again with no link between distant pairs; it is not done yet.
+link left out as ambiguous. From 16 October 2026 what is left unlinked is
+tried again across one or two addresses never heard, which allows 4,096 and
+16,384 candidates and 60 and 90 seconds; the same rule of a single link each
+way applies. That made 949 chains of the 1,133 of 10 October, 423 of the 582
+of 11 October and 150 of the 173 of 13 October, setting aside 43, 16 and 4
+links as ambiguous; on 10 and 13 October no pair of addresses over 50 km
+apart matched across two or three updates either.
+Run both ways on 11 October, the longer links left the FLARM position
+jumps and impossible streams exactly as they were, 47 and 1.
 The link uses no position, so it holds for an
 aircraft parked on the ground as for one flying, where the positions of a
-standing aircraft give nothing to follow. A chain breaks when a whole
-address goes unheard, and the aircraft then counts as two. The links serve
+standing aircraft give nothing to follow. A chain breaks when three
+addresses in a row go unheard, or when a link is ambiguous, and the aircraft
+then counts as two. The links serve
 the aggregates only: the live map and the device check keep showing the
 address as transmitted, since the owner chose that it should change, and no
 chain is stored. The device counts above keep leaving random addresses out,
