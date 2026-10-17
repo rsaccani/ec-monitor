@@ -661,11 +661,15 @@ def migrations_in_order(repo):
     they were applied: the file names sort otherwise within a day
     (2026-10-07-crewed-encounters.sql widens a column of a table that
     2026-10-07-nightly.sql, committed earlier, creates). Files not yet
-    committed come last, by name."""
+    committed come last, by name. Within one commit a file that alters a table
+    comes after those that only create (2026-10-17-stations-sensitivity.sql
+    alters the table 2026-10-17-stations.sql creates, in the same commit)."""
     def key(path):
         rel = os.path.relpath(path, repo)
         added = git(repo, "log", "--diff-filter=A", "--format=%ct", "--", rel).split()
-        return (int(added[-1]) if added else float("inf"), rel)
+        with open(path, encoding="utf-8") as f:
+            alters = "ALTER TABLE" in f.read()
+        return (int(added[-1]) if added else float("inf"), alters, rel)
     return sorted(glob.glob(os.path.join(repo, "schema", "*.sql")), key=key)
 
 
