@@ -162,6 +162,14 @@ class DeviceCheck:
                     err = int(tok[:-1])
         with self.lock:
             systems = self.devices.get(address)
+            if category in sources.GROUND_CATEGORIES and not (
+                    systems and any(c in sources.AIRCRAFT_CATEGORIES
+                                    for x in systems.values() for c in x.cats)):
+                # Static objects and ground stations (a FANET base station
+                # sends category 15 all day): not an aircraft, not kept. An
+                # address that has declared an aircraft category keeps its
+                # ground packets, as a pilot who has landed.
+                return
             if systems is None:
                 systems = self.devices[address] = {}
             s = systems.get(label)
@@ -340,7 +348,7 @@ class DeviceCheck:
     def _live(self, address, now):
         systems = []
         for s in sorted(self.devices.get(address, {}).values(), key=lambda s: -s.last):
-            if s.last < now - WINDOW:
+            if s.last < now - WINDOW or (s.cats and all(c in sources.GROUND_CATEGORIES for c in s.cats)):
                 continue
             station = s.fix[6] if s.fix and s.via == "radio" else None
             systems.append({"system": s.label, "via": s.via, "last_heard": s.last,
@@ -355,6 +363,8 @@ class DeviceCheck:
         for s in sorted(systems.values(), key=lambda s: -s.last):
             if s.last < now - WINDOW:
                 continue
+            if s.cats and all(c in sources.GROUND_CATEGORIES for c in s.cats):
+                continue    # state saved before static objects were left out
             out["systems"].append(self._system(s, now, address))
             if latest is None or s.fix[0] > latest.fix[0]:
                 latest = s
@@ -390,9 +400,11 @@ class DeviceCheck:
                 continue
             # Other devices only: near a receiver with little traffic the
             # device itself would otherwise fill its own reference.
-            ref = [v for t, a, v in self.ref.get((station, s.label, b), []) if a != address and t >= cutoff]
+            others = [(a, v) for t, a, v in self.ref.get((station, s.label, b), []) if a != address and t >= cutoff]
+            ref = [v for a, v in others]
             sig.append({"receiver": station, "band": band_label(b), "n": len(values),
-                        "snr_db": _median(values), "others_db": _median(ref), "others_n": len(ref)})
+                        "snr_db": _median(values), "others_db": _median(ref), "others_n": len({a for a, v in others}),
+                        "others_packets": len(ref)})
         return {
             "system": s.label, "kind": s.kind, "via": s.via, "tocall": s.tocall, "callsign": s.src,
             "first": max(s.first, now - WINDOW), "last_heard": s.last,

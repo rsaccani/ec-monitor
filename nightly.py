@@ -49,6 +49,7 @@ import statistics
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.request
 import zlib
 
@@ -475,24 +476,51 @@ def fanet_ground(tocall, a, b):
     return tocall == "OGNFNT" and {a, b} <= FANET_GROUND and 15 in (a, b)
 
 
-def load_ddb():
-    """(address -> AIRCRAFT_TYPE, addresses not to be tracked, address -> AIRCRAFT_MODEL)
-    from the OGN device database.
+def ci_fold(s):
+    """A name as utf8mb4_general_ci compares it: case and accents folded, trailing spaces ignored."""
+    if not isinstance(s, str):
+        return s
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in s if not unicodedata.combining(ch)).casefold().rstrip(" ")
 
-    The owners' choices are honoured as app.py does: TRACKED=N drops the
-    device from every measure, IDENTIFIED=N keeps it but its type is not used.
-    Without the database (a failed download) every declared drone without an
-    ADS-B emitter category stays uncertain, and the log says so.
-    """
-    try:
-        text = urllib.request.urlopen(DDB_URL, timeout=120).read().decode("utf-8", "replace")
-    except OSError as e:
-        logger.error(f"OGN device database not loaded ({e}): no aircraft types this run")
-        return {}, set(), {}
+
+def merge_ci(rows, text_cols, sum_cols):
+    """Rows whose text key columns are equal under the database collation (StChamas and
+    STCHAMAS, or two spellings of one place) are summed into one, filed under the spelling
+    with the larger sum_cols[0] (the smaller string on a tie), so a primary key of a
+    case-insensitive table is never inserted twice. Returns (rows, number of rows merged)."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(tuple(ci_fold(r[i]) for i in text_cols), []).append(r)
+    out, merged = [], 0
+    for key in groups:
+        g = groups[key]
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        merged += len(g) - 1
+        best = min(g, key=lambda r: (-r[sum_cols[0]], tuple(r[i] for i in text_cols)))
+        r = list(best)
+        for i in sum_cols:
+            r[i] = sum(x[i] for x in g)
+        out.append(tuple(r))
+    return out, merged
+
+
+DDB_CACHE = "ddb-last-good.csv"
+
+
+def parse_ddb(text):
+    """(types, notrack, models) from the text of a DDB download; ValueError if it is not one."""
     types, notrack, models = {}, set(), {}
     reader = csv.reader(io.StringIO(text))
-    header = [h.strip("#' ") for h in next(reader)]
+    try:
+        header = [h.strip("#' ") for h in next(reader)]
+    except StopIteration:
+        raise ValueError("empty download")
     col = {h: i for i, h in enumerate(header)}
+    if not {"DEVICE_ID", "TRACKED", "IDENTIFIED", "AIRCRAFT_TYPE", "AIRCRAFT_MODEL"} <= set(col):
+        raise ValueError("unexpected header")
     for row in reader:
         try:
             dev = row[col["DEVICE_ID"]].strip("'")
@@ -505,8 +533,53 @@ def load_ddb():
             models[dev] = row[col["AIRCRAFT_MODEL"]].strip("'")
         except (IndexError, KeyError, ValueError):
             continue
-    logger.info(f"OGN device database: {len(types):,} types, {len(notrack):,} not to be tracked")
+    if len(types) + len(notrack) < 1000:
+        raise ValueError(f"only {len(types) + len(notrack)} devices")
     return types, notrack, models
+
+
+def load_ddb(cache_dir=None):
+    """(address -> AIRCRAFT_TYPE, addresses not to be tracked, address -> AIRCRAFT_MODEL, note)
+    from the OGN device database.
+
+    The owners' choices are honoured as app.py does: TRACKED=N drops the
+    device from every measure, IDENTIFIED=N keeps it but its type is not used.
+    The last good download is kept in cache_dir; when a download fails the run
+    uses that copy and says so in note. Without a download and without a copy
+    the owners' opt-outs are unknown, so DDBUnavailable is raised and the run
+    must write nothing.
+    """
+    path = os.path.join(cache_dir, DDB_CACHE) if cache_dir else None
+    try:
+        text = urllib.request.urlopen(DDB_URL, timeout=120).read().decode("utf-8", "replace")
+        result = parse_ddb(text)
+    except (OSError, ValueError) as e:
+        if path and os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    result = parse_ddb(f.read())
+            except (OSError, ValueError) as e2:
+                raise DDBUnavailable(f"download failed ({e}) and the saved copy is unusable ({e2})")
+            age = (time.time() - os.path.getmtime(path)) / 86400
+            note = f"device database: download failed ({e}), saved copy of {age:.0f} days ago used"
+            logger.error(note)
+            return result + (note,)
+        raise DDBUnavailable(f"download failed ({e}) and no saved copy exists")
+    if path:
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.error(f"OGN device database not saved ({e})")
+    types, notrack, models = result
+    logger.info(f"OGN device database: {len(types):,} types, {len(notrack):,} not to be tracked")
+    return types, notrack, models, ""
+
+
+class DDBUnavailable(Exception):
+    pass
 
 
 def wind_at(levels, z):
@@ -1875,8 +1948,10 @@ class Nightly:
 
         `kt` is the speed that decides flight, `reported` the one the packet
         carried (they differ only for FLARM's 0, sources.ZeroSpeed); `label`
-        files the impossible segments by system for daily_quality; `rnd` is a
-        FLARM random address, left out of the coverage gaps (10.5)."""
+        files the impossible segments by system for daily_quality; `rnd` marks a
+        FLARM random address, whose air time the coverage gaps count like any
+        other's, the whole family whatever it carries (METHOD.md 10.5), so the
+        flag no longer changes what is filed here."""
         prev = self.addr_fix.get(address)
         if prev is not None and t <= prev[0]:
             return
@@ -3001,7 +3076,8 @@ class Nightly:
         out["daily_circling_pilot"] = (("day", "address", "category", "right_hand", "left_hand"), pilots)
         out["daily_gaggles"] = (("day", "category_a", "category_b", "same_side", "opposite_side"), self.gaggles(day, thermals))
         out["daily_thermal_sites"] = (("day", "kind", "lat_idx", "lon_idx", "site", "thermals"),
-                                      [(day,) + k + (v,) for k, v in sorted(self.thermal_sites(best).items())])
+                                      merge_ci([(day,) + k + (v,) for k, v in sorted(self.thermal_sites(best).items())],
+                                               (1, 2, 3, 4), (5,))[0])
         out["daily_mixed_thermals"] = (("day", "kind_a", "kind_b", "vsep_band", "thermals"),
                                        [(day,) + k + (n,) for k, n in sorted(self.mixed.items())])
         # 7. launches (PATTERNS.md 7): before the flights, which carry their launch
@@ -3209,7 +3285,7 @@ class Nightly:
                                         "flights"),
                                        [(day,) + k + (n,) for k, n in sorted(cls_rows.items())])
         out["daily_routes"] = (("day", "airfield_a", "airfield_b", "address", "flights"),
-                               [(day,) + k + (n,) for k, n in sorted(routes.items())])
+                               merge_ci([(day,) + k + (n,) for k, n in sorted(routes.items())], (1, 2, 3), (4,))[0])
         out["daily_flights"] = (("day", "kind", "terrain", "launch", "start_hour", "duration_band", "extent_band", "path_band",
                                  "flights", "seconds", "path_m"),
                                 [(day,) + k + (v[0], round(v[1], 1), round(v[2])) for k, v in sorted(fl.items())])
@@ -3390,6 +3466,8 @@ class Nightly:
         # number flagged among those judged (name '*').
         judged = collections.Counter()
         flagged = collections.Counter()
+        # Names stay apart by case: daily_quality.name is utf8mb4_bin since
+        # schema/2026-10-16-quality-name-binary.sql, as daily_stations.name.
         for check, name, n, total, value, is_flagged in self.receiver_checks():
             judged[check] += 1
             if is_flagged:
@@ -3838,7 +3916,14 @@ def main():
     if os.getenv("NIGHTLY_TRACE"):
         import tracemalloc
         tracemalloc.start()
-    n = Nightly(day, load_ddb())
+    try:
+        ddb = load_ddb(raw_dir)
+    except DDBUnavailable as e:
+        logger.error(f"Aborted before writing anything: {e}; owners who opted out would be in every table")
+        return 1
+    n = Nightly(day, ddb)
+    if len(ddb) > 3 and ddb[3]:
+        n.failed["ddb"] = ddb[3]
     hours = range(24)
     if args.hours:
         first, _, last = args.hours.partition("-")

@@ -9,6 +9,7 @@ from flask import Flask, jsonify, render_template, request
 from threading import Thread
 import pymysql
 import csv
+import json
 import requests
 import io
 from io import StringIO
@@ -108,6 +109,10 @@ def get_aircraft_type_description(symbol1, symbol2):
     return description
 
 
+class DatabaseUnavailable(pymysql.MySQLError):
+    """Connection failure; a MySQLError, so every route's own handler answers it."""
+
+
 def get_db_connection(max_retries=30, retry_delay=10):
     if SKIP_STATS_DATABASE == True:
         return None
@@ -132,7 +137,7 @@ def get_db_connection(max_retries=30, retry_delay=10):
             if retries < max_retries:
                 main_logger.info(f"New attempt in {retry_delay} seconds...")
                 time.sleep(retry_delay)
-    raise Exception("Cannot connect to database after many attempts.")
+    raise DatabaseUnavailable("Cannot connect to database after many attempts.")
 
 
 # (month, device_id) -> the category last written to the database.
@@ -492,10 +497,17 @@ def update_device_type_map():
             if row.get("IDENTIFIED", "").strip().strip("'") == "N":
                 noident.add(device_id)
                 continue
+            cn = (row.get("CN") or "").strip().strip("'")
+            kind = (row.get("DEVICE_TYPE") or "").strip().strip("'")
             for key in ("REGISTRATION", "CN"):
                 name = re.sub(r"[\s-]", "", (row.get(key) or "").strip().strip("'")).upper()
                 if len(name) >= 2:
-                    by_reg.setdefault(name, device_id)
+                    # Every device that answers to the name, once each: the
+                    # first row used to win, and 6,571 names have several.
+                    by_reg.setdefault(name, {}).setdefault(device_id, {
+                        "id": device_id, "type": kind or None,
+                        "model": aircraft_model or None,
+                        "registration": registration or None, "cn": cn or None})
             if not aircraft_model:
                 new_map[device_id] = "Unknown"
             elif registration:
@@ -506,7 +518,7 @@ def update_device_type_map():
         device_type_map = new_map
         ddb_notrack.clear(); ddb_notrack.update(notrack)
         ddb_noident.clear(); ddb_noident.update(noident)
-        ddb_by_reg.clear(); ddb_by_reg.update(by_reg)
+        ddb_by_reg.clear(); ddb_by_reg.update({k: list(v.values()) for k, v in by_reg.items()})
         main_logger.info(f"[Device map] Loaded {len(device_type_map)} entries, "
                          f"{len(notrack)} not to be tracked, {len(noident)} not to be identified")
 
@@ -525,7 +537,7 @@ def prune_old_devices():
     global ads_l_devices
     while True:
         time.sleep(60)
-        cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=60)
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(seconds=sources.LIVE_WINDOW)
         ads_l_devices = {
             k: v for k, v in ads_l_devices.items() if v["timestamp"] > cutoff
         }
@@ -552,31 +564,71 @@ def start_listener():
     return listener_thread
 
 
+def _cell(v):
+    """One CSV cell: nested lists and dicts as compact JSON, and no formula."""
+    if isinstance(v, (list, tuple, dict)):
+        v = json.dumps(v, ensure_ascii=False, separators=(",", ":"), default=str)
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        v = "'" + v
+    return v
+
+
 def _flatten(row, prefix=""):
     out = {}
     for k, v in row.items():
         if isinstance(v, dict):
             out.update(_flatten(v, prefix + k + "."))
         else:
-            out[prefix + k] = v
+            out[prefix + k] = _cell(v)
     return out
 
 
-def respond(rows, name):
-    """JSON by default; ?format=csv gives one flat row per entry, for a spreadsheet."""
-    if request.args.get("format") != "csv":
-        return jsonify(rows)
-    flat = [_flatten(r) for r in rows]
-    columns = []
-    for r in flat:
-        columns += [k for k in r if k not in columns]
-    buf = StringIO()
-    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(flat)
-    return app.response_class(
-        buf.getvalue(), mimetype="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
+# Serialised bodies of the heavy statistics. The tracker keeps each statistic
+# as one list or dict until it recomputes it, so a body is reused for as long
+# as that same object comes back. The key holds only what a route reads (its
+# name, the format and the month), so an invented parameter such as ?cb=1,
+# which nginx's cache treats as a new URL, costs a lookup and not 7 MB of
+# JSON. One entry per key, so the cache stays as small as the statistics.
+_bodies = {}
+_bodies_lock = threading.Lock()
+
+
+def _cached(source, key, build):
+    """build() -> (body, mimetype, headers); redone only when `source` is not the object last served."""
+    with _bodies_lock:
+        hit = _bodies.get(key)
+    if hit is None or hit[0] is not source:
+        body, mimetype, headers = build()
+        hit = (source, body, mimetype, headers)
+        with _bodies_lock:
+            _bodies[key] = hit
+    return app.response_class(hit[1], mimetype=hit[2], headers=hit[3])
+
+
+def respond(rows, name, source=None, extra="", build_rows=None):
+    """JSON by default; ?format=csv gives one flat row per entry, for a spreadsheet.
+
+    `source` is the object the tracker caches (default `rows`); `extra` is any
+    route parameter that changes the answer; `build_rows` makes the CSV's rows when
+    `rows` is not itself a list of them.
+    """
+    csv_out = request.args.get("format") == "csv"
+    src = rows if source is None else source
+
+    def build():
+        if not csv_out:
+            return app.json.dumps(rows) + "\n", "application/json", None
+        flat = [_flatten(r) for r in (rows if build_rows is None else build_rows())]
+        columns = []
+        for r in flat:
+            columns += [k for k in r if k not in columns]
+        buf = StringIO()
+        writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(flat)
+        return buf.getvalue(), "text/csv", {"Content-Disposition": f'attachment; filename="{name}.csv"'}
+
+    return _cached(src, (name, csv_out, extra), build)
 
 
 # --- ROUTES FLASK ---
@@ -662,8 +714,25 @@ def get_check():
     """
     q = re.sub(r"[\s-]", "", request.args.get("id") or "").upper()[:16]
     m = _check_id.match(q)
-    address = m.group(1) if m else ddb_by_reg.get(q)
-    if address is None:
+    # "0x" before six hex digits is how the page asks for that device ID itself,
+    # which settles an ambiguity between an ID and a registration.
+    named = [] if m and q.startswith("0X") else ddb_by_reg.get(q, [])
+    if len(named) > 1 or (m and named):
+        # An uncertain match gets no position: the visitor picks a device and
+        # the check runs again by its id. Only what the public OGN device
+        # database shows (identified devices only, so nothing hidden here).
+        candidates = list(named)
+        if m and not any(c["id"] == m.group(1) for c in candidates):
+            info = ddb_info(m.group(1))
+            candidates.append({"id": m.group(1), "type": None, "model": info.get("model"),
+                               "registration": None, "cn": None, "as_address": True})
+        return jsonify({"query": q, "found": True, "ambiguous": True,
+                        "candidates": candidates[:50], "candidates_total": len(candidates)})
+    if m:
+        address = m.group(1)
+    elif named:
+        address = named[0]["id"]
+    else:
         return jsonify({"query": q, "found": False})
     if address in ddb_notrack:
         # The owner's choice in the OGN device database, public there too.
@@ -747,16 +816,37 @@ def get_visibility_detail():
         return jsonify([])
 
 
+_first_month = [0, None]
+
+
+def valid_month(month):
+    """A YYYY-MM between the first month in the database and the current one."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", month)
+    if not m or not 1 <= int(m.group(2)) <= 12:
+        return False
+    if time.time() - _first_month[0] > 3600 or _first_month[1] is None:
+        conn = get_db_connection(max_retries=1)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MIN(month) FROM monthly_visibility_grid")
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        _first_month[:] = [time.time(), row[0] if row and row[0] else "2000-01"]
+    return _first_month[1] <= month <= datetime.datetime.utcnow().strftime("%Y-%m")
+
+
 @app.route(API + "/visibility/grid")
 def get_visibility_grid():
     """Monthly visibility per 0.25-degree cell; ?month=YYYY-MM, default current."""
     if tracker is None or SKIP_STATS_DATABASE:
         return jsonify([])
     month = request.args.get("month")
-    if month and not re.fullmatch(r"\d{4}-\d{2}", month):
-        return jsonify([])
     try:
-        return respond(tracker.grid_stats(month), "visibility-by-cell")
+        if month and not valid_month(month):
+            return jsonify({"error": "month must be YYYY-MM, from the first month on record to the current one"}), 400
+        rows = tracker.grid_stats(month)
+        return respond(rows, "visibility-by-cell", extra=month or "")
     except pymysql.MySQLError as e:
         main_logger.error(f"Error reading monthly_visibility_grid: {e}")
         return jsonify([])
@@ -788,12 +878,11 @@ def get_prediction():
 
 def respond_parts(out, name):
     """A statistic made of several lists: JSON as it is, or one CSV with a `part` column."""
-    if request.args.get("format") != "csv":
-        return jsonify(out)
     # Only the lists of rows go into the CSV; the band edges and thresholds
     # beside them are in the JSON (until 7 October 2026 they broke it).
-    return respond([dict({"part": part}, **row) for part, rows in out.items()
-                    if isinstance(rows, list) for row in rows if isinstance(row, dict)], name)
+    return respond(out, name, source=out, build_rows=lambda: [
+        dict({"part": part}, **row) for part, rows in out.items()
+        if isinstance(rows, list) for row in rows if isinstance(row, dict)])
 
 
 @app.route(API + "/patterns")

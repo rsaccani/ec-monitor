@@ -33,7 +33,7 @@ the counts drop them whenever they are computed, so the October 2026 figures
 exclude them too; the aircraft itself is counted under FLARM, its own system.
 A genuine PilotAware ground vehicle, which declares the same category, is
 lost with them, and is not an aircraft. Until
-15:19 UTC on 4 October 2026 they were followed apart, which split one
+15:19 UTC on 4 October 2026 the systems of one address were followed apart, which split one
 FLARM into two sparser streams that looked less visible than the device was
 and counted its flying time twice; the October 2026 figures mix the two rules
 up to that time.
@@ -113,8 +113,11 @@ OGN data usage terms require every service to respect them: a device whose
 owner asked not to be tracked is dropped on arrival and appears nowhere, in
 the map, the counts or the measures; one whose owner asked not to be
 identified is shown and counted without its aircraft model or registration.
-Devices are matched to the database by their 24-bit address. How long a
-device address is kept is set out in section 9.
+Devices are matched to the database by their 24-bit address. The nightly
+run downloads the database each time and keeps the last good copy; when a
+download fails it uses that copy and says so in its notes, and with no copy
+at all it stops before writing anything, so an owner's choice is never lost
+to a network error. How long a device address is kept is set out in section 9.
 
 **Aircraft category** comes from the aircraft type in the packet's OGN id
 when there is one, and from the APRS symbol otherwise (`g` paraglider or hang
@@ -524,7 +527,9 @@ emulating the loss: for gaps of 2, 4, 8, 16 and 32 seconds, the receiver is
 assumed to have kept only the start and the position that long before it
 (within half a second); the turn rate derived from that pair is compared with
 the one the start carries, at the same instant. A gap of 32 seconds is about
-the interval at which a phone app sends.
+the interval at which a phone app sends. The straight line drawn beside them
+is scored on the same fixes at each gap (from 17 October 2026; before that
+it was scored on every circling fix, a larger and different sample).
 
 ## 7. How an installation shields the signal
 
@@ -639,7 +644,20 @@ and cell for the measures above; reception counts by angle; prediction errors
 by bin; the daily totals of section 10 and of PATTERNS.md, and for each
 aircraft that circled,
 its thermals to each side per day. Apart from the raw feed kept for seven
-days, described below, no track and no position of any aircraft is stored.
+days, described below, no track is stored, and the only positions kept are
+the last one of each device, for 24 hours, so that the device check can
+answer.
+
+The device check (conspicuity.eu/check/) answers for one address, or for a
+registration or competition number that the OGN device database shows as
+identified and that belongs to a single device: per system, the last fix of
+the past 24 hours with its receiver, the packets heard, the declared
+category, the interval between positions, the signal against other devices
+of the same system at the same distance, and the silences longer than a
+minute. It never returns a series of positions. A name shared by several
+devices gets the list of those devices to choose from, and no position.
+Devices whose owners asked not to be tracked are answered as such, and
+random addresses are not kept.
 
 A device address can be traced to an aircraft and its pilot, so the lists of
 addresses are kept for the current and the previous month only. Once a month
@@ -717,8 +735,9 @@ left out: those that declare a jet, fly above 15,000 ft or faster than
 packet from a device that asks not to be tracked, in its own id or in the
 OGN device database. The files stay on the server,
 readable by the service account alone; each hour is compressed once it is
-over and deleted after seven days. Only the aggregates of this method leave
-the server, as with the live feed.
+over and deleted after seven days. Apart from the live map and the device
+check, which show single aircraft as the OGN feed itself does, only the
+aggregates of this method leave the server.
 
 The recording was meant to be switched off once the measures had settled.
 From 7 October 2026 it stays on, because the measures of section 10 are
@@ -776,7 +795,7 @@ hours that were missing.
 
 How light aviation flies, as opposed to how visible it is, is measured on
 the same feed by the same nightly code and described apart, in
-[PATTERNS.md](PATTERNS.md): when each kind flies, circling direction,
+[PATTERNS.md](https://github.com/rsaccani/ec-monitor/blob/main/PATTERNS.md): when each kind flies, circling direction,
 thermals, height above the ground through the day, flights, launches and
 wave. The split was made on 7 October 2026, because those are different
 questions with their own readers, and this file is the method for
@@ -913,7 +932,7 @@ a drone of the device database at 91 km/h: flight cannot separate a
 fixed-wing drone from a light aircraft, which is why it never overrides a
 declaration. Each class is published beside the others, and a probably
 crewed drone stays in the question's figures, counted apart, so that a
-reader can leave it out. The classes held 56 uncertain
+reader can leave it out. Before the shared-address rule below, the classes held 56 uncertain
 address-days (19.7 h) on 6 October: 17 never above 30 m (0.3 h), 4 probably
 crewed (6.2 h), 25 probably multirotors (10.3 h), 3 probably fixed-wing drones
 (2.1 h) and 7 still uncertain (0.8 h); and 43 (11.7 h) on 7 October: 13, 1
@@ -1222,7 +1241,7 @@ A **station** is a name that sends receiver beacons: OGN receivers, and
 FANET ground stations such as GXAirCom, which send the same beacons and
 carry traffic into OGN; the kind is told from the software version in the
 status beacon. Stations are taken in when they report a position in Europe
-(section 1) or forward a packet of an aircraft there. Names are compared
+(sections 3 and 9) or forward a packet of an aircraft there. Names are compared
 case-sensitively, since two stations can differ only by case. Aggregators
 that appear as the last element of a path without being a station
 (SafeSky's link) are left out.
@@ -1245,14 +1264,14 @@ only:
   10 km, and 23 to 26 dB with a good preamplifier.
 - **Traffic**: aircraft heard and radio packets forwarded. The recording
   leaves out airliners, jets and devices that ask not to be tracked
-  (section 1), so both are lower than what the station really carried.
+  (section 9), so both are lower than what the station really carried.
 - The **five receiver checks of 10.4** (moved, altitude, late, stray
   categories, altitude offset), with their values.
 
 A **maintenance note** is open on a station's card for the day whenever a check of 10.4 applies to it, or when one of these figures crosses its threshold. These are the routine notes that any network of volunteer-run stations needs, published so that operators can act on them. Each note states what was measured, what it means for the data and the remedy:
 
 - **Software update available**: OGN receiver software older than 0.3.0. On 15 October 2026, among the stations that report a position in Europe, 52 of 2,450 ran a release older than 0.3.0, against 1,832 on 0.3.2 and 422 on 0.3.3 (the first measurement, 51 of 2,599, counted the stations outside Europe and the PilotAware ones too).
-- **Clock offset above 100 ms** (median of the day), or no NTP figure: the station stamps packets by its own clock. On 15 October 2026 the median station was at 0.6 ms and nine in ten under 4.7 ms, so 100 ms is twenty times the tail and still a tenth of a second, under which no figure here moves.
+- **Clock offset above 100 ms** (median of the day), or no NTP figure: the station stamps packets by its own clock. A receiver whose clock is not synchronised reports 16,000 ms; the card shows that as "not synchronised", since the real offset is then unknown. On 15 October 2026 the median station was at 0.6 ms and nine in ten under 4.7 ms, so 100 ms is twenty times the tail and still a tenth of a second, in which a glider at 100 km/h moves under 3 m, so no figure here moves.
 - **CPU temperature at 80 °C or above** (median of the day), where a Raspberry Pi starts to slow itself down and the decoder may fall behind. The median station was at 51.5 °C, nine in ten under 66.6 °C.
 - **Radio noise above 10 dB** over the reference (median of the day), which reduces the distance at which weak signals are received. Typical sources are a transmitter nearby, a preamplifier or filter to check, or interference from the station's own computer. The median was +3.4 dB, nine in ten under +7.0 dB. To be checked against more days.
 - **Reported position changes during the day**, **Configured altitude differs from the terrain**, **Some packets forwarded more than 60 s late**, **Aircraft categories that differ from the usual one** and **Geoid conversion to check** are the five receiver checks of 10.4 (moved, altitude, late, stray categories, altitude offset), with their thresholds.
@@ -1288,9 +1307,8 @@ reported position moved by more than 2 km during the day sits out the
 comparison that day, since its distances are measured from its first
 position.
 
-What it cannot separate: a ridge between the station and part of the sky
-makes it look deaf for the aircraft behind the ridge: a property of the
-site, which no setting changes. The figure is therefore given with
+A ridge between the station and part of the sky makes it look deaf to the
+aircraft behind the ridge, which is a property of the site. The figure is therefore given with
 the share of partners against which the station is more than 3 dB low, so that a station
 deaf against everyone (equipment) reads differently from one deaf against
 partners on one side (terrain). The card says "lower than nearly all its
@@ -1313,8 +1331,8 @@ The page gives each station a card with its last 30 days, found by name, and for
 
 **Where a new station would help most** (from 17 October 2026). The map of
 section 2 gives, per 0.25-degree cell, the time each aircraft spent without
-radio signal. Two things stop it from being a map of missing stations as it
-stands. A paraglider pilot's body shields the radio for part of every circle
+radio signal. Two effects have to be taken out before it shows where
+stations are missing. A paraglider pilot's body shields the radio for part of every circle
 (section 7), so free flight loses signal even under good coverage; and a cell
 where nobody flies has no silence to count, however few stations it has.
 
@@ -1343,8 +1361,10 @@ with at least 2 hours of probe time from at least 5 probe aircraft-days, so
 that one pilot with a badly placed tracker does not paint a cell. The map
 shows, for each cell, the lost time, the lowest band where the probe is heard
 at least 80% of the time (how low the network reaches there), read on the
-families whose probe passes the floors in that band, and the stations of the
-latest day within 30 km of the cell's centre.
+families whose probe passes the floors in that band and given only when every
+counting band above it is heard as well (the popup says when the bands below
+it were too thin to measure), and the stations of the latest day within 30 km
+of the cell's centre, with a PilotAware twin at the same spot shown as one.
 
 On 15 October 2026 alone, with those floors applied to one day, 41 cells had
 a band that counted, and they lost 173 hours. One cell, on the south side of
@@ -1382,14 +1402,15 @@ heard as the guide.
 - One aircraft is one 24-bit address, while Naviter's ids are unique only
   within Naviter: two Naviter users could in principle share an address with
   each other or with a radio device.
-- The systems of one address may declare different categories; each measure
-  takes the category of the packet it is counting.
+- The systems of one address may declare different categories; the live
+  measures take the category of the packet they are counting, and the
+  nightly measures the address's majority category (section 10).
 - A restart of the service loses the totals not yet written (at most 15
   minutes) and every silence that spans it; nothing is counted twice, and no
   silence is invented.
 - The altitude reference of drones on the feed is not documented. The Remote
-  ID standards carry a height above the WGS84 ellipsoid, which lies 40 to
-  55 m above sea level in Europe; if that is what arrives, a drone looks that
+  ID standards carry a height above the WGS84 ellipsoid, which in Europe lies
+  40 to 55 m below sea level; if that is what arrives, a drone looks that
   much higher than it is, which moves it across the 50 m band of section
   10.1 and makes the vertical margin of an encounter smaller in effect.
 - The live service still files a crewed aircraft declared as a drone under
@@ -1400,9 +1421,7 @@ heard as the guide.
   probable identity and leaves its declaration standing: a fixed-wing drone and a light aircraft
   fly alike, a paraglider's instrument set to drone and soaring in a strong
   wind can hover like a multirotor, and the classes count address-days, so one
-  device can fall in two classes on two days. Before 9 October 2026 the
-  method judged identity from flight only by a thermal against a crewed
-  database entry.
+  device can fall in two classes on two days.
 - The limits of section 1 catch only what no aircraft of the kind can do.
   A wrong fix within them, a paraglider placed 1 km off its track or an
   altitude 300 m too high, passes as flight. They rest on the declared

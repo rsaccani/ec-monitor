@@ -1200,6 +1200,7 @@ def place_site(lat_idx, lon_idx, kind=None):
 STATION_SILENCE_S = 900             # a station beacons every 5 minutes: 15 minutes of silence is a fault of the link or the box
 STATION_SOFTWARE_MIN = (0, 3, 0)    # OGN receiver software older than this (0.3.2 and 0.3.3 ran on 95% of the stations on 15 October)
 STATION_NTP_MAX_MS = 100            # median of the day; the median station sits at 0.6 ms, nine in ten under 4.7 ms
+STATION_NTP_UNSYNC_MS = 16000       # the status beacon reports NTP:16000.0ms when the clock is not synchronised: no offset was measured
 STATION_TEMP_MAX_C = 80             # median of the day, "or more"; where a Raspberry Pi starts to throttle itself
 STATION_NOISE_MAX_DB = 10           # median of the day, above the receiver's reference; the median station sits at +3.4 dB
 STATION_SENSITIVITY_DB = 10         # a tenth of the signal power below the network's median station; 17 stations of 719 on 15 October
@@ -1220,6 +1221,34 @@ COVERAGE_HEARD_SHARE = 0.8          # a band is "heard" where the probe is witho
 COVERAGE_STATION_KM = 30            # stations listed for a cell: those within this distance of its centre
 COVERAGE_STATIONS_SHOWN = 6
 
+COVERAGE_TWIN_M = 50                # stations this close are one site: a PilotAware twin PW<name> sits at 0 m from <name>
+
+
+def collapse_twins(stations):
+    """[(name, lat, lon)] with the stations within COVERAGE_TWIN_M of each other made one entry, named
+    "A + B" in name order, at the position of the first; each site then counts once in a cell's list."""
+    out = []
+    grid = {}
+    for name, lat, lon in sorted(stations):
+        hit = None
+        for dl in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                for i in grid.get((round(lat * 100) + dl, round(lon * 100) + dc), ()):
+                    if _distance(out[i][1], out[i][2], lat, lon) <= COVERAGE_TWIN_M:
+                        hit = i
+                        break
+                if hit is not None:
+                    break
+            if hit is not None:
+                break
+        if hit is None:
+            grid.setdefault((round(lat * 100), round(lon * 100)), []).append(len(out))
+            out.append([name, lat, lon])
+        else:
+            out[hit][0] += " + " + name
+    return [tuple(x) for x in out]
+
+
 def coverage_gaps_summary(rows):
     """Cells of the coverage-gap map from rows already added up over days.
 
@@ -1227,7 +1256,14 @@ def coverage_gaps_summary(rows):
     of a family counts when its probe has COVERAGE_MIN_PROBE_H hours and COVERAGE_MIN_AIRCRAFT_DAYS aircraft-days;
     the lost time of a cell is, over the counting bands, the family's airborne time times the probe's share
     without signal. A band counts where at least one family's probe passes the floors on its own; its share without
-    signal, and so the lowest band heard, is read on the probes that pass them.
+    signal, and the probe hours and aircraft-days shown next to it, are those of the families that pass them
+    (`families` gives each family's own figures, measured or not, and `probe_hours_measured` the hours of both).
+
+    `lowest_band_heard` is the lowest band from which every counting band upwards is heard
+    (share without signal at most 1 - COVERAGE_HEARD_SHARE), or None; `lowest_band_lower_measured` says whether every
+    band below it counts too (False: `lowest_band_unmeasured_below` lists the bands with too little probe flying). `bands_counting` is the number of counting
+    bands: a None with all of them counting means measured and heard less than 80% of the time, a None with fewer means
+    that part of the cell has too little probe flying to say.
     Only cells with a counting band are returned.
     """
     cells = {}
@@ -1242,7 +1278,9 @@ def coverage_gaps_summary(rows):
         counting = False
         bands = []
         for b in range(len(COVERAGE_BAND_LABELS)):
-            pb = lb = ab = ob = cp = cl = 0.0
+            pb = lb = ob = cp = cl = 0.0
+            ab = ca = 0
+            fam = {}
             for family in ("free_flight", "glider"):
                 probe, late, aircraft, air = c.get((family, b), (0.0, 0.0, 0, 0.0))
                 pb += probe
@@ -1252,27 +1290,42 @@ def coverage_gaps_summary(rows):
                 air_all += air
                 probe_all += probe
                 late_all += late
-                if probe >= floor_s and aircraft >= COVERAGE_MIN_AIRCRAFT_DAYS:
+                passes = probe >= floor_s and aircraft >= COVERAGE_MIN_AIRCRAFT_DAYS
+                fam[family] = {"probe_hours": round(probe / 3600, 2), "probe_aircraft_days": aircraft,
+                               "share_without_signal": round(late / probe, 4) if probe else None,
+                               "counts": passes}
+                if passes:
                     counting = True
                     by_family[family] = by_family.get(family, 0.0) + air * late / probe
                     lost += air * late / probe
                     cp += probe
                     cl += late
+                    ca += aircraft
             share = cl / cp if cp else (lb / pb if pb else None)
-            bands.append({"probe_hours": round(pb / 3600, 2), "probe_aircraft_days": int(ab),
+            bands.append({"probe_hours": round((cp if cp else pb) / 3600, 2),
+                          "probe_aircraft_days": int(ca if cp else ab),
+                          "probe_hours_measured": round(pb / 3600, 2),
                           "share_without_signal": None if share is None else round(share, 4),
-                          "air_hours": round(ob / 3600, 2), "counts": cp > 0})
+                          "air_hours": round(ob / 3600, 2), "counts": cp > 0, "families": fam})
         if not counting:
             continue
-        lowest = next((b for b, d in enumerate(bands)
-                       if d["counts"] and d["share_without_signal"] <= 1 - COVERAGE_HEARD_SHARE), None)
+        heard = [(not d["counts"]) or d["share_without_signal"] <= 1 - COVERAGE_HEARD_SHARE for d in bands]
+        lowest = None
+        for b in range(len(bands) - 1, -1, -1):
+            if not heard[b]:
+                break
+            if bands[b]["counts"]:
+                lowest = b
         out.append({"lat_idx": la, "lon_idx": lo, "lat": round((la + 0.5) * CELL_DEG, 4),
                     "lon": round((lo + 0.5) * CELL_DEG, 4), "lost_hours": round(lost / 3600, 2),
                     "lost_hours_free_flight": round(by_family.get("free_flight", 0.0) / 3600, 2),
                     "lost_hours_glider": round(by_family.get("glider", 0.0) / 3600, 2),
                     "air_hours": round(air_all / 3600, 2), "probe_hours": round(probe_all / 3600, 2),
                     "probe_late_share": round(late_all / probe_all, 4) if probe_all else None,
-                    "lowest_band_heard": lowest, "bands": bands})
+                    "lowest_band_heard": lowest,
+                    "lowest_band_lower_measured": None if lowest is None else all(d["counts"] for d in bands[:lowest]),
+                    "lowest_band_unmeasured_below": [] if lowest is None else [b for b in range(lowest) if not bands[b]["counts"]],
+                    "bands_counting": sum(1 for d in bands if d["counts"]), "bands": bands})
     return out
 
 
@@ -1298,9 +1351,12 @@ STATION_NOTES = {
         links=[_LINK_FAQ]),
     "ntp_offset": dict(
         title="Clock offset above 100 ms", figure="ntp_ms_median", unit="ms", threshold=STATION_NTP_MAX_MS,
-        rule="median clock offset above 100 ms, or no clock figure in the status beacon",
+        rule="median clock offset above 100 ms, a clock that is not synchronised, or no clock figure in the status "
+             "beacon",
         meaning="The station stamps each packet with its own clock, so every position it forwards carries that "
-                "offset in time. 100 ms is a tenth of a second; the median station is at 0.6 ms.",
+                "offset in time. 100 ms is a tenth of a second; the median station is at 0.6 ms. A receiver whose "
+                "clock is not synchronised with a time server reports a fixed 16,000 ms, which is a placeholder and "
+                "not a measurement, so the page says \"not synchronised\" for it and the real offset is unknown.",
         remedy="Check that the time service (NTP) runs and can reach a time server.",
         links=[_LINK_FAQ]),
     "cpu_temperature": dict(
@@ -1386,9 +1442,19 @@ STATION_NOTES = {
 }
 
 
+def station_note_state(info, row):
+    """"not_synchronised" for the clock note of a station whose beacon carried the placeholder offset, else None."""
+    v = row.get(info["figure"])
+    if info["figure"] == "ntp_ms_median" and v is not None and abs(float(v)) >= STATION_NTP_UNSYNC_MS:
+        return "not_synchronised"
+    return None
+
+
 def station_note_figure(info, row):
     """The figure that opened a note, as the page shows it: shares in percent, and the sensitivity as
     "below the neighbours by N dB", which turns the negative column positive."""
+    if station_note_state(info, row):
+        return None
     figure = row.get(info["figure"])
     if isinstance(figure, decimal.Decimal):
         figure = float(figure)
@@ -1940,6 +2006,8 @@ class SourceTracker:
                     rate_g = (((scourse - old[3] + 540) % 360) - 180) / (st - old[0])
                     preds["derived_g%d" % g] = _arc(slat, slon, scourse, v, rate_g, seconds)
                     preds["transmitted_g%d" % g] = preds["transmitted"]
+                    # The straight line on the same fixes, so the reference compares like with like.
+                    preds["straight_g%d" % g] = preds["straight"]
             for name, (plat, plon) in preds.items():
                 err = _distance(plat, plon, lat, lon)
                 row = self.prediction[(month, tocall, category, h, circling, name)]
@@ -3228,6 +3296,7 @@ class SourceTracker:
                             continue
                         with_note.setdefault(code, []).append({
                             "name": r[0], "figure": station_note_figure(info, row),
+                            "state": station_note_state(info, row),
                             "packets": int(r[2] or 0), "days_flagged": flagged.get((r[0], code), 0)})
                 for rows in with_note.values():
                     rows.sort(key=lambda x: (-x["packets"], x["name"]))
@@ -3261,7 +3330,7 @@ class SourceTracker:
                             (name, latest, STATION_WINDOW_DAYS))
                 rows = cur.fetchall()
                 if not rows:
-                    like = re.sub(r"[\\%_]", "", name)
+                    like = re.sub(r"([\\%_])", r"\\\1", name)    # what was typed, with LIKE's wildcards escaped
                     cur.execute("""SELECT DISTINCT name FROM daily_stations
                                    WHERE day > %s - INTERVAL %s DAY AND (LOWER(name) = LOWER(%s)
                                          OR (%s <> '' AND LOWER(name) LIKE CONCAT('%%', LOWER(%s), '%%')))
@@ -3282,16 +3351,25 @@ class SourceTracker:
                 elif isinstance(v, float):
                     d[k] = round(v, 4)
             d["notes"] = [c for c in d["notes"].split(",") if c]
+            # 16,000 ms is the beacon's "not synchronised", not an offset: no figure, and a flag for the page.
+            d["ntp_synchronised"] = None
+            for k in ("ntp_ms_last", "ntp_ms_median"):
+                if d[k] is not None and abs(d[k]) >= STATION_NTP_UNSYNC_MS:
+                    d[k] = None
+                    d["ntp_synchronised"] = False
+            if d["ntp_synchronised"] is None and d["ntp_ms_median"] is not None:
+                d["ntp_synchronised"] = True
             days.append(d)
         last = days[-1]
+        last_raw = dict(zip(self.STATION_COLUMNS, rows[-1]))
         notes = []
         for code in last["notes"]:
             info = STATION_NOTES.get(code)
             if info is None:
                 continue
-            figure = station_note_figure(info, last)
+            figure = station_note_figure(info, last_raw)
             notes.append({"code": code, "day": last["day"], "title": info["title"], "rule": info["rule"],
-                              "figure": figure, "unit": info["unit"], "threshold": info["threshold"],
+                              "figure": figure, "state": station_note_state(info, last_raw), "unit": info["unit"], "threshold": info["threshold"],
                               "meaning": info["meaning"], "remedy": info["remedy"],
                               "links": [{"label": a, "url": b} for a, b in info["links"]],
                               "days_flagged": sum(1 for d in days if code in d["notes"]), "days": len(days)})
@@ -3320,7 +3398,7 @@ class SourceTracker:
             if station_day is not None:
                 cur.execute("""SELECT name, lat, lon FROM daily_stations
                                WHERE day = %s AND lat IS NOT NULL AND lon IS NOT NULL""", (station_day,))
-                stations = [(n, float(a), float(b)) for n, a, b in cur.fetchall()]
+                stations = collapse_twins([(n, float(a), float(b)) for n, a, b in cur.fetchall()])
             for c in cells:
                 dlon = min(180.0, 0.5 / max(0.05, math.cos(math.radians(c["lat"]))))
                 near = sorted((_distance(c["lat"], c["lon"], a, b) / 1000, n) for n, a, b in stations
