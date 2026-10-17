@@ -19,6 +19,7 @@ import bisect
 import calendar
 import collections
 import datetime
+import decimal
 import logging
 import json
 import math
@@ -1201,7 +1202,7 @@ STATION_SOFTWARE_MIN = (0, 3, 0)    # OGN receiver software older than this (0.3
 STATION_NTP_MAX_MS = 100            # median of the day; the median station sits at 0.6 ms, nine in ten under 4.7 ms
 STATION_TEMP_MAX_C = 80             # median of the day, "or more"; where a Raspberry Pi starts to throttle itself
 STATION_NOISE_MAX_DB = 10           # median of the day, above the receiver's reference; the median station sits at +3.4 dB
-STATION_SENSITIVITY_DB = 10         # a tenth of the signal power below the network's median station; 26 stations of 550 (the bottom 5%) on 15 October
+STATION_SENSITIVITY_DB = 10         # a tenth of the signal power below the network's median station; 17 stations of 719 on 15 October
 STATION_LOW_SHARE = 0.8             # the card says "nearly all neighbours" from this share of partners, "some" below it
 STATION_LOW_SHOWN_DB = 3            # the card words the partner share when the station is at least this far below (nightly.SENS_LOW_DB)
 STATION_WINDOW_DAYS = 30            # a station's card
@@ -1225,7 +1226,8 @@ def coverage_gaps_summary(rows):
     `rows` are (lat idx, lon idx, family, band, probe s, probe late s, probe aircraft-days, family air s). A band
     of a family counts when its probe has COVERAGE_MIN_PROBE_H hours and COVERAGE_MIN_AIRCRAFT_DAYS aircraft-days;
     the lost time of a cell is, over the counting bands, the family's airborne time times the probe's share
-    without signal. The lowest band heard is read on both families' probes together, with the same floors.
+    without signal. A band counts where at least one family's probe passes the floors on its own; its share without
+    signal, and so the lowest band heard, is read on the probes that pass them.
     Only cells with a counting band are returned.
     """
     cells = {}
@@ -1240,7 +1242,7 @@ def coverage_gaps_summary(rows):
         counting = False
         bands = []
         for b in range(len(COVERAGE_BAND_LABELS)):
-            pb = lb = ab = ob = 0.0
+            pb = lb = ab = ob = cp = cl = 0.0
             for family in ("free_flight", "glider"):
                 probe, late, aircraft, air = c.get((family, b), (0.0, 0.0, 0, 0.0))
                 pb += probe
@@ -1254,10 +1256,12 @@ def coverage_gaps_summary(rows):
                     counting = True
                     by_family[family] = by_family.get(family, 0.0) + air * late / probe
                     lost += air * late / probe
+                    cp += probe
+                    cl += late
+            share = cl / cp if cp else (lb / pb if pb else None)
             bands.append({"probe_hours": round(pb / 3600, 2), "probe_aircraft_days": int(ab),
-                          "share_without_signal": round(lb / pb, 4) if pb else None,
-                          "air_hours": round(ob / 3600, 2),
-                          "counts": pb >= floor_s and ab >= COVERAGE_MIN_AIRCRAFT_DAYS})
+                          "share_without_signal": None if share is None else round(share, 4),
+                          "air_hours": round(ob / 3600, 2), "counts": cp > 0})
         if not counting:
             continue
         lowest = next((b for b, d in enumerate(bands)
@@ -1300,7 +1304,7 @@ STATION_NOTES = {
         remedy="Check that the time service (NTP) runs and can reach a time server.",
         links=[_LINK_FAQ]),
     "cpu_temperature": dict(
-        title="CPU temperature above 80 \u00b0C", figure="temp_c_median", unit="C", threshold=STATION_TEMP_MAX_C,
+        title="CPU temperature at 80 \u00b0C or above", figure="temp_c_median", unit="C", threshold=STATION_TEMP_MAX_C,
         rule="median CPU temperature of 80 \u00b0C or more",
         meaning="A Raspberry Pi starts to slow itself down at about this temperature, and the decoder may then "
                 "miss packets. The median station is at 51.5 \u00b0C.",
@@ -1319,8 +1323,8 @@ STATION_NOTES = {
         title="Reported position changes during the day", figure="moved_m", unit="m", threshold=2000,
         rule="reported position more than 2 km from its first report of the day",
         meaning="The position the station reports moved by more than 2 km within the day. This happens when the "
-                "receiver travels or when its configured position changes. Positions decoded from the receiver's "
-                "own position are then placed relative to the wrong point.",
+                "receiver travels or when its configured position changes, and the distances measured from the "
+                "station during that day are then less reliable.",
         remedy="Set the fixed position of the antenna in the receiver configuration file.",
         links=[_LINK_CONFIG]),
     "receiver_altitude": dict(
@@ -1344,9 +1348,9 @@ STATION_NOTES = {
         rule="2% or more of the radio packets it forwards (at least 1,000 with a category) declare another "
              "category than their address's majority",
         meaning="2% or more of the packets from this station declare an aircraft category other than the one the "
-                "same address declares in most of its packets. The median station is at 0.01%. The cause is not yet "
-                "established: these packets carry no more bit errors than the others, and the stations involved "
-                "run both current releases and report good clocks.",
+                "same address declares in most of its packets. The median station is at 0.01%. The cause is still being "
+                "studied; these packets carry as many bit errors as the others, and the stations involved run "
+                "current releases with good clocks.",
         remedy="Check the frequency correction and the gain in the configuration; if the share stays high, "
                "the monitor's field notes follow the investigation.",
         links=[_LINK_CONFIG, _LINK_FAQ]),
@@ -1369,17 +1373,32 @@ STATION_NOTES = {
         meaning="When this station and its neighbours receive the same FLARM packet, this station's signal is lower "
                 "by the figure shown, after both are scaled to the same distance. 10 dB is a tenth of the signal "
                 "power: it cuts the distance at which this station hears a weak packet by a factor of three or more, so "
-                "aircraft at the edge of its area are missed or heard late. On 15 October 2026 the middle half of "
-                "the stations lay between -3.6 and +3.1 dB. If the card says the station is low against nearly "
+                "aircraft at the edge of its area are heard less often. On 15 October 2026 the middle half of "
+                "the stations lay between -2.6 and +2.7 dB. If the card says the station is low against nearly "
                 "all its neighbours, the cause is likely in the installation. If it is low against some, a ridge "
-                "or building between the station and part of the sky can be the whole explanation, and then no "
-                "setting changes it. Probable causes of a low figure, in order: cable loss or a bad connector, an "
+                "or building between the station and part of the sky can be the whole explanation, and it is "
+                "a property of the site. Probable causes of a low figure, in order: cable loss or a bad connector, an "
                 "antenna that is detuned, damaged or badly placed, no preamplifier where the neighbours have one, "
                 "local noise.",
         remedy="Check the cable and its connectors first, then the antenna and its position, and compare with a "
                "preamplifier on a neighbouring station.",
         links=[_LINK_FAQ]),
 }
+
+
+def station_note_figure(info, row):
+    """The figure that opened a note, as the page shows it: shares in percent, and the sensitivity as
+    "below the neighbours by N dB", which turns the negative column positive."""
+    figure = row.get(info["figure"])
+    if isinstance(figure, decimal.Decimal):
+        figure = float(figure)
+    if isinstance(figure, float):
+        figure = round(figure, 4)
+    if info["unit"] == "%" and figure is not None:
+        figure = round(figure * 100, 2)
+    if info.get("invert") and figure is not None:
+        figure = round(-figure, 2)
+    return figure
 
 
 class SourceTracker:
@@ -3159,10 +3178,10 @@ class SourceTracker:
                 for code, d in STATION_NOTES.items()}
 
     def stations_stats(self):
-        """Per day the stations judged and how many carry no note, and the names for the search box.
+        """Per day the stations judged and how many carry no note, the stations behind each note on the
+        latest day, and the names for the search box.
 
-        No station is singled out here: a station is read on its own card
-        (`station_stats`). The share of the forwarded radio packets that came
+        The share of the forwarded radio packets that came
         through a station with an open note weighs each station by what it
         carries.
         """
@@ -3186,16 +3205,37 @@ class SourceTracker:
                 d["sensitivity_k"] = None if r is None or r[1] is None else round(float(r[1]), 2)
                 d["sensitivity_judged"] = None if r is None else int(r[4])
             by_note = {}
+            with_note = {}
             names = []
             if latest:
-                cur.execute("SELECT notes FROM daily_stations WHERE day = %s AND notes <> ''", (latest,))
-                for (d,) in cur.fetchall():
+                # Per note, the stations that carry it on the latest day, with the figure that opened it,
+                # the packets they forwarded and the days of the window on which they carried it.
+                cur.execute("""SELECT name, notes FROM daily_stations
+                               WHERE day > %s - INTERVAL %s DAY AND notes <> ''""", (latest, STATION_WINDOW_DAYS))
+                flagged = {}
+                for name, d in cur.fetchall():
                     for code in d.split(","):
+                        flagged[(name, code)] = flagged.get((name, code), 0) + 1
+                figures = sorted({info["figure"] for info in STATION_NOTES.values()})
+                cur.execute(f"""SELECT name, notes, packets_forwarded, {', '.join('`' + f + '`' for f in figures)}
+                                FROM daily_stations WHERE day = %s AND notes <> ''""", (latest,))
+                for r in cur.fetchall():
+                    row = dict(zip(figures, r[3:]))
+                    for code in r[1].split(","):
                         by_note[code] = by_note.get(code, 0) + 1
+                        info = STATION_NOTES.get(code)
+                        if info is None:
+                            continue
+                        with_note.setdefault(code, []).append({
+                            "name": r[0], "figure": station_note_figure(info, row),
+                            "packets": int(r[2] or 0), "days_flagged": flagged.get((r[0], code), 0)})
+                for rows in with_note.values():
+                    rows.sort(key=lambda x: (-x["packets"], x["name"]))
                 cur.execute("""SELECT DISTINCT name FROM daily_stations
                                WHERE day > %s - INTERVAL %s DAY ORDER BY name""", (latest, STATION_WINDOW_DAYS))
                 names = [r[0] for r in cur.fetchall()]
             return {"days": days, "latest_day": latest, "stations_by_note": by_note,
+                    "stations_with_note": with_note,
                     "free_space_k": 20, "sensitivity_low_share": STATION_LOW_SHARE,
                     "notes": self.station_note_info(), "window_days": STATION_WINDOW_DAYS,
                     "stations": names}
@@ -3249,11 +3289,7 @@ class SourceTracker:
             info = STATION_NOTES.get(code)
             if info is None:
                 continue
-            figure = last.get(info["figure"])
-            if info["unit"] == "%" and figure is not None:
-                figure = round(figure * 100, 2)
-            if info.get("invert") and figure is not None:
-                figure = round(-figure, 2)          # "below the neighbours by N dB": the column is negative
+            figure = station_note_figure(info, last)
             notes.append({"code": code, "day": last["day"], "title": info["title"], "rule": info["rule"],
                               "figure": figure, "unit": info["unit"], "threshold": info["threshold"],
                               "meaning": info["meaning"], "remedy": info["remedy"],
@@ -3286,8 +3322,9 @@ class SourceTracker:
                                WHERE day = %s AND lat IS NOT NULL AND lon IS NOT NULL""", (station_day,))
                 stations = [(n, float(a), float(b)) for n, a, b in cur.fetchall()]
             for c in cells:
+                dlon = min(180.0, 0.5 / max(0.05, math.cos(math.radians(c["lat"]))))
                 near = sorted((_distance(c["lat"], c["lon"], a, b) / 1000, n) for n, a, b in stations
-                              if abs(a - c["lat"]) < 0.5 and abs(b - c["lon"]) < 0.8)
+                              if abs(a - c["lat"]) < 0.5 and abs(b - c["lon"]) < dlon)
                 near = [(km, n) for km, n in near if km <= COVERAGE_STATION_KM]
                 c["stations_within_km"] = len(near)
                 c["stations"] = [{"name": n, "km": round(km, 1)} for km, n in near[:COVERAGE_STATIONS_SHOWN]]

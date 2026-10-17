@@ -1252,8 +1252,8 @@ only:
 A **maintenance note** is open on a station's card for the day whenever a check of 10.4 applies to it, or when one of these figures crosses its threshold. These are the routine notes that any network of volunteer-run stations needs, published so that operators can act on them. Each note states what was measured, what it means for the data and the remedy:
 
 - **Software update available**: OGN receiver software older than 0.3.0. On 15 October 2026, among the stations that report a position in Europe, 52 of 2,450 ran a release older than 0.3.0, against 1,832 on 0.3.2 and 422 on 0.3.3 (the first measurement, 51 of 2,599, counted the stations outside Europe and the PilotAware ones too).
-- **Clock offset above 100 ms** (median of the day), or no NTP figure: the station stamps packets by its own clock. On 15 October 2026 the median station was at 0.6 ms and nine in ten under 4.7 ms, so 100 ms is twenty times the tail and still a twentieth of a second, under which no figure here moves.
-- **CPU temperature above 80 °C** (80 °C or more, median of the day), where a Raspberry Pi starts to slow itself down and the decoder may fall behind. The median station was at 51.5 °C, nine in ten under 66.6 °C.
+- **Clock offset above 100 ms** (median of the day), or no NTP figure: the station stamps packets by its own clock. On 15 October 2026 the median station was at 0.6 ms and nine in ten under 4.7 ms, so 100 ms is twenty times the tail and still a tenth of a second, under which no figure here moves.
+- **CPU temperature at 80 °C or above** (median of the day), where a Raspberry Pi starts to slow itself down and the decoder may fall behind. The median station was at 51.5 °C, nine in ten under 66.6 °C.
 - **Radio noise above 10 dB** over the reference (median of the day), which reduces the distance at which weak signals are received. Typical sources are a transmitter nearby, a preamplifier or filter to check, or interference from the station's own computer. The median was +3.4 dB, nine in ten under +7.0 dB. To be checked against more days.
 - **Reported position changes during the day**, **Configured altitude differs from the terrain**, **Some packets forwarded more than 60 s late**, **Aircraft categories that differ from the usual one** and **Geoid conversion to check** are the five receiver checks of 10.4 (moved, altitude, late, stray categories, altitude offset), with their thresholds.
 
@@ -1272,8 +1272,9 @@ the fitted slope was 0.72 of free space (0.75 within 30 km, 0.67 beyond),
 probably because weak packets are not decoded at all and strong ones
 compress. With k = 20 a station that hears aircraft farther away than its
 partners would be flattered by a few dB. So k is fitted each night as the
-within-pair slope over that day's shared fixes, and published beside the
-figures. Receptions closer than 2 km or farther than 100 km are left out, the
+within-pair slope over the shared fixes of the pairs that share at least 20,
+and published beside the figures; with fewer than 10,000 such receptions in
+the day there is no k and no station is judged. Receptions closer than 2 km or farther than 100 km are left out, the
 first because the antenna pattern and the aircraft's own attitude dominate
 so close, the second because only the strongest packets survive that far
 and would flatter the station. For each pair of stations, the difference of
@@ -1282,14 +1283,18 @@ relative sensitivity is the median, one vote per partner, of those
 differences, against the partners whose own relative sensitivity is within
 6 dB of the network, so that one deaf neighbour does not make its partners
 look loud. A partner counts with at least 20 shared fixes, and a station needs at
-least 3 partners and 200 shared fixes in all to be judged.
+least 3 partners and 200 shared fixes in all to be judged. A station whose
+reported position moved by more than 2 km during the day sits out the
+comparison that day, since its distances are measured from its first
+position.
 
 What it cannot separate: a ridge between the station and part of the sky
 makes it look deaf for the aircraft behind the ridge: a property of the
 site, which no setting changes. The figure is therefore given with
 the share of partners against which the station is more than 3 dB low, so that a station
 deaf against everyone (equipment) reads differently from one deaf against
-partners on one side (terrain).
+partners on one side (terrain). The card says "lower than nearly all its
+neighbours" when that share is 80% or more, and "lower than some" below it.
 
 A maintenance note when the relative sensitivity is more than **10 dB**
 below the network, a tenth of the signal power. On 15 October 2026 the
@@ -1337,8 +1342,9 @@ as it hears the probe elsewhere would have made visible. A band counts only
 with at least 2 hours of probe time from at least 5 probe aircraft-days, so
 that one pilot with a badly placed tracker does not paint a cell. The map
 shows, for each cell, the lost time, the lowest band where the probe is heard
-at least 80% of the time (how low the network reaches there), and the
-stations seen within 30 km.
+at least 80% of the time (how low the network reaches there), read on the
+families whose probe passes the floors in that band, and the stations of the
+latest day within 30 km of the cell's centre.
 
 On 15 October 2026 alone, with those floors applied to one day, 41 cells had
 a band that counted, and they lost 173 hours. One cell, on the south side of

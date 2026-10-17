@@ -990,6 +990,21 @@ def station_guard(f):
     return guarded
 
 
+def coverage_guard(f):
+    """An error in the coverage gaps costs the day its coverage rows and nothing else: the station
+    notes and the sensitivity are written without them, and the run notes say so."""
+    def guarded(self, *args):
+        if not self.s or not self.cg_ok:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The coverage gaps failed during the pass")
+            self.failed["coverage gaps"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.cg_ok = False
+    return guarded
+
+
 class Station:
     """The beacons one station sent in a UTC day (METHOD.md 10.5): when, and what its status said."""
     __slots__ = ("last", "silence", "max_gap", "beacons", "status", "lat", "lon", "tocall", "token", "cpu",
@@ -1035,6 +1050,7 @@ class Nightly:
         self.chain = {}           # FLARM random address -> first address of its chain; chain_pass()
         self.c = True             # METHOD.md: drones, encounters, parked, quality
         self.p = True             # PATTERNS.md; switched off if its work fails during the pass
+        self.cg_ok = True         # the coverage gaps of 10.5; switched off alone if they fail
         self.s = True             # METHOD.md 10.5, the stations; switched off if its work fails during the pass
         self.missing_hours = ()
         self.ddb_types, self.notrack = ddb[0], ddb[1]
@@ -1904,7 +1920,7 @@ class Nightly:
             return
         if reported is not None and not sources.flying(category, prev[5], reported):
             self.zero_gain[category] += seconds
-        if not rnd and category in COVERAGE_FAMILY:
+        if category in COVERAGE_FAMILY:
             self.coverage_air(address, category, prev, seconds)
         local = prev[0] + seconds / 2 + prev[2] * SOLAR_SECONDS_PER_DEGREE
         if self.p:
@@ -1939,14 +1955,14 @@ class Nightly:
             row = cells[key] = [0.0, 0.0, 0.0]
         return row
 
-    @station_guard
+    @coverage_guard
     def coverage_air(self, address, category, prev, seconds):
         """Airborne seconds of a segment, filed where it began; the same segments as sources.count_hours."""
         row = self.coverage_row(address, category, prev[1], prev[2], prev[4])
         if row is not None:
             row[0] += seconds
 
-    @station_guard
+    @coverage_guard
     def coverage_radio(self, address, category, tocall, t, lat, lon, speed, alt_m):
         """sources.SourceTracker.count_radio_aircraft: seconds judged and late on the address's radio timeline."""
         heard = self.cg_heard.setdefault(address, {})
@@ -2901,6 +2917,8 @@ class Nightly:
     def rows_coverage_gaps(self, day):
         """METHOD.md 10.5, "Where a new station would help most": per cell, family and band, the probe's radio
         seconds judged and late, the probe aircraft, and the airborne seconds of the whole family."""
+        if not self.cg_ok:
+            return []                           # failed during the pass: the day keeps no coverage rows
         acc = {}                                # (lat idx, lon idx, family, band) -> [probe s, late s, aircraft, air s]
         for address, cells in self.cg_cells.items():
             multi = len(self.cg_systems.get(address, ())) >= COVERAGE_PROBE_SYSTEMS
@@ -3429,7 +3447,11 @@ class Nightly:
         """
         if self._sensitivity is not None:
             return self._sensitivity
-        pairs = {key: v for key, v in self.sens_pairs.items() if len(v) >= 2 * SENS_PAIR_MIN}
+        # A station whose reported position moved during the day has its distances measured from the
+        # first position, so it sits out the comparison that day.
+        moved = {name for name, r in self.rx_pos.items() if r[4] > RECEIVER_MOVED_M}
+        pairs = {key: v for key, v in self.sens_pairs.items()
+                 if len(v) >= 2 * SENS_PAIR_MIN and key[0] not in moved and key[1] not in moved}
         n_obs = sum(len(v) for v in pairs.values()) // 2
         out = (None, {}, len(pairs), n_obs)
         if n_obs >= SENS_K_MIN_OBS:
