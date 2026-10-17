@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS `daily_circling_time` (
   PRIMARY KEY (`day`,`kind`,`terrain`,`solar_hour`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE IF NOT EXISTS `daily_coverage_gaps` (
+  `day` date NOT NULL,
+  `lat_idx` smallint(6) NOT NULL,
+  `lon_idx` smallint(6) NOT NULL,
+  `family` varchar(12) NOT NULL,
+  `band` tinyint(3) unsigned NOT NULL,
+  `probe_s` int(10) unsigned NOT NULL DEFAULT 0,
+  `probe_late_s` int(10) unsigned NOT NULL DEFAULT 0,
+  `probe_aircraft` smallint(5) unsigned NOT NULL DEFAULT 0,
+  `air_s` int(10) unsigned NOT NULL DEFAULT 0,
+  PRIMARY KEY (`day`,`lat_idx`,`lon_idx`,`family`,`band`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS `daily_crewed_encounters` (
   `day` date NOT NULL,
   `kind_a` varchar(12) NOT NULL,
@@ -274,6 +287,54 @@ CREATE TABLE IF NOT EXISTS `daily_same_aircraft_pairs` (
   `pairs` int(10) unsigned NOT NULL DEFAULT 0,
   `encounters` int(10) unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`day`,`kind_a`,`kind_b`,`threshold`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `daily_station_sensitivity` (
+  `day` date NOT NULL,
+  `k` float DEFAULT NULL,
+  `pairs` int(10) unsigned NOT NULL DEFAULT 0,
+  `observations` int(10) unsigned NOT NULL DEFAULT 0,
+  `stations_judged` int(10) unsigned NOT NULL DEFAULT 0,
+  PRIMARY KEY (`day`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS `daily_stations` (
+  `day` date NOT NULL,
+  `name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `kind` varchar(8) NOT NULL,
+  `version` varchar(32) DEFAULT NULL,
+  `lat` decimal(6,4) DEFAULT NULL,
+  `lon` decimal(7,4) DEFAULT NULL,
+  `availability` float DEFAULT NULL,
+  `beacons` int(10) unsigned NOT NULL DEFAULT 0,
+  `status_beacons` int(10) unsigned NOT NULL DEFAULT 0,
+  `ntp_ms_last` float DEFAULT NULL,
+  `ntp_ms_median` float DEFAULT NULL,
+  `temp_c_last` float DEFAULT NULL,
+  `temp_c_median` float DEFAULT NULL,
+  `noise_db_last` float DEFAULT NULL,
+  `noise_db_median` float DEFAULT NULL,
+  `ppm_manual_last` float DEFAULT NULL,
+  `ppm_manual_median` float DEFAULT NULL,
+  `ppm_auto_last` float DEFAULT NULL,
+  `ppm_auto_median` float DEFAULT NULL,
+  `signal_10km_db_last` float DEFAULT NULL,
+  `signal_10km_db_median` float DEFAULT NULL,
+  `geoid_declared` tinyint(1) DEFAULT NULL,
+  `aircraft_heard` int(10) unsigned NOT NULL DEFAULT 0,
+  `packets_forwarded` int(10) unsigned NOT NULL DEFAULT 0,
+  `moved_m` float DEFAULT NULL,
+  `altitude_m` float DEFAULT NULL,
+  `late_share` float DEFAULT NULL,
+  `stray_share` float DEFAULT NULL,
+  `relay_offset_m` float DEFAULT NULL,
+  `sensitivity_db` float DEFAULT NULL,
+  `sensitivity_partners` smallint(5) unsigned DEFAULT NULL,
+  `sensitivity_fixes` int(10) unsigned DEFAULT NULL,
+  `sensitivity_low_share` float DEFAULT NULL,
+  `notes` varchar(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (`day`,`name`),
+  KEY `name_day` (`name`,`day`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `daily_thermal_sites` (

@@ -1191,6 +1191,197 @@ def place_site(lat_idx, lon_idx, kind=None):
     return site
 
 
+# --- Ground stations (METHOD.md 10.5, 17 October 2026) ------------------------
+# The thresholds below judge a station on the status beacon; the five receiver
+# checks of 10.4 keep theirs in nightly.py (RECEIVER_MOVED_M, RECEIVER_ALTITUDE_M,
+# RELAY_LATE_SHARE, RELAY_STRAY_SHARE, RELAY_OFFSET_M), which asserts at import
+# that STATION_NOTES states the same numbers.
+STATION_SILENCE_S = 900             # a station beacons every 5 minutes: 15 minutes of silence is a fault of the link or the box
+STATION_SOFTWARE_MIN = (0, 3, 0)    # OGN receiver software older than this (0.3.2 and 0.3.3 ran on 95% of the stations on 15 October)
+STATION_NTP_MAX_MS = 100            # median of the day; the median station sits at 0.6 ms, nine in ten under 4.7 ms
+STATION_TEMP_MAX_C = 80             # median of the day, "or more"; where a Raspberry Pi starts to throttle itself
+STATION_NOISE_MAX_DB = 10           # median of the day, above the receiver's reference; the median station sits at +3.4 dB
+STATION_SENSITIVITY_DB = 10         # a tenth of the signal power below the network's median station; 26 stations of 550 (the bottom 5%) on 15 October
+STATION_LOW_SHARE = 0.8             # the card says "nearly all neighbours" from this share of partners, "some" below it
+STATION_LOW_SHOWN_DB = 3            # the card words the partner share when the station is at least this far below (nightly.SENS_LOW_DB)
+STATION_WINDOW_DAYS = 30            # a station's card
+
+# Where a new station would help most (METHOD.md 10.5): the nightly stores, per cell, family and band of height above
+# the ground, the probe's radio seconds judged and late and the family's airborne seconds; the page adds up the last
+# COVERAGE_DAYS days, and a band counts from COVERAGE_MIN_PROBE_H hours of probe time and COVERAGE_MIN_AIRCRAFT_DAYS
+# probe aircraft-days, so that one pilot with a badly placed tracker does not paint a cell.
+COVERAGE_DAYS = 28
+COVERAGE_MIN_PROBE_H = 2
+COVERAGE_MIN_AIRCRAFT_DAYS = 5
+COVERAGE_BAND_EDGES_M = (300, 600, 1200)
+COVERAGE_BAND_LABELS = ("0-300 m", "300-600 m", "600-1,200 m", "above 1,200 m")
+COVERAGE_HEARD_SHARE = 0.8          # a band is "heard" where the probe is without signal for at most 20% of its time
+COVERAGE_STATION_KM = 30            # stations listed for a cell: those within this distance of its centre
+COVERAGE_STATIONS_SHOWN = 6
+
+def coverage_gaps_summary(rows):
+    """Cells of the coverage-gap map from rows already added up over days.
+
+    `rows` are (lat idx, lon idx, family, band, probe s, probe late s, probe aircraft-days, family air s). A band
+    of a family counts when its probe has COVERAGE_MIN_PROBE_H hours and COVERAGE_MIN_AIRCRAFT_DAYS aircraft-days;
+    the lost time of a cell is, over the counting bands, the family's airborne time times the probe's share
+    without signal. The lowest band heard is read on both families' probes together, with the same floors.
+    Only cells with a counting band are returned.
+    """
+    cells = {}
+    for la, lo, family, band, probe, late, aircraft, air in rows:
+        c = cells.setdefault((la, lo), {})
+        c[(family, band)] = (float(probe), float(late), int(aircraft), float(air))
+    out = []
+    floor_s = COVERAGE_MIN_PROBE_H * 3600
+    for (la, lo), c in cells.items():
+        lost = air_all = probe_all = late_all = 0.0
+        by_family = {}
+        counting = False
+        bands = []
+        for b in range(len(COVERAGE_BAND_LABELS)):
+            pb = lb = ab = ob = 0.0
+            for family in ("free_flight", "glider"):
+                probe, late, aircraft, air = c.get((family, b), (0.0, 0.0, 0, 0.0))
+                pb += probe
+                lb += late
+                ab += aircraft
+                ob += air
+                air_all += air
+                probe_all += probe
+                late_all += late
+                if probe >= floor_s and aircraft >= COVERAGE_MIN_AIRCRAFT_DAYS:
+                    counting = True
+                    by_family[family] = by_family.get(family, 0.0) + air * late / probe
+                    lost += air * late / probe
+            bands.append({"probe_hours": round(pb / 3600, 2), "probe_aircraft_days": int(ab),
+                          "share_without_signal": round(lb / pb, 4) if pb else None,
+                          "air_hours": round(ob / 3600, 2),
+                          "counts": pb >= floor_s and ab >= COVERAGE_MIN_AIRCRAFT_DAYS})
+        if not counting:
+            continue
+        lowest = next((b for b, d in enumerate(bands)
+                       if d["counts"] and d["share_without_signal"] <= 1 - COVERAGE_HEARD_SHARE), None)
+        out.append({"lat_idx": la, "lon_idx": lo, "lat": round((la + 0.5) * CELL_DEG, 4),
+                    "lon": round((lo + 0.5) * CELL_DEG, 4), "lost_hours": round(lost / 3600, 2),
+                    "lost_hours_free_flight": round(by_family.get("free_flight", 0.0) / 3600, 2),
+                    "lost_hours_glider": round(by_family.get("glider", 0.0) / 3600, 2),
+                    "air_hours": round(air_all / 3600, 2), "probe_hours": round(probe_all / 3600, 2),
+                    "probe_late_share": round(late_all / probe_all, 4) if probe_all else None,
+                    "lowest_band_heard": lowest, "bands": bands})
+    return out
+
+
+_OGN_WIKI = "https://wiki.glidernet.org/"
+_LINK_CONFIG = ("Receiver configuration file", _OGN_WIKI + "wiki:receiver-config-file")
+_LINK_FAQ = ("OGN receiver FAQ", _OGN_WIKI + "ogn-receiver-faq")
+_LINK_PROTOCOL = ("Publishing to OGN (protocol)",
+                  "https://github.com/glidernet/ogn-aprs-protocol/blob/master/Publishing_to_OGN.md")
+
+# code (as written to daily_stations.notes) -> how it is shown. A note is a
+# routine maintenance note: what was measured, what it means for the data, and
+# the remedy. `figure` is the column that holds the measured value, `threshold`
+# the number that opens the note (None where the rule is not one number). The
+# texts claim nothing about other stations or the monitor compensating, since
+# that has not been measured.
+STATION_NOTES = {
+    "software_old": dict(
+        title="Software update available", figure="version", unit="", threshold=None,
+        rule="receiver software older than 0.3.0",
+        meaning="The station runs a release of the OGN receiver software older than 0.3.0. Nine stations in ten run "
+                "0.3.2 or 0.3.3.",
+        remedy="Update the receiver software to the current release.",
+        links=[_LINK_FAQ]),
+    "ntp_offset": dict(
+        title="Clock offset above 100 ms", figure="ntp_ms_median", unit="ms", threshold=STATION_NTP_MAX_MS,
+        rule="median clock offset above 100 ms, or no clock figure in the status beacon",
+        meaning="The station stamps each packet with its own clock, so every position it forwards carries that "
+                "offset in time. 100 ms is a tenth of a second; the median station is at 0.6 ms.",
+        remedy="Check that the time service (NTP) runs and can reach a time server.",
+        links=[_LINK_FAQ]),
+    "cpu_temperature": dict(
+        title="CPU temperature above 80 \u00b0C", figure="temp_c_median", unit="C", threshold=STATION_TEMP_MAX_C,
+        rule="median CPU temperature of 80 \u00b0C or more",
+        meaning="A Raspberry Pi starts to slow itself down at about this temperature, and the decoder may then "
+                "miss packets. The median station is at 51.5 \u00b0C.",
+        remedy="Improve cooling: shade, ventilation, a heat sink or a fan.",
+        links=[_LINK_FAQ]),
+    "rf_noise": dict(
+        title="Radio noise above 10 dB", figure="noise_db_median", unit="dB", threshold=STATION_NOISE_MAX_DB,
+        rule="median radio noise more than 10 dB above the receiver's reference",
+        meaning="Noise at this level reduces the distance at which weak signals are received. The median station is "
+                "at +3.4 dB. Typical sources are a transmitter nearby, a preamplifier or filter to check, or "
+                "interference from the station's own computer or power supply.",
+        remedy="Keep the computer and power supply away from the antenna and cable, check the preamplifier and "
+               "the filter, and try another place for the antenna.",
+        links=[_LINK_FAQ]),
+    "receiver_moved": dict(
+        title="Reported position changes during the day", figure="moved_m", unit="m", threshold=2000,
+        rule="reported position more than 2 km from its first report of the day",
+        meaning="The position the station reports moved by more than 2 km within the day. This happens when the "
+                "receiver travels or when its configured position changes. Positions decoded from the receiver's "
+                "own position are then placed relative to the wrong point.",
+        remedy="Set the fixed position of the antenna in the receiver configuration file.",
+        links=[_LINK_CONFIG]),
+    "receiver_altitude": dict(
+        title="Configured altitude differs from the terrain", figure="altitude_m", unit="m", threshold=500,
+        rule="median announced altitude more than 500 m from the terrain model under the station",
+        meaning="The altitude the station announces differs by more than 500 m from the terrain model at its "
+                "position, which usually points to a typing error or a unit in the configuration.",
+        remedy="Set the altitude of the antenna above sea level, in metres, in the receiver configuration file.",
+        links=[_LINK_CONFIG]),
+    "relay_late_60s": dict(
+        title="Some packets forwarded more than 60 s late", figure="late_share", unit="%", threshold=5,
+        rule="more than 5% of the packets it forwards (at least 100) arrive more than 60 seconds after "
+             "their time stamp",
+        meaning="More than 5% of the packets the station forwards reach the network over a minute after they were "
+                "stamped, so those positions are out of date on arrival. The clock of the station or its network "
+                "link are the usual places to look.",
+        remedy="Check the clock first, then the network link and the load on the station.",
+        links=[_LINK_FAQ]),
+    "relay_category_stray": dict(
+        title="Aircraft categories that differ from the usual one", figure="stray_share", unit="%", threshold=2,
+        rule="2% or more of the radio packets it forwards (at least 1,000 with a category) declare another "
+             "category than their address's majority",
+        meaning="2% or more of the packets from this station declare an aircraft category other than the one the "
+                "same address declares in most of its packets. The median station is at 0.01%. The cause is not yet "
+                "established: these packets carry no more bit errors than the others, and the stations involved "
+                "run both current releases and report good clocks.",
+        remedy="Check the frequency correction and the gain in the configuration; if the share stays high, "
+               "the monitor's field notes follow the investigation.",
+        links=[_LINK_CONFIG, _LINK_FAQ]),
+    "relay_altitude_offset": dict(
+        title="Geoid conversion to check", figure="relay_offset_m", unit="m", threshold=20,
+        rule="altitude of FLARM fixes more than 20 m from what other stations hearing the same fixes forward "
+             "(at least 50 fixes)",
+        meaning="The FLARM altitudes this station forwards differ by more than 20 m from those forwarded by other "
+                "stations hearing the same fixes. FLARM sends the height above the ellipsoid, which the receiver "
+                "converts to height above sea level with the geoid separation; without that conversion the "
+                "altitude is 40 to 50 m too high in central Europe.",
+        remedy="Declare the geoid separation in the receiver configuration file. The OGN protocol defines A= as "
+               "the height above the geoid.",
+        links=[_LINK_CONFIG, _LINK_PROTOCOL]),
+    "signal_low": dict(
+        title="Signal below the neighbouring stations", figure="sensitivity_db", unit="dB",
+        threshold=STATION_SENSITIVITY_DB, invert=True,
+        rule="signal-to-noise ratio, scaled to 10 km, more than 10 dB below the network's median station, taken "
+             "over the FLARM fixes shared with at least 3 neighbouring stations",
+        meaning="When this station and its neighbours receive the same FLARM packet, this station's signal is lower "
+                "by the figure shown, after both are scaled to the same distance. 10 dB is a tenth of the signal "
+                "power: it cuts the distance at which this station hears a weak packet by a factor of three or more, so "
+                "aircraft at the edge of its area are missed or heard late. On 15 October 2026 the middle half of "
+                "the stations lay between -3.6 and +3.1 dB. If the card says the station is low against nearly "
+                "all its neighbours, the cause is likely in the installation. If it is low against some, a ridge "
+                "or building between the station and part of the sky can be the whole explanation, and then no "
+                "setting changes it. Probable causes of a low figure, in order: cable loss or a bad connector, an "
+                "antenna that is detuned, damaged or badly placed, no preamplifier where the neighbours have one, "
+                "local noise.",
+        remedy="Check the cable and its connectors first, then the antenna and its position, and compare with a "
+               "preamplifier on a neighbouring station.",
+        links=[_LINK_FAQ]),
+}
+
+
 class SourceTracker:
     def __init__(self, parse_line, connect_db, hidden=lambda device_id: False):
         self.parse_line = parse_line
@@ -1242,6 +1433,8 @@ class SourceTracker:
         self.patterns_cache = (0, None)
         self.drones_cache = (0, None)
         self.quality_cache = (0, None)
+        self.stations_cache = (0, None)
+        self.coverage_gaps_cache = (0, None)
         self.snapshots_cache = (0, None)
         self.encounters_cache = (0, None)
         self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
@@ -1989,6 +2182,7 @@ class SourceTracker:
                                 ("pattern", self.pattern_stats), ("sources", self.monthly_stats),
                                 ("visibility", self.visibility_stats), ("patterns", self.patterns_stats),
                                 ("drones", self.drones_stats), ("quality", self.quality_stats),
+                                ("stations", self.stations_stats), ("coverage gaps", self.coverage_gaps_stats),
                                 ("snapshots", self.snapshots_stats), ("encounters", self.encounters_stats)):
                     try:
                         f()
@@ -2945,6 +3139,165 @@ class SourceTracker:
             finally:
                 conn.close()
         return self._cached("quality", "quality_cache", compute)
+
+    # --- ground stations (METHOD.md, section 10.5) --------------------------
+
+    STATION_COLUMNS = ("day", "kind", "version", "lat", "lon", "availability", "beacons", "status_beacons",
+                       "ntp_ms_last", "ntp_ms_median", "temp_c_last", "temp_c_median", "noise_db_last",
+                       "noise_db_median", "ppm_manual_last", "ppm_manual_median", "ppm_auto_last",
+                       "ppm_auto_median", "signal_10km_db_last", "signal_10km_db_median", "geoid_declared",
+                       "aircraft_heard", "packets_forwarded", "moved_m", "altitude_m", "late_share",
+                       "stray_share", "relay_offset_m", "sensitivity_db", "sensitivity_partners",
+                       "sensitivity_fixes", "sensitivity_low_share", "notes")
+
+    @staticmethod
+    def station_note_info():
+        """The rules, for the page: code -> title, rule, threshold, unit, cause, remedy and links."""
+        return {code: {"title": d["title"], "rule": d["rule"], "threshold": d["threshold"], "unit": d["unit"],
+                       "meaning": d["meaning"], "remedy": d["remedy"],
+                       "links": [{"label": a, "url": b} for a, b in d["links"]]}
+                for code, d in STATION_NOTES.items()}
+
+    def stations_stats(self):
+        """Per day the stations judged and how many carry no note, and the names for the search box.
+
+        No station is singled out here: a station is read on its own card
+        (`station_stats`). The share of the forwarded radio packets that came
+        through a station with an open note weighs each station by what it
+        carries.
+        """
+        def compute(cur):
+            cur.execute("""SELECT day, COUNT(*), SUM(notes = ''), SUM(packets_forwarded),
+                                  SUM(IF(notes <> '', packets_forwarded, 0))
+                           FROM daily_stations GROUP BY day ORDER BY day""")
+            days = []
+            for day, judged, clean, packets, flagged in cur.fetchall():
+                packets, flagged = int(packets or 0), int(flagged or 0)
+                days.append({"day": day.isoformat(), "judged": int(judged), "without_note": int(clean),
+                             "share_without_note": round(int(clean) / int(judged), 4),
+                             "packets": packets, "packets_through_open_note": flagged,
+                             "share_packets_through_open_note": round(flagged / packets, 4) if packets else None})
+            latest = days[-1]["day"] if days else None
+            # The network's figures of the sensitivity: k of the day, and the stations judged for it.
+            cur.execute("SELECT day, k, `pairs`, observations, stations_judged FROM daily_station_sensitivity")
+            sens = {r[0].isoformat(): r for r in cur.fetchall()}
+            for d in days:
+                r = sens.get(d["day"])
+                d["sensitivity_k"] = None if r is None or r[1] is None else round(float(r[1]), 2)
+                d["sensitivity_judged"] = None if r is None else int(r[4])
+            by_note = {}
+            names = []
+            if latest:
+                cur.execute("SELECT notes FROM daily_stations WHERE day = %s AND notes <> ''", (latest,))
+                for (d,) in cur.fetchall():
+                    for code in d.split(","):
+                        by_note[code] = by_note.get(code, 0) + 1
+                cur.execute("""SELECT DISTINCT name FROM daily_stations
+                               WHERE day > %s - INTERVAL %s DAY ORDER BY name""", (latest, STATION_WINDOW_DAYS))
+                names = [r[0] for r in cur.fetchall()]
+            return {"days": days, "latest_day": latest, "stations_by_note": by_note,
+                    "free_space_k": 20, "sensitivity_low_share": STATION_LOW_SHARE,
+                    "notes": self.station_note_info(), "window_days": STATION_WINDOW_DAYS,
+                    "stations": names}
+        return self._cached("stations", "stations_cache", compute)
+
+    def station_stats(self, name):
+        """One station, by its exact name (case counts): its last 30 days and its notes.
+
+        None when no station has that name; `similar` names then differ only
+        in case, or contain what was typed, for the page to suggest.
+        """
+        if not name or len(name) > 64:
+            return None
+        conn = self.connect_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(day) FROM daily_stations")
+                latest = cur.fetchone()[0]
+                if latest is None:
+                    return {"found": False, "similar": []}
+                cur.execute(f"""SELECT {', '.join('`' + c + '`' for c in self.STATION_COLUMNS)} FROM daily_stations
+                                WHERE name = %s AND day > %s - INTERVAL %s DAY ORDER BY day""",
+                            (name, latest, STATION_WINDOW_DAYS))
+                rows = cur.fetchall()
+                if not rows:
+                    like = re.sub(r"[\\%_]", "", name)
+                    cur.execute("""SELECT DISTINCT name FROM daily_stations
+                                   WHERE day > %s - INTERVAL %s DAY AND (LOWER(name) = LOWER(%s)
+                                         OR (%s <> '' AND LOWER(name) LIKE CONCAT('%%', LOWER(%s), '%%')))
+                                   ORDER BY name LIMIT 60""",
+                                (latest, STATION_WINDOW_DAYS, name, like, like))
+                    same = sorted((r[0] for r in cur.fetchall()),
+                                  key=lambda n: (n.lower() != name.lower(), n.lower(), n))
+                    return {"found": False, "similar": same[:12]}
+        finally:
+            conn.close()
+        days = []
+        for r in rows:
+            d = dict(zip(self.STATION_COLUMNS, r))
+            d["day"] = d["day"].isoformat()
+            for k, v in list(d.items()):
+                if v is not None and k in ("lat", "lon"):
+                    d[k] = float(v)
+                elif isinstance(v, float):
+                    d[k] = round(v, 4)
+            d["notes"] = [c for c in d["notes"].split(",") if c]
+            days.append(d)
+        last = days[-1]
+        notes = []
+        for code in last["notes"]:
+            info = STATION_NOTES.get(code)
+            if info is None:
+                continue
+            figure = last.get(info["figure"])
+            if info["unit"] == "%" and figure is not None:
+                figure = round(figure * 100, 2)
+            if info.get("invert") and figure is not None:
+                figure = round(-figure, 2)          # "below the neighbours by N dB": the column is negative
+            notes.append({"code": code, "day": last["day"], "title": info["title"], "rule": info["rule"],
+                              "figure": figure, "unit": info["unit"], "threshold": info["threshold"],
+                              "meaning": info["meaning"], "remedy": info["remedy"],
+                              "links": [{"label": a, "url": b} for a, b in info["links"]],
+                              "days_flagged": sum(1 for d in days if code in d["notes"]), "days": len(days)})
+        return {"found": True, "name": name, "latest_day": latest.isoformat(), "last_seen": last["day"],
+                "window_days": STATION_WINDOW_DAYS, "days": days, "notes": notes}
+
+    def coverage_gaps_stats(self):
+        """The coverage-gap map: per cell, the flying time lost to missing signal in the last COVERAGE_DAYS days
+        (METHOD.md 10.5, "Where a new station would help most"), the lowest band heard and the stations within
+        COVERAGE_STATION_KM of the cell's centre, from the latest day's positions."""
+        def compute(cur):
+            cur.execute("SELECT MAX(day) FROM daily_coverage_gaps")
+            latest = cur.fetchone()[0]
+            if latest is None:
+                return {"latest_day": None, "cells": []}
+            cur.execute("""SELECT lat_idx, lon_idx, family, band, SUM(probe_s), SUM(probe_late_s),
+                                  SUM(probe_aircraft), SUM(air_s), COUNT(DISTINCT day)
+                           FROM daily_coverage_gaps WHERE day > %s - INTERVAL %s DAY
+                           GROUP BY lat_idx, lon_idx, family, band""", (latest, COVERAGE_DAYS))
+            rows = cur.fetchall()
+            days = max((int(r[8]) for r in rows), default=0)
+            cells = coverage_gaps_summary([r[:8] for r in rows])
+            cur.execute("SELECT MAX(day) FROM daily_stations")
+            station_day = cur.fetchone()[0]
+            stations = []
+            if station_day is not None:
+                cur.execute("""SELECT name, lat, lon FROM daily_stations
+                               WHERE day = %s AND lat IS NOT NULL AND lon IS NOT NULL""", (station_day,))
+                stations = [(n, float(a), float(b)) for n, a, b in cur.fetchall()]
+            for c in cells:
+                near = sorted((_distance(c["lat"], c["lon"], a, b) / 1000, n) for n, a, b in stations
+                              if abs(a - c["lat"]) < 0.5 and abs(b - c["lon"]) < 0.8)
+                near = [(km, n) for km, n in near if km <= COVERAGE_STATION_KM]
+                c["stations_within_km"] = len(near)
+                c["stations"] = [{"name": n, "km": round(km, 1)} for km, n in near[:COVERAGE_STATIONS_SHOWN]]
+            cells.sort(key=lambda c: -c["lost_hours"])
+            return {"latest_day": latest.isoformat(), "days": days, "window_days": COVERAGE_DAYS,
+                    "cell_degrees": CELL_DEG, "band_labels": list(COVERAGE_BAND_LABELS),
+                    "min_probe_hours": COVERAGE_MIN_PROBE_H, "min_aircraft_days": COVERAGE_MIN_AIRCRAFT_DAYS,
+                    "heard_share": COVERAGE_HEARD_SHARE, "station_km": COVERAGE_STATION_KM,
+                    "stations_day": station_day.isoformat() if station_day else None, "cells": cells}
+        return self._cached("coverage_gaps", "coverage_gaps_cache", compute)
 
     # --- monthly snapshots (METHOD.md, section 9) ---------------------------
 

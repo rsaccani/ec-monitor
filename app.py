@@ -844,6 +844,45 @@ def get_quality():
         return jsonify({})
 
 
+@app.route(API + "/stations")
+def get_stations():
+    """Ground stations judged per day, the fitted k and stations judged for sensitivity, and the names to search (METHOD.md, section 10.5)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        return respond_parts(tracker.stations_stats(), "stations")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_stations: {e}")
+        return jsonify({})
+
+
+@app.route(API + "/coverage-gaps")
+def get_coverage_gaps():
+    """Where a new station would help most: lost flying time per cell, last 28 days (METHOD.md, section 10.5)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        return respond_parts(tracker.coverage_gaps_stats(), "coverage-gaps")
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_coverage_gaps: {e}")
+        return jsonify({})
+
+
+@app.route(API + "/stations/<path:name>")
+def get_station(name):
+    """One station by its exact name: the last 30 days (with its sensitivity against the neighbours) and its notes (METHOD.md, section 10.5)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        out = tracker.station_stats(name)
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_stations: {e}")
+        return jsonify({})
+    # Not found is an answer, not an error: 200 with `found` false and the names
+    # that differ only in case, for the page to suggest.
+    return jsonify(out if out is not None else {"found": False, "similar": []})
+
+
 @app.route(API + "/snapshots")
 def get_snapshots():
     """The monthly snapshots on record (METHOD.md, section 9), each a download of /snapshot."""

@@ -32,6 +32,9 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - `ads_l.daily_mixed_thermals`: SELECT, INSERT, DELETE
 - `ads_l.daily_parked`: SELECT, INSERT, DELETE
 - `ads_l.daily_quality`: SELECT, INSERT, DELETE
+- `ads_l.daily_station_sensitivity`: SELECT, INSERT, DELETE
+- `ads_l.daily_stations`: SELECT, INSERT, DELETE
+- `ads_l.daily_coverage_gaps`: SELECT, INSERT, DELETE
 - `ads_l.daily_routes`: SELECT, INSERT, DELETE
 - `ads_l.daily_same_aircraft_pairs`: SELECT, INSERT, DELETE
 - `ads_l.daily_thermal_sites`: SELECT, INSERT, DELETE
@@ -61,6 +64,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - Monthly archives and snapshots (9): [`monthly_circling_pilot_summary`](#monthly_circling_pilot_summary), [`monthly_circling_preference`](#monthly_circling_preference), [`monthly_devices_summary`](#monthly_devices_summary), [`monthly_return_summary`](#monthly_return_summary), [`monthly_routes_summary`](#monthly_routes_summary), [`monthly_snapshot`](#monthly_snapshot), [`monthly_sources_summary`](#monthly_sources_summary), [`monthly_systems_combo_summary`](#monthly_systems_combo_summary), [`monthly_systems_summary`](#monthly_systems_summary)
 - Nightly: conspicuity family (9): [`daily_air_cells`](#daily_air_cells), [`daily_crewed_encounters`](#daily_crewed_encounters), [`daily_drone_cells`](#daily_drone_cells), [`daily_drone_classes`](#daily_drone_classes), [`daily_drone_encounters`](#daily_drone_encounters), [`daily_drone_extent`](#daily_drone_extent), [`daily_drones`](#daily_drones), [`daily_parked`](#daily_parked), [`daily_same_aircraft_pairs`](#daily_same_aircraft_pairs)
 - Nightly: data quality (1): [`daily_quality`](#daily_quality)
+- Nightly: ground stations (3): [`daily_coverage_gaps`](#daily_coverage_gaps), [`daily_station_sensitivity`](#daily_station_sensitivity), [`daily_stations`](#daily_stations)
 - Nightly: patterns family (18): [`daily_agl_hours`](#daily_agl_hours), [`daily_circling`](#daily_circling), [`daily_circling_pilot`](#daily_circling_pilot), [`daily_circling_time`](#daily_circling_time), [`daily_cruise`](#daily_cruise), [`daily_flight_classes`](#daily_flight_classes), [`daily_flights`](#daily_flights), [`daily_gaggles`](#daily_gaggles), [`daily_helicopter_night`](#daily_helicopter_night), [`daily_hours_solar`](#daily_hours_solar), [`daily_launches`](#daily_launches), [`daily_mixed_thermals`](#daily_mixed_thermals), [`daily_routes`](#daily_routes), [`daily_thermal_sites`](#daily_thermal_sites), [`daily_thermals`](#daily_thermals), [`daily_tug_time`](#daily_tug_time), [`daily_tug_tows`](#daily_tug_tows), [`daily_wave`](#daily_wave)
 - Other (1): [`nightly_runs`](#nightly_runs)
 
@@ -729,6 +733,100 @@ One check of a day for a system or an OGN receiver: how many of how many failed 
 - Read by: `sources.py` `SourceTracker.quality_stats`
 - Published through: `/conspicuity-monitor/api/quality`
 - History: `schema/2026-10-07-nightly.sql` (created); `schema/2026-10-07-crewed-encounters.sql` (changes check_name to varchar(64)); `schema/2026-10-16-quality-name-binary.sql` (changes name to varchar(64)). Grants in `schema/2026-10-07-nightly.sql`
+- Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
+
+## Nightly: ground stations
+
+One row per station and day (METHOD.md 10.5), a family of its own in nightly.py (FAMILIES) written in a third transaction, so that a failure here leaves the other families' day written.
+
+### `daily_coverage_gaps`
+
+Per 0.25-degree cell, family (free flight or glider) and band of height above the ground: the radio seconds judged for the probe aircraft and the part without signal, the probe aircraft, and the airborne seconds of the whole family (METHOD.md 10.5, "Where a new station would help most"). The page adds up the last 28 days.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `lat_idx` | smallint(6) |  | 2 |
+| `lon_idx` | smallint(6) |  | 3 |
+| `family` | varchar(12) |  | 4 |
+| `band` | tinyint(3) unsigned |  | 5 |
+| `probe_s` | int(10) unsigned | 0 |  |
+| `probe_late_s` | int(10) unsigned | 0 |  |
+| `probe_aircraft` | smallint(5) unsigned | 0 |  |
+| `air_s` | int(10) unsigned | 0 |  |
+
+- Defined in: METHOD.md 10.5
+- Written by: the nightly, `nightly.py` `write_family` (nightly family `stations`)
+- Read by: `sources.py` `SourceTracker.coverage_gaps_stats`
+- Published through: `/conspicuity-monitor/api/coverage-gaps`
+- History: `schema/2026-10-17-coverage-gaps.sql` (created). Grants in `schema/2026-10-17-coverage-gaps.sql`
+- Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
+
+### `daily_station_sensitivity`
+
+The network's figures of a day for the sensitivity of the stations (METHOD.md 10.5): the fitted slope k, the station pairs and the observations it came from, and the stations judged. One row per day, so that k is stated once instead of in every station's row.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `k` | float NULL | NULL |  |
+| `pairs` | int(10) unsigned | 0 |  |
+| `observations` | int(10) unsigned | 0 |  |
+| `stations_judged` | int(10) unsigned | 0 |  |
+
+- Defined in: METHOD.md 10.5
+- Written by: the nightly, `nightly.py` `write_family` (nightly family `stations`)
+- Read by: `sources.py` `SourceTracker.stations_stats`
+- Published through: `/conspicuity-monitor/api/stations`
+- History: `schema/2026-10-17-stations-sensitivity.sql` (created). Grants in `schema/2026-10-17-stations-sensitivity.sql`
+- Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
+
+### `daily_stations`
+
+One OGN or FANET ground station on a day, by exact name: availability, the last and median figures of its status beacon, aircraft heard and packets forwarded, the five receiver checks of 10.4 with their values, its sensitivity against the neighbouring stations, and the codes of the open notes.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `name` | varchar(64) utf8mb4_bin |  | 2 |
+| `kind` | varchar(8) |  |  |
+| `version` | varchar(32) NULL | NULL |  |
+| `lat` | decimal(6,4) NULL | NULL |  |
+| `lon` | decimal(7,4) NULL | NULL |  |
+| `availability` | float NULL | NULL |  |
+| `beacons` | int(10) unsigned | 0 |  |
+| `status_beacons` | int(10) unsigned | 0 |  |
+| `ntp_ms_last` | float NULL | NULL |  |
+| `ntp_ms_median` | float NULL | NULL |  |
+| `temp_c_last` | float NULL | NULL |  |
+| `temp_c_median` | float NULL | NULL |  |
+| `noise_db_last` | float NULL | NULL |  |
+| `noise_db_median` | float NULL | NULL |  |
+| `ppm_manual_last` | float NULL | NULL |  |
+| `ppm_manual_median` | float NULL | NULL |  |
+| `ppm_auto_last` | float NULL | NULL |  |
+| `ppm_auto_median` | float NULL | NULL |  |
+| `signal_10km_db_last` | float NULL | NULL |  |
+| `signal_10km_db_median` | float NULL | NULL |  |
+| `geoid_declared` | tinyint(1) NULL | NULL |  |
+| `aircraft_heard` | int(10) unsigned | 0 |  |
+| `packets_forwarded` | int(10) unsigned | 0 |  |
+| `moved_m` | float NULL | NULL |  |
+| `altitude_m` | float NULL | NULL |  |
+| `late_share` | float NULL | NULL |  |
+| `stray_share` | float NULL | NULL |  |
+| `relay_offset_m` | float NULL | NULL |  |
+| `sensitivity_db` | float NULL | NULL |  |
+| `sensitivity_partners` | smallint(5) unsigned NULL | NULL |  |
+| `sensitivity_fixes` | int(10) unsigned NULL | NULL |  |
+| `sensitivity_low_share` | float NULL | NULL |  |
+| `notes` | varchar(255) | '' |  |
+
+- Defined in: METHOD.md 10.5
+- Written by: the nightly, `nightly.py` `write_family` (nightly family `stations`)
+- Read by: `sources.py` `SourceTracker.stations_stats`, `SourceTracker.station_stats`
+- Published through: `/conspicuity-monitor/api/stations`, `/conspicuity-monitor/api/stations/<name>`
+- History: `schema/2026-10-17-stations.sql` (created), `schema/2026-10-17-stations-sensitivity.sql` (columns `sensitivity_*` added). Grants in `schema/2026-10-17-stations.sql`
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
 
 ## Nightly: patterns family

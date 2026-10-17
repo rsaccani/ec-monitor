@@ -1211,6 +1211,151 @@ left out):
 
 Receivers are listed only when flagged, beside how many were judged.
 
+### 10.5 Ground stations
+
+The question: is each ground station that feeds OGN working as it should,
+and can whoever runs it see what to fix? The page is meant for station
+operators, and for regulators who want to see that the quality of the data
+is checked, by stated rules, every day. Decided on 17 October 2026.
+
+A **station** is a name that sends receiver beacons: OGN receivers, and
+FANET ground stations such as GXAirCom, which send the same beacons and
+carry traffic into OGN; the kind is told from the software version in the
+status beacon. Stations are taken in when they report a position in Europe
+(section 1) or forward a packet of an aircraft there. Names are compared
+case-sensitively, since two stations can differ only by case. Aggregators
+that appear as the last element of a path without being a station
+(SafeSky's link) are left out.
+
+For each station and UTC day the nightly batch keeps one row, held
+indefinitely, since it holds public station names and technical figures
+only:
+
+- **Availability**: the share of the day not inside a silence of more than
+  15 minutes between its beacons, position or status (a station beacons
+  every 5 minutes), counting the time before its first beacon and after its
+  last. Shown, and never a fault by itself: a station on a mountain run from
+  a solar panel may rightly sleep at night.
+- From the **status beacon**, the last value of the day and the median:
+  software version, NTP offset (ms), CPU temperature, RF noise above the
+  receiver's reference (dB), the manual and automatic frequency corrections
+  (ppm), whether a geoid separation is declared (`EGM96`), and the
+  receiver's own estimate of the signal of the aircraft it hears, scaled to
+  10 km (dB). The OGN receiver FAQ puts a good station at about 20 dB at
+  10 km, and 23 to 26 dB with a good preamplifier.
+- **Traffic**: aircraft heard and radio packets forwarded. The recording
+  leaves out airliners, jets and devices that ask not to be tracked
+  (section 1), so both are lower than what the station really carried.
+- The **five receiver checks of 10.4** (moved, altitude, late, stray
+  categories, altitude offset), with their values.
+
+A **maintenance note** is open on a station's card for the day whenever a check of 10.4 applies to it, or when one of these figures crosses its threshold. These are the routine notes that any network of volunteer-run stations needs, published so that operators can act on them. Each note states what was measured, what it means for the data and the remedy:
+
+- **Software update available**: OGN receiver software older than 0.3.0. On 15 October 2026, among the stations that report a position in Europe, 52 of 2,450 ran a release older than 0.3.0, against 1,832 on 0.3.2 and 422 on 0.3.3 (the first measurement, 51 of 2,599, counted the stations outside Europe and the PilotAware ones too).
+- **Clock offset above 100 ms** (median of the day), or no NTP figure: the station stamps packets by its own clock. On 15 October 2026 the median station was at 0.6 ms and nine in ten under 4.7 ms, so 100 ms is twenty times the tail and still a twentieth of a second, under which no figure here moves.
+- **CPU temperature above 80 °C** (80 °C or more, median of the day), where a Raspberry Pi starts to slow itself down and the decoder may fall behind. The median station was at 51.5 °C, nine in ten under 66.6 °C.
+- **Radio noise above 10 dB** over the reference (median of the day), which reduces the distance at which weak signals are received. Typical sources are a transmitter nearby, a preamplifier or filter to check, or interference from the station's own computer. The median was +3.4 dB, nine in ten under +7.0 dB. To be checked against more days.
+- **Reported position changes during the day**, **Configured altitude differs from the terrain**, **Some packets forwarded more than 60 s late**, **Aircraft categories that differ from the usual one** and **Geoid conversion to check** are the five receiver checks of 10.4 (moved, altitude, late, stray categories, altitude offset), with their thresholds.
+
+The software, clock, temperature and noise notes apply to stations running the OGN receiver software, the only one whose status beacon carries those figures (`CPU:` in the beacon). Software of other makers, such as GXAirCom, is judged by the receiver checks alone. A note gives the figure measured, the threshold, what it means for the data and a link to the remedy in the OGN documentation; for the altitude offset, the rule of the OGN protocol that `A=` is height above the geoid. The notes make no claim about what other stations or the monitor compensate for, which has not been measured.
+
+The signal estimate at 10 km is shown and opens no note: it is the station's own figure, averaged over whatever aircraft happen to fly near it. On 15 October 2026 its rank correlation with the comparison below was 0.76.
+
+**Sensitivity against the neighbouring stations** (from 17 October 2026).
+Two stations that hear the same packet can be compared directly. For every FLARM fix
+received by two or more stations, each reception's signal-to-noise ratio is
+scaled to 10 km by adding k·log10(d / 10 km), where d is the distance from
+the station to the aircraft. Free space would give k = 20 (6 dB for each
+doubling of the distance), but the signal the receivers report falls more
+slowly: on 15 October 2026, within pairs of stations hearing the same fix,
+the fitted slope was 0.72 of free space (0.75 within 30 km, 0.67 beyond),
+probably because weak packets are not decoded at all and strong ones
+compress. With k = 20 a station that hears aircraft farther away than its
+partners would be flattered by a few dB. So k is fitted each night as the
+within-pair slope over that day's shared fixes, and published beside the
+figures. Receptions closer than 2 km or farther than 100 km are left out, the
+first because the antenna pattern and the aircraft's own attitude dominate
+so close, the second because only the strongest packets survive that far
+and would flatter the station. For each pair of stations, the difference of
+their scaled signals is taken over the fixes they share; a station's
+relative sensitivity is the median, one vote per partner, of those
+differences, against the partners whose own relative sensitivity is within
+6 dB of the network, so that one deaf neighbour does not make its partners
+look loud. A partner counts with at least 20 shared fixes, and a station needs at
+least 3 partners and 200 shared fixes in all to be judged.
+
+What it cannot separate: a ridge between the station and part of the sky
+makes it look deaf for the aircraft behind the ridge: a property of the
+site, which no setting changes. The figure is therefore given with
+the share of partners against which the station is more than 3 dB low, so that a station
+deaf against everyone (equipment) reads differently from one deaf against
+partners on one side (terrain).
+
+A maintenance note when the relative sensitivity is more than **10 dB**
+below the network, a tenth of the signal power. On 15 October 2026 the
+fitted k was 14.5, 719 stations were judged (median 11 partners), the
+middle half lay between -2.6 and +2.7 dB, nine in ten above -7.7 dB, and
+17 stations were below -10 dB; all of these were low against every
+partner, which points to the
+installation more than to a ridge. In a first measurement of the same day split into two halves, a
+station's figure moved by a median of 1.5 dB (90% within 3.9 dB, rank
+correlation 0.88), so 10 dB is not crossed by chance. Shown as "Signal
+below the neighbouring stations by N dB", with the probable causes in
+order: cable loss or a connector, an antenna that is detuned, damaged or
+badly placed, no preamplifier where the neighbours have one, local noise.
+
+The page gives each station a card with its last 30 days, found by name, and for regulators a summary per day: the stations judged, the share with no open note, and the share of the radio packets forwarded that came through a station with an open note, which says more than the count of stations, since a station hearing three aircraft a day matters little. Stations are judged on the day when they send beacons and either report a position in Europe or forward a radio packet of an aircraft there; on 15 October 2026 that was 2,450 stations. Availability is left empty on a day with hours missing from the recording.
+
+**Where a new station would help most** (from 17 October 2026). The map of
+section 2 gives, per 0.25-degree cell, the time each aircraft spent without
+radio signal. Two things stop it from being a map of missing stations as it
+stands. A paraglider pilot's body shields the radio for part of every circle
+(section 7), so free flight loses signal even under good coverage; and a cell
+where nobody flies has no silence to count, however few stations it has.
+
+So the silence is measured on the aircraft whose losses come mostly from
+coverage, and applied to the flying of their own family. For free flight the
+probe is the paragliders and hang gliders sending two or more radio systems
+under one address that day; for gliders it is the gliders themselves, whose
+antennas sit in the fin with no pilot around them. On 15 October 2026 the
+probe for free flight was without signal for 30% of its airborne time,
+against 54% for the free-flight aircraft sending one system, and gliders
+for 23%. The two families are kept apart because they rarely share a cell:
+that day only 12 cells held an hour of each, and there the two shares did
+not rank the cells alike (rank correlation close to zero), partly because
+three quarters of the free flight was within 300 m of the ground and two
+thirds of the gliding above it.
+
+For each cell, family and band of height above the ground (0-300,
+300-600, 600-1,200 and above 1,200 m), the nightly run stores the probe's
+airborne time, the part of it without signal, the number of probe aircraft,
+and the airborne time of the whole family whatever it carries. The page adds
+up the last 28 days. A cell's **lost time** is, summed over families and
+bands, the family's airborne time times its probe's share without signal at
+the same band: the hours of flying that a network hearing that cell as well
+as it hears the probe elsewhere would have made visible. A band counts only
+with at least 2 hours of probe time from at least 5 probe aircraft-days, so
+that one pilot with a badly placed tracker does not paint a cell. The map
+shows, for each cell, the lost time, the lowest band where the probe is heard
+at least 80% of the time (how low the network reaches there), and the
+stations seen within 30 km.
+
+On 15 October 2026 alone, with those floors applied to one day, 41 cells had
+a band that counted, and they lost 173 hours. One cell, on the south side of
+the Grappa massif, lost 92 of those hours, flown by 79 probe aircraft,
+almost all of it free flight below 300 m, which is the low flying near the
+slopes and the landing fields that a station on the site itself would hear.
+
+Two choices the rule above leaves open. The probe's "time" is the radio time judged
+(the same segments as the visibility measure of section 2), and flying of unknown height
+above the ground is left out of every band.
+
+What it cannot see: flying that no network hears at all, by radio or app,
+leaves no track; a cell where the probe never flies is left blank, even with
+plenty of flying of one-radio aircraft; and the best site within a cell, a
+ridge or a hut with a view, is for the club to find, with the lowest band
+heard as the guide.
+
 ## 11. Known limits
 
 - A device never heard at all does not appear, and a pilot who carries

@@ -161,6 +161,7 @@ RELAY_STRAY_SHARE, RELAY_STRAY_MIN = 0.02, 1000
 # measures take each packet's own category again, as before 7 October 2026.
 PACKET_CATEGORY = bool(os.getenv("NIGHTLY_PACKET_CATEGORY"))
 EMITTER = re.compile(r" ([A-D][0-7]):")
+_FIX_SNR = re.compile(r" (-?\d+(?:\.\d+)?)dB .*?[+-]\d+(?:\.\d+)?kHz")   # sources._radio_meta, with the ratio captured
 CREWED_EMITTERS = {"A1", "A2", "A3", "A4", "A5", "A6", "A7", "B1", "B2", "B3", "B4"}
 UAV_EMITTER = "B6"
 # AIRCRAFT_TYPE of the DDB (download/?t=1): 1 glider or motor glider, 2 plane,
@@ -184,6 +185,19 @@ RELAY_MIN_SHARED = 50
 RELAY_LATE_SHARE, RELAY_LATE_MIN = 0.05, 100
 RELAY_GROUP_S = 20              # seconds after the first reception of a fix to wait for other receivers
 RELAY_SOURCES = {"OGFLR"}       # FLARM: the receiver converts ellipsoid height to MSL itself
+
+# Sensitivity of a station against its neighbours (METHOD.md 10.5, 17 October 2026): the signal-to-noise ratios of
+# the receptions of one FLARM fix by several stations, each scaled to 10 km with the day's fitted slope k.
+SENS_MIN_KM, SENS_MAX_KM = 2, 100   # receptions closer than this are dominated by the antenna pattern and the
+                                    # aircraft's attitude, farther ones are only the strongest packets
+SENS_PAIR_MIN = 20              # shared fixes for a partner to count
+SENS_PARTNERS_MIN = 3           # partners, and
+SENS_FIXES_MIN = 200            # shared fixes in all, for a station to be judged
+SENS_SANE_DB = 6                # partners further than this from the network are left out of a second pass, so
+                                # that one deaf neighbour does not make its partners look loud
+SENS_LOW_DB = 3                 # a partner counts as "higher" when the station is more than this below it (half the power)
+SENS_K_MIN_OBS = 10000          # shared receptions needed to fit k; with fewer the day is not judged
+SENS_LOG_Q, SENS_DB_Q = 1000, 10   # stored as short integers: log10 of the distance ratio in 0.001, SNR difference in 0.1 dB
 
 # Impossible tracks (METHOD.md, sections 1 and 10.4, from 9 October 2026).
 # Every fix beyond the limits of its category (sources.CEILINGS) is dropped,
@@ -216,6 +230,35 @@ ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING
 # allowed; tried only on what one step leaves unlinked, and again no distant
 # pair matched. The chain replaces the address in the nightly measures only;
 # the live map and the device check never see it.
+# Ground stations (METHOD.md 10.5, 17 October 2026). The thresholds of the
+# notes are in sources.STATION_* and STATION_NOTES, beside the text the
+# page shows for them; the numbers of the 10.4 checks are the constants above,
+# and this makes sure the two never drift apart.
+STATION_TOCALLS = {"OGNSDR", "OGNSXR", "OGNFNT", "APRS"}   # the tocalls whose `&` beacons are stations'
+STATION_FEED_BOX = (35, 72, -25, 45)       # lat min, max, lon min, max: what the recorder keeps (recorder.py)
+# Coverage gaps (METHOD.md 10.5, "Where a new station would help most"): the probe is the free-flight
+# aircraft sending two or more radio systems that day and the gliders; the bands are of height above the ground.
+COVERAGE_FAMILY = {1: "glider", 6: "free_flight", 7: "free_flight"}
+COVERAGE_BANDS_M = (300, 600, 1200)
+COVERAGE_PROBE_SYSTEMS = 2
+STATION_FIELDS = ("ntp", "temp", "noise", "ppm_manual", "ppm_auto", "signal_10km")
+STATION_CHECK_COLUMNS = {"receiver_moved": "moved_m", "receiver_altitude": "altitude_m",
+                         "relay_late_60s": "late_share", "relay_category_stray": "stray_share",
+                         "relay_altitude_offset": "relay_offset_m"}
+_D = sources.STATION_NOTES
+assert (_D["receiver_moved"]["threshold"], _D["receiver_altitude"]["threshold"], _D["relay_late_60s"]["threshold"],
+        _D["relay_category_stray"]["threshold"], _D["relay_altitude_offset"]["threshold"]) == (
+    RECEIVER_MOVED_M, RECEIVER_ALTITUDE_M, RELAY_LATE_SHARE * 100, RELAY_STRAY_SHARE * 100, RELAY_OFFSET_M)
+assert _D["signal_low"]["threshold"] == sources.STATION_SENSITIVITY_DB
+assert sources.STATION_LOW_SHOWN_DB == SENS_LOW_DB
+_STATUS_VERSION = re.compile(r"^>\d{6}h v(\S+)")
+_STATUS_NUMERIC = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\.|$)")
+_STATUS_NTP = re.compile(r" NTP:([-+]?\d+(?:\.\d+)?)ms")
+_STATUS_TEMP = re.compile(r" ([-+]\d+(?:\.\d+)?)C(?: |$)")
+_STATUS_RF = re.compile(r" RF:([-+]\d+)([-+]\d+(?:\.\d+)?)ppm/([-+]?\d+(?:\.\d+)?)dB")
+_STATUS_SIGNAL = re.compile(r"([-+]?\d+(?:\.\d+)?)dB@10km")
+_STATUS_GEOID = re.compile(r" EGM96:([-+]?\d+)m")
+
 EPRA_TOCALLS = {"OGFLR"}        # after sources.same_system
 EPRA_STEPS = ((1, 30), (2, 60), (3, 90))   # address updates bridged, s from one end to the next start
 EPRA_OVERLAP_S = 5              # s; a late copy of the old address may follow the new one
@@ -300,12 +343,15 @@ FAMILIES = {
                     "daily_drone_encounters", "daily_crewed_encounters", "daily_air_cells", "daily_same_aircraft_pairs",
                     "daily_parked",
                     "daily_quality"),
+    # Ground stations (METHOD.md 10.5, 17 October 2026): a family of its own, so that a station table that is
+    # missing or fails costs the others nothing.
+    "stations": ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"),
     "patterns": ("daily_thermal_sites", "daily_flight_classes", "daily_routes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
                  "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
                  "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
                  "daily_cruise", "daily_helicopter_night"),
 }
-TABLES = FAMILIES["conspicuity"] + FAMILIES["patterns"]
+TABLES = FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"]
 # The statistics endpoints whose monthly snapshot belongs to the patterns family.
 PATTERN_SNAPSHOTS = ("patterns",)
 
@@ -930,12 +976,67 @@ class ParkedRun:
         self.agl_t = -1e9
 
 
+def station_guard(f):
+    """An error in the station code costs the stations their day and nothing else (METHOD.md 10.5)."""
+    def guarded(self, *args):
+        if not self.s:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The stations failed during the pass")
+            self.failed["stations"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.s = False
+    return guarded
+
+
+class Station:
+    """The beacons one station sent in a UTC day (METHOD.md 10.5): when, and what its status said."""
+    __slots__ = ("last", "silence", "max_gap", "beacons", "status", "lat", "lon", "tocall", "token", "cpu",
+                 "geoid", "vals", "lasts")
+
+    def __init__(self, d0):
+        self.last = d0              # the time before the first beacon counts as silence like any other gap
+        self.silence = 0.0          # seconds inside silences longer than sources.STATION_SILENCE_S
+        self.max_gap = 0.0
+        self.beacons = self.status = 0
+        self.lat = self.lon = None  # the first position of the day inside the recorded area
+        self.tocall = self.token = None
+        self.cpu = False            # a status beacon of the OGN receiver software (it carries CPU:)
+        self.geoid = None
+        self.vals = {}              # field -> array of the day's values
+        self.lasts = {}             # field -> the last value
+
+    def beacon(self, epoch):
+        g = epoch - self.last
+        if g > self.max_gap:
+            self.max_gap = g
+        if g > sources.STATION_SILENCE_S:
+            self.silence += g
+        if epoch > self.last:
+            self.last = epoch
+        self.beacons += 1
+
+    def add(self, field, value):
+        v = self.vals.get(field)
+        if v is None:
+            v = self.vals[field] = array.array("f")
+        v.append(value)
+        self.lasts[field] = value
+
+    def median(self, field):
+        v = self.vals.get(field)
+        return statistics.median(v) if v else None
+
+
 class Nightly:
     def __init__(self, day, ddb=({}, set())):
         self.day = day
         self.chain = {}           # FLARM random address -> first address of its chain; chain_pass()
         self.c = True             # METHOD.md: drones, encounters, parked, quality
         self.p = True             # PATTERNS.md; switched off if its work fails during the pass
+        self.s = True             # METHOD.md 10.5, the stations; switched off if its work fails during the pass
+        self.missing_hours = ()
         self.ddb_types, self.notrack = ddb[0], ddb[1]
         self.ddb_models = ddb[2] if len(ddb) > 2 else {}
         self.emitters = collections.defaultdict(set)    # address -> ADS-B emitter categories heard
@@ -1022,9 +1123,20 @@ class Nightly:
         self.rx_alt = collections.defaultdict(lambda: array.array("h"))   # receiver -> altitude minus terrain, m
         self.rx_relay = collections.Counter()  # receiver -> relayed radio packets
         self.rx_late = collections.Counter()
-        self.relay_groups = {}                 # (address, packet time) -> [reception epoch, {receiver: alt}]
+        self.stations = {}                     # name -> Station: the beacons of the day (10.5)
+        # Coverage gaps (10.5): the radio timeline of each address, as sources.count_radio_aircraft keeps it
+        self.cg_radio = {}                     # address -> (t, lat, lon, speed, alt_m) of its last radio fix
+        self.cg_heard = {}                     # address -> {radio system: t of its last fix}
+        self.cg_systems = collections.defaultdict(set)   # address -> radio systems it sent today
+        self.cg_cells = {}                     # address -> {(lat idx, lon idx, family, band): [air s, judged s, late s]}
+        self.rx_aircraft = collections.defaultdict(set)   # receiver -> addresses it forwarded
+        self._relay_offsets = None
+        self.relay_groups = {}                 # (address, packet time) -> (reception epoch, {receiver: (alt, snr)}, lat, lon)
         self.relay_order = collections.deque()
         self.relay_pairs = collections.defaultdict(lambda: array.array("h"))  # (rx a, rx b) -> alt a - alt b, m
+        # (rx a, rx b) -> x, y of each shared fix, interleaved: x = log10(d_b / d_a) in 0.001, y = snr_a - snr_b in 0.1 dB
+        self.sens_pairs = collections.defaultdict(lambda: array.array("h"))
+        self._sensitivity = None
 
     # --- the pass ---------------------------------------------------------------
 
@@ -1043,6 +1155,7 @@ class Nightly:
                 f"circle tracks {len(self.circles):,} with {sum(len(t.thermals) for t in self.circles.values()):,} "
                 f"thermals and {samples:,} samples, parked runs {len(self.parked_runs):,}, "
                 f"relay pairs {len(self.relay_pairs):,} ({sum(len(v) for v in self.relay_pairs.values()):,}), "
+                f"sensitivity pairs {len(self.sens_pairs):,} ({sum(len(v) for v in self.sens_pairs.values()) // 2:,}), "
                 f"device categories {len(self.categories):,}")
 
     def chain_pass(self, files):
@@ -1255,6 +1368,7 @@ class Nightly:
     def run(self, raw_dir, hours=range(24)):
         files = [(hour_path(raw_dir, self.day, h) if h in hours else None, None) for h in range(24)]
         missing = [h for h, (p, _) in enumerate(files) if p is None]
+        self.missing_hours = tuple(missing)
         nxt = hour_path(raw_dir, self.day + datetime.timedelta(days=1), 0)
         if nxt is not None:
             files.append((nxt, self.d1 + STALE + 1))
@@ -1281,19 +1395,26 @@ class Nightly:
         except ValueError:
             return
         if not body.startswith("/"):
+            if body.startswith(">") and self.s and self.d0 <= epoch < self.d1:
+                self.station_status(epoch, src, head.split(",")[0], body)
             return                              # status lines, objects, messages
         path = head.split(",")
         raw_tc = path[0]
         in_day = self.d0 <= epoch < self.d1     # quality is filed by reception
         if raw_tc == "OGNSDR" or raw_tc == "OGNSXR":
+            if in_day and self.s:
+                self.station_position(epoch, src, body)
             if in_day and self.c:
                 self.receiver_beacon(src, body)
             return
+        if body[26:27] == "&" and raw_tc in STATION_TOCALLS and in_day and self.s and " id" not in body:
+            self.station_position(epoch, src, body)     # a FANET ground station, or an old receiver as APRS
         if body[26:27] == "&" or raw_tc in sources.EXCLUDED:
             return                              # FANET ground stations, delayed and synthetic copies
         if body[26:27] == "_":
             return                              # weather stations
         tocall = sources.same_system(raw_tc, src)
+        rnd = src.startswith(sources.RANDOM_PREFIX) and tocall in sources.RANDOM_ROTATING
         src = self.chained(src, tocall)
         id_category, no_track = sources.id_info(body)
         if no_track:
@@ -1345,6 +1466,8 @@ class Nightly:
         address = src[-6:]
         if address in self.notrack:
             return                              # the owner asked OGN not to track it
+        if self.s and not rnd and via == "radio" and tocall in sources.RADIO_CADENCE:
+            self.cg_systems[address].add(tocall)    # the radio systems of the day, for the coverage probe (10.5)
 
         # Packet time, as sources.parse_fix: the clock of the day of arrival,
         # the previous day when more than 5 minutes ahead.
@@ -1389,13 +1512,15 @@ class Nightly:
             if via == "radio" and kind != "adsb":
                 rx = path[-1]
                 self.rx_relay[rx] += 1
+                self.rx_aircraft[rx].add(address)
                 if id_category is not None and m is not None:
                     self.rx_cat[rx] += 1
                     self.rx_cat_stray[rx] += stray
                 if delay > LATE_S:
                     self.rx_late[rx] += 1
-                if tocall in RELAY_SOURCES and alt_m is not None:
-                    self.relay(epoch, address, sod, rx, alt_m)
+                if tocall in RELAY_SOURCES:
+                    snr = _FIX_SNR.search(body) if self.s else None
+                    self.relay(epoch, address, sod, rx, alt_m, lat, lon, float(snr.group(1)) if snr else None)
 
         # --- the measures: fixes of this day, received in time ---------------
         if epoch - t > STALE or not (self.d0 <= t < self.d1):
@@ -1428,6 +1553,7 @@ class Nightly:
                     self.cut[address] = self.addr_fix[address]
             self.last_fix.pop((src, tocall, via), None)
             self.addr_fix.pop(address, None)
+            self.cg_radio.pop(address, None)
             return
         key = (src, tocall, via)
         prev = self.last_fix.get(key)
@@ -1476,7 +1602,9 @@ class Nightly:
                          float(f.group(1)) * 100 if f else None)
         if kind == "adsb":
             return                              # ADS-B: only the other aircraft of an encounter
-        self.timeline(address, category, t, lat, lon, kt, alt_m, label, reported)
+        if self.s and not rnd and via == "radio" and tocall in sources.RADIO_CADENCE and category in COVERAGE_FAMILY:
+            self.coverage_radio(address, category, tocall, t, lat, lon, kt, alt_m)
+        self.timeline(address, category, t, lat, lon, kt, alt_m, label, reported, rnd)
         if self.p and category == 1 and course and alt_m is not None:
             self.pattern(self.wave_fix, address, t, lat, lon, alt_m, course)
         if (category in CIRCLE_CATEGORIES or category == DRONE) and course:
@@ -1726,12 +1854,13 @@ class Nightly:
 
     # --- 1. flying time per aircraft, and drone time ------------------------------
 
-    def timeline(self, address, category, t, lat, lon, kt, alt_m, label=None, reported=None):
+    def timeline(self, address, category, t, lat, lon, kt, alt_m, label=None, reported=None, rnd=False):
         """sources.SourceTracker.count_hours, filed by local solar hour.
 
         `kt` is the speed that decides flight, `reported` the one the packet
         carried (they differ only for FLARM's 0, sources.ZeroSpeed); `label`
-        files the impossible segments by system for daily_quality."""
+        files the impossible segments by system for daily_quality; `rnd` is a
+        FLARM random address, left out of the coverage gaps (10.5)."""
         prev = self.addr_fix.get(address)
         if prev is not None and t <= prev[0]:
             return
@@ -1775,6 +1904,8 @@ class Nightly:
             return
         if reported is not None and not sources.flying(category, prev[5], reported):
             self.zero_gain[category] += seconds
+        if not rnd and category in COVERAGE_FAMILY:
+            self.coverage_air(address, category, prev, seconds)
         local = prev[0] + seconds / 2 + prev[2] * SOLAR_SECONDS_PER_DEGREE
         if self.p:
             self.pattern(self.pattern_segment, address, category, prev, t, lat, lon, kt, seconds, local, alt_m)
@@ -1785,6 +1916,60 @@ class Nightly:
             self.drone_air[(math.floor(prev[1]), math.floor(prev[2]), band(agl, DRONE_HEIGHT_EDGES),
                             band(kmh, DRONE_SPEED_EDGES), address)] += seconds
             self.drone_air_q[(math.floor(prev[1] * 4), math.floor(prev[2] * 4), address)] += seconds
+
+    @staticmethod
+    def coverage_band(agl):
+        return None if agl is None else sum(1 for e in COVERAGE_BANDS_M if agl >= e)
+
+    def coverage_row(self, address, category, lat, lon, alt_m):
+        """The accumulator of one address in the cell and height band of a segment's start, or None."""
+        family = COVERAGE_FAMILY.get(category)
+        if family is None:
+            return None
+        ground = self.terrain.elevation(lat, lon)
+        band = self.coverage_band(alt_m - ground if alt_m is not None and ground is not None else None)
+        if band is None:
+            return None
+        cells = self.cg_cells.get(address)
+        if cells is None:
+            cells = self.cg_cells[address] = {}
+        key = (math.floor(lat / sources.CELL_DEG), math.floor(lon / sources.CELL_DEG), family, band)
+        row = cells.get(key)
+        if row is None:
+            row = cells[key] = [0.0, 0.0, 0.0]
+        return row
+
+    @station_guard
+    def coverage_air(self, address, category, prev, seconds):
+        """Airborne seconds of a segment, filed where it began; the same segments as sources.count_hours."""
+        row = self.coverage_row(address, category, prev[1], prev[2], prev[4])
+        if row is not None:
+            row[0] += seconds
+
+    @station_guard
+    def coverage_radio(self, address, category, tocall, t, lat, lon, speed, alt_m):
+        """sources.SourceTracker.count_radio_aircraft: seconds judged and late on the address's radio timeline."""
+        heard = self.cg_heard.setdefault(address, {})
+        heard[tocall] = t
+        prev = self.cg_radio.get(address)
+        if prev is not None and t <= prev[0]:
+            return                              # already covered by another system
+        self.cg_radio[address] = (t, lat, lon, speed, alt_m)
+        if prev is None:
+            return
+        seconds = t - prev[0]
+        if seconds > sources.SESSION_BREAK:
+            return
+        if sources.impossible_jump(category, dist(prev[1], prev[2], lat, lon), seconds):
+            return
+        if not sources.flying(category, prev[3], speed):
+            return
+        interval = max(sources.RADIO_CADENCE[s][2] for s, ts in heard.items() if t - ts <= sources.SESSION_BREAK)
+        late = max(0.0, seconds - interval - sources.CADENCE_TOLERANCE)
+        row = self.coverage_row(address, category, prev[1], prev[2], prev[4])
+        if row is not None:
+            row[1] += seconds
+            row[2] += late
 
     def drone_track(self, address, t, lat, lon, kt, alt_m):
         """The fixes of an address declaring a drone, for its flight class
@@ -2383,6 +2568,67 @@ class Nightly:
 
     # --- 5. quality: receivers ------------------------------------------------------------
 
+    @station_guard
+    def station_position(self, epoch, name, body):
+        """A `&` beacon: the station is alive, and says where it is."""
+        st = self.stations.get(name)
+        if st is None:
+            st = self.stations[name] = Station(self.d0)
+        st.beacon(epoch)
+        if st.lat is not None or (body[8:10] == "00" and body[17:20] == "000"):
+            return
+        m = sources._position.match(body)
+        if not m:
+            return
+        g = m.groups()
+        lat = int(g[3]) + float(g[4]) / 60
+        lon = int(g[7]) + float(g[8]) / 60
+        if g[5] == "S":
+            lat = -lat
+        if g[9] == "W":
+            lon = -lon
+        la0, la1, lo0, lo1 = STATION_FEED_BOX
+        if la0 <= lat <= la1 and lo0 <= lon <= lo1:
+            st.lat, st.lon = lat, lon
+
+    @station_guard
+    def station_status(self, epoch, name, tocall, body):
+        """A status beacon of a station: the OGN receiver software's (CPU:, RF:), GXAirCom's, PilotAware's."""
+        if not (tocall in ("OGNSDR", "OGNSXR", "OGNFNT") or " CPU:" in body or " RF:" in body or "PilotAware" in body):
+            return                              # a tracker's or an app's status line
+        st = self.stations.get(name)
+        if st is None:
+            st = self.stations[name] = Station(self.d0)
+        st.beacon(epoch)
+        st.status += 1
+        st.tocall = tocall
+        m = _STATUS_VERSION.match(body)
+        if m and (" CPU:" in body or not st.cpu):
+            st.token = m.group(1)           # PilotAware stations also send a line of their own, which is not the receiver's
+        if " CPU:" not in body:
+            return
+        st.cpu = True
+        st.geoid = _STATUS_GEOID.search(body) is not None
+        for field, rx in (("ntp", _STATUS_NTP), ("temp", _STATUS_TEMP), ("signal_10km", _STATUS_SIGNAL)):
+            m = rx.search(body)
+            if m:
+                st.add(field, float(m.group(1)))
+        m = _STATUS_RF.search(body)
+        if m:
+            st.add("ppm_manual", float(m.group(1)))
+            st.add("ppm_auto", float(m.group(2)))
+            st.add("noise", float(m.group(3)))
+
+    @staticmethod
+    def station_kind(st):
+        """OGN, FANET or other, from the software named in the status beacon (the tocall when there is none)."""
+        token = st.token or ""
+        if "GXAirCom" in token or (not token and st.tocall == "OGNFNT"):
+            return "FANET"
+        if _STATUS_NUMERIC.match(token) or "OGNbase" in token or (not token and st.tocall in ("OGNSDR", "OGNSXR")):
+            return "OGN"
+        return "other"
+
     def receiver_beacon(self, name, body):
         if body[8:10] == "00" and body[17:20] == "000":
             return                              # no position yet
@@ -2410,15 +2656,15 @@ class Nightly:
             if ground is not None:
                 self.rx_alt[name].append(max(-32000, min(32000, round(int(a.group(1)) * 0.3048 - ground))))
 
-    def relay(self, epoch, address, sod, rx, alt_m):
-        """Group the receptions of one FLARM fix by several receivers."""
+    def relay(self, epoch, address, sod, rx, alt_m, lat, lon, snr):
+        """Group the receptions of one FLARM fix by several receivers: altitude (10.4) and signal (10.5)."""
         k = (address, sod)
         g = self.relay_groups.get(k)
         if g is None:
-            self.relay_groups[k] = (epoch, {rx: alt_m})
+            self.relay_groups[k] = (epoch, {rx: (alt_m, snr)}, lat, lon)
             self.relay_order.append(k)
         else:
-            g[1].setdefault(rx, alt_m)
+            g[1].setdefault(rx, (alt_m, snr))
         while self.relay_order:
             k0 = self.relay_order[0]
             g0 = self.relay_groups[k0]
@@ -2426,23 +2672,45 @@ class Nightly:
                 break
             self.relay_order.popleft()
             del self.relay_groups[k0]
-            self.relay_pair(g0[1])
+            self.relay_pair(g0)
 
-    def relay_pair(self, heard):
+    def relay_pair(self, group):
+        _, heard, lat, lon = group
         if len(heard) < 2:
             return
         items = sorted(heard.items())
         for i in range(len(items)):
             for j in range(i + 1, len(items)):
-                diff = max(-32000, min(32000, round(items[i][1] - items[j][1])))
-                self.relay_pairs[(items[i][0], items[j][0])].append(diff)
+                if items[i][1][0] is not None and items[j][1][0] is not None:
+                    diff = max(-32000, min(32000, round(items[i][1][0] - items[j][1][0])))
+                    self.relay_pairs[(items[i][0], items[j][0])].append(diff)
+        if self.s:
+            self.sensitivity_pair(items, lat, lon)
+
+    @station_guard
+    def sensitivity_pair(self, items, lat, lon):
+        """The signal of each pair of stations that heard the fix, with the distances (10.5), for the end of the day."""
+        heard = []
+        for rx, (_, snr) in items:
+            st = self.stations.get(rx)
+            if snr is None or st is None or st.lat is None:
+                continue
+            km = dist(st.lat, st.lon, lat, lon) / 1000
+            if SENS_MIN_KM <= km <= SENS_MAX_KM:
+                heard.append((rx, snr, math.log10(km)))
+        for i in range(len(heard)):
+            for j in range(i + 1, len(heard)):
+                a, b = heard[i], heard[j]
+                v = self.sens_pairs[(a[0], b[0])]
+                v.append(round((b[2] - a[2]) * SENS_LOG_Q))
+                v.append(max(-32000, min(32000, round((a[1] - b[1]) * SENS_DB_Q))))
 
     # --- end of the day -----------------------------------------------------------------------
 
     def finish(self):
         while self.relay_order:
             k = self.relay_order.popleft()
-            self.relay_pair(self.relay_groups.pop(k)[1])
+            self.relay_pair(self.relay_groups.pop(k))
         for key, r in list(self.parked_runs.items()):
             self.close_parked(key, r)
         for address, s in self.drone_session.items():
@@ -2533,8 +2801,9 @@ class Nightly:
         patterns family is computed first, since the crewed encounters report
         the tows the launches find.
         """
-        out = {"conspicuity": {}, "patterns": {}}
-        for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity)):
+        out = {"conspicuity": {}, "patterns": {}, "stations": {}}
+        for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity),
+                                ("stations", self.rows_stations)):
             if family in self.failed:
                 continue                        # already failed during the pass
             try:
@@ -2544,6 +2813,109 @@ class Nightly:
                 self.failed[family] = f"rows: {type(e).__name__}: {e}"[:200]
                 out[family] = {}
         return out
+
+    STATION_COLUMNS = ("day", "name", "kind", "version", "lat", "lon", "availability", "beacons", "status_beacons",
+                       "ntp_ms_last", "ntp_ms_median", "temp_c_last", "temp_c_median", "noise_db_last",
+                       "noise_db_median", "ppm_manual_last", "ppm_manual_median", "ppm_auto_last",
+                       "ppm_auto_median", "signal_10km_db_last", "signal_10km_db_median", "geoid_declared",
+                       "aircraft_heard", "packets_forwarded", "moved_m", "altitude_m", "late_share", "stray_share",
+                       "relay_offset_m", "sensitivity_db", "sensitivity_partners", "sensitivity_fixes",
+                       "sensitivity_low_share", "notes")
+    SENSITIVITY_COLUMNS = ("day", "k", "pairs", "observations", "stations_judged")
+
+    def rows_stations(self):
+        """METHOD.md 10.5: one row per station, with what its beacons said and the notes."""
+        day = self.day.isoformat()
+        checks = collections.defaultdict(dict)       # receiver -> check -> (value, flagged)
+        for check, name, _, _, value, is_flagged in self.receiver_checks():
+            checks[name][check] = (value, is_flagged)
+        k, sens, n_pairs, n_obs = self.sensitivity()
+        rows = []
+        for name, st in sorted(self.stations.items()):
+            forwarded = self.rx_relay.get(name, 0)
+            if st.lat is None and not forwarded:
+                continue                         # no position in Europe, and no aircraft of Europe forwarded
+            silence = st.silence
+            if self.d1 - st.last > sources.STATION_SILENCE_S:
+                silence += self.d1 - st.last
+            # A day with hours missing from the recording has silences nobody can tell from the gaps.
+            availability = None if self.missing_hours else round(max(0.0, 1 - silence / 86400), 4)
+            kind = self.station_kind(st)
+            token = st.token or ""
+            numeric = _STATUS_NUMERIC.match(token)
+            version = ".".join(numeric.groups()) if numeric else (token[:32] or None)
+            med = {f: st.median(f) for f in STATION_FIELDS}
+            notes = []
+            if kind == "OGN" and st.cpu:
+                # Only the OGN receiver software reports CPU:, NTP and noise: other software is not judged by them.
+                if numeric and tuple(int(x) for x in numeric.groups()) < sources.STATION_SOFTWARE_MIN:
+                    notes.append("software_old")
+                if med["ntp"] is None or abs(med["ntp"]) > sources.STATION_NTP_MAX_MS:
+                    notes.append("ntp_offset")
+                if med["temp"] is not None and med["temp"] >= sources.STATION_TEMP_MAX_C:
+                    notes.append("cpu_temperature")
+                if med["noise"] is not None and med["noise"] > sources.STATION_NOISE_MAX_DB:
+                    notes.append("rf_noise")
+            own = checks.get(name, {})
+            for check in STATION_CHECK_COLUMNS:
+                if own.get(check, (None, False))[1]:
+                    notes.append(check)
+            sd = sens.get(name)
+            if sd is not None and sd[0] < -sources.STATION_SENSITIVITY_DB:
+                notes.append("signal_low")
+
+            def last(f):
+                return st.lasts.get(f)
+
+            def r(x, n=3):
+                return None if x is None else round(float(x), n)
+            row = {
+                "day": day, "name": name, "kind": kind, "version": version,
+                "lat": r(st.lat, 4), "lon": r(st.lon, 4), "availability": availability, "beacons": st.beacons,
+                "status_beacons": st.status,
+                "ntp_ms_last": r(last("ntp")), "ntp_ms_median": r(med["ntp"]),
+                "temp_c_last": r(last("temp"), 1), "temp_c_median": r(med["temp"], 1),
+                "noise_db_last": r(last("noise"), 2), "noise_db_median": r(med["noise"], 2),
+                "ppm_manual_last": r(last("ppm_manual"), 1), "ppm_manual_median": r(med["ppm_manual"], 1),
+                "ppm_auto_last": r(last("ppm_auto"), 1), "ppm_auto_median": r(med["ppm_auto"], 1),
+                "signal_10km_db_last": r(last("signal_10km"), 1), "signal_10km_db_median": r(med["signal_10km"], 1),
+                "geoid_declared": None if st.geoid is None else int(st.geoid),
+                "aircraft_heard": len(self.rx_aircraft.get(name, ())), "packets_forwarded": forwarded,
+                "sensitivity_db": None if sd is None else round(sd[0], 2),
+                "sensitivity_partners": None if sd is None else sd[1],
+                "sensitivity_fixes": None if sd is None else sd[2],
+                "sensitivity_low_share": None if sd is None else round(sd[3], 4),
+                "notes": ",".join(notes),
+            }
+            for check, column in STATION_CHECK_COLUMNS.items():
+                row[column] = own.get(check, (None, False))[0]
+            rows.append(tuple(row[c] for c in self.STATION_COLUMNS))
+        return {"daily_stations": (self.STATION_COLUMNS, rows),
+                "daily_station_sensitivity": (self.SENSITIVITY_COLUMNS,
+                                              [(day, None if k is None else round(k, 3), n_pairs, n_obs, len(sens))]),
+                "daily_coverage_gaps": (self.COVERAGE_COLUMNS, self.rows_coverage_gaps(day))}
+
+    COVERAGE_COLUMNS = ("day", "lat_idx", "lon_idx", "family", "band", "probe_s", "probe_late_s", "probe_aircraft",
+                        "air_s")
+
+    def rows_coverage_gaps(self, day):
+        """METHOD.md 10.5, "Where a new station would help most": per cell, family and band, the probe's radio
+        seconds judged and late, the probe aircraft, and the airborne seconds of the whole family."""
+        acc = {}                                # (lat idx, lon idx, family, band) -> [probe s, late s, aircraft, air s]
+        for address, cells in self.cg_cells.items():
+            multi = len(self.cg_systems.get(address, ())) >= COVERAGE_PROBE_SYSTEMS
+            for key, (air, judged, late) in cells.items():
+                a = acc.get(key)
+                if a is None:
+                    a = acc[key] = [0, 0, 0, 0]
+                a[3] += air
+                if key[2] == "glider" or multi:
+                    a[0] += judged
+                    a[1] += late
+                    if judged > 0:
+                        a[2] += 1
+        return [(day, k[0], k[1], k[2], k[3], round(v[0]), round(v[1]), v[2], round(v[3]))
+                for k, v in sorted(acc.items()) if v[0] > 0 or v[3] > 0]
 
     def rows_patterns(self):
         """PATTERNS.md: hours, circling, thermals and the rest, launches."""
@@ -3000,44 +3372,100 @@ class Nightly:
         # number flagged among those judged (name '*').
         judged = collections.Counter()
         flagged = collections.Counter()
-        for name, (_, _, beacons, far, maxd) in self.rx_pos.items():
-            judged["receiver_moved"] += 1
-            if maxd > RECEIVER_MOVED_M:
-                flagged["receiver_moved"] += 1
-                rows.append((day, "receiver", name, "receiver_moved", far, beacons, round(maxd)))
-        for name, offs in self.rx_alt.items():
-            if not offs:
-                continue
-            judged["receiver_altitude"] += 1
-            med = statistics.median(offs)
-            if abs(med) > RECEIVER_ALTITUDE_M:
-                flagged["receiver_altitude"] += 1
-                rows.append((day, "receiver", name, "receiver_altitude",
-                             sum(1 for x in offs if abs(x) > RECEIVER_ALTITUDE_M), len(offs), round(med)))
-        for name, n in self.rx_relay.items():
-            if n < RELAY_LATE_MIN:
-                continue
-            judged["relay_late_60s"] += 1
-            late = self.rx_late[name]
-            if late / n > RELAY_LATE_SHARE:
-                flagged["relay_late_60s"] += 1
-                rows.append((day, "receiver", name, "relay_late_60s", late, n, round(late / n, 4)))
-        for name, n in self.rx_cat.items():
-            if n < RELAY_STRAY_MIN:
-                continue
-            judged["relay_category_stray"] += 1
-            k = self.rx_cat_stray[name]
-            if k / n >= RELAY_STRAY_SHARE:
-                flagged["relay_category_stray"] += 1
-                rows.append((day, "receiver", name, "relay_category_stray", k, n, round(k / n, 4)))
-        for name, (med, n) in self.relay_offsets().items():
-            judged["relay_altitude_offset"] += 1
-            if abs(med) > RELAY_OFFSET_M:
-                flagged["relay_altitude_offset"] += 1
-                rows.append((day, "receiver", name, "relay_altitude_offset", n, n, med))
+        for check, name, n, total, value, is_flagged in self.receiver_checks():
+            judged[check] += 1
+            if is_flagged:
+                flagged[check] += 1
+                rows.append((day, "receiver", name, check, n, total, value))
         for check, n in sorted(judged.items()):
             rows.append((day, "receiver", "*", check, flagged[check], n, None))
         return rows
+
+    def receiver_checks(self):
+        """The five receiver checks of METHOD.md 10.4, for every receiver judged by each.
+
+        (check, receiver, count, total, value, flagged), the checks in the
+        order the rows are filed. The quality rows keep the flagged ones; the
+        station rows (10.5) show the value of every receiver judged.
+        """
+        out = []
+        for name, (_, _, beacons, far, maxd) in self.rx_pos.items():
+            out.append(("receiver_moved", name, far, beacons, round(maxd), maxd > RECEIVER_MOVED_M))
+        for name, offs in self.rx_alt.items():
+            if not offs:
+                continue
+            med = statistics.median(offs)
+            out.append(("receiver_altitude", name, sum(1 for x in offs if abs(x) > RECEIVER_ALTITUDE_M), len(offs),
+                        round(med), abs(med) > RECEIVER_ALTITUDE_M))
+        for name, n in self.rx_relay.items():
+            if n < RELAY_LATE_MIN:
+                continue
+            late = self.rx_late[name]
+            out.append(("relay_late_60s", name, late, n, round(late / n, 4), late / n > RELAY_LATE_SHARE))
+        for name, n in self.rx_cat.items():
+            if n < RELAY_STRAY_MIN:
+                continue
+            k = self.rx_cat_stray[name]
+            out.append(("relay_category_stray", name, k, n, round(k / n, 4), k / n >= RELAY_STRAY_SHARE))
+        for name, (med, n) in self.relay_offsets().items():
+            out.append(("relay_altitude_offset", name, n, n, med, abs(med) > RELAY_OFFSET_M))
+        # Order as before the refactoring: by check, in the order above.
+        return out
+
+    def sensitivity(self):
+        """Each station's signal against the stations hearing the same FLARM fixes (METHOD.md 10.5).
+
+        (k, {station: (dB against the network, partners, shared fixes, share of
+        partners it is more than SENS_LOW_DB below)}, pairs, observations).
+
+        k is the slope of the signal-to-noise difference on the log10 distance
+        ratio within pairs of stations, fitted over the day. With it every
+        pair gives a difference of scaled signals, y - k x, whose median over
+        the fixes it shares is the pair's figure. A station's figure is the
+        median over its partners (each counts once) of the pair figures,
+        taken against the partners with at least SENS_PAIR_MIN shared fixes;
+        a second pass leaves out the partners that sit more than SENS_SANE_DB
+        from the network, and the figures are centred on the median station.
+        """
+        if self._sensitivity is not None:
+            return self._sensitivity
+        pairs = {key: v for key, v in self.sens_pairs.items() if len(v) >= 2 * SENS_PAIR_MIN}
+        n_obs = sum(len(v) for v in pairs.values()) // 2
+        out = (None, {}, len(pairs), n_obs)
+        if n_obs >= SENS_K_MIN_OBS:
+            num = den = 0.0
+            for v in pairs.values():
+                xs, ys = v[0::2], v[1::2]
+                mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+                num += sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+                den += sum((x - mx) ** 2 for x in xs)
+            k = num / den * SENS_LOG_Q / SENS_DB_Q if den else None
+            if k is not None and k > 0:
+                nb = collections.defaultdict(list)       # station -> [(partner, shared fixes, station minus partner)]
+                for (a, b), v in pairs.items():
+                    m = statistics.median(y / SENS_DB_Q - k * x / SENS_LOG_Q for x, y in zip(v[0::2], v[1::2]))
+                    n = len(v) // 2
+                    nb[a].append((b, n, m))
+                    nb[b].append((a, n, -m))
+
+                def judge(valid):
+                    figure = {}
+                    for name, partners in nb.items():
+                        p = [t for t in partners if valid is None or t[0] in valid]
+                        if len(p) >= SENS_PARTNERS_MIN and sum(t[1] for t in p) >= SENS_FIXES_MIN:
+                            figure[name] = (statistics.median(t[2] for t in p), p)
+                    centre = statistics.median(f[0] for f in figure.values()) if figure else 0.0
+                    return figure, centre
+                first, c0 = judge(None)
+                good = {name for name, f in first.items() if abs(f[0] - c0) <= SENS_SANE_DB}
+                second, c1 = judge(good)
+                out = (k, {name: (f[0] - c1, len(f[1]), sum(t[1] for t in f[1]),
+                                  sum(1 for t in f[1] if t[2] < -SENS_LOW_DB) / len(f[1]))
+                           for name, f in second.items()}, len(pairs), n_obs)
+                logger.info(f"Sensitivity: k {k:.2f} (free space 20) from {n_obs:,} shared receptions in {len(pairs):,} "
+                            f"pairs; {len(first)} stations judged in the first pass, {len(second)} in the second")
+        self._sensitivity = out
+        return out
 
     def relay_offsets(self):
         """Each receiver's altitude offset against the others hearing the same FLARM fixes.
@@ -3049,6 +3477,8 @@ class Nightly:
         RELAY_OFFSET_M: (median in m, shared fixes), for receivers with at
         least RELAY_MIN_SHARED such fixes.
         """
+        if self._relay_offsets is not None:
+            return self._relay_offsets
         pair_med = {}
         for (a, b), diffs in self.relay_pairs.items():
             v = sorted(diffs)
@@ -3064,6 +3494,7 @@ class Nightly:
             n = sum(x[1] for x in sane)
             if n >= RELAY_MIN_SHARED:
                 out[r] = (weighted_median(sane), n)
+        self._relay_offsets = out
         return out
 
 
@@ -3074,6 +3505,8 @@ def snapshot_endpoints(family):
         return tuple(PATTERN_SNAPSHOTS)
     if family == "conspicuity":
         return tuple(e for e in every if e not in PATTERN_SNAPSHOTS)
+    if family == "stations":
+        return ()                       # no endpoint of the stations is frozen monthly: the table is the record
     return tuple(every)
 
 
@@ -3188,6 +3621,8 @@ def print_dry_run(tables, run_row):
           f"lines {run_row[4]:,}, {run_row[5]:.0f} s")
     for table, (cols, rows) in tables.items():
         print(f"\n== {table}: {len(rows)} rows")
+        if table in ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"):
+            continue                    # public names, but 2,600 of them: see print_stations_dry_run
         if table == "daily_hours_solar":
             by = collections.Counter()
             for r in rows:
@@ -3263,6 +3698,97 @@ def print_dry_run(tables, run_row):
             print(f"   ... {len(rows) - len(shown)} more")
 
 
+def print_coverage_dry_run(n, tables):
+    """The coverage gaps of the day in figures: the page's rule (sources.coverage_gaps_summary) on this one day."""
+    cols, rows = tables.get("daily_coverage_gaps", ((), []))
+    print(f"\n== coverage gaps (METHOD.md 10.5): {len(rows)} rows, {len({(r[1], r[2]) for r in rows})} cells")
+    cells = sources.coverage_gaps_summary([(r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]) for r in rows])
+    kept = [c for c in cells if c["probe_hours"] >= sources.COVERAGE_MIN_PROBE_H]
+    print(f"   cells with a band that counts {len(cells)}; with 2 h of probe time in all {len(kept)}; "
+          f"lost {sum(c['lost_hours'] for c in cells):.0f} h (all counting bands), "
+          f"{sum(c['lost_hours'] for c in kept):.0f} h in the {len(kept)} cells")
+    top = sorted(cells, key=lambda c: -c["lost_hours"])[:5]
+    for c in top:
+        key = (c["lat_idx"], c["lon_idx"])
+        aircraft = sum(1 for a, cs in n.cg_cells.items()
+                       if any(k[:2] == key and v[1] > 0
+                              and (k[2] == "glider" or len(n.cg_systems.get(a, ())) >= COVERAGE_PROBE_SYSTEMS)
+                              for k, v in cs.items()))
+        print(f"   {c['lat']:.3f} {c['lon']:.3f}  lost {c['lost_hours']:.1f} h  probe {c['probe_hours']:.1f} h  "
+              f"without signal {100 * c['probe_late_share']:.0f}%  lowest band heard {c['lowest_band_heard']}  "
+              f"air {c['air_hours']:.1f} h  probe aircraft {aircraft}")
+
+
+def print_stations_dry_run(n, tables):
+    """The day's stations in figures, to set beside the exploration that preceded them (rx.py, 15 October)."""
+    cols, rows = tables.get("daily_stations", ((), []))
+    if not rows:
+        print("\n== stations: none")
+        return
+    ix = {c: i for i, c in enumerate(cols)}
+    col = lambda c: [r[ix[c]] for r in rows]
+
+    def q(v, ps=(10, 50, 90)):
+        v = sorted(x for x in v if x is not None)
+        return [round(v[min(len(v) - 1, int(len(v) * p / 100))], 2) for p in ps] if v else None
+    print("\n== stations (METHOD.md 10.5)")
+    print(f"   names with any beacon {len(n.stations)}; with a position in Europe "
+          f"{sum(1 for st in n.stations.values() if st.lat is not None)}; with a status beacon "
+          f"{sum(1 for st in n.stations.values() if st.status)}; rows (judged) {len(rows)}")
+    forward = set(n.rx_relay)
+    print(f"   names forwarding radio packets {len(forward)}: also stations {len(forward & set(n.stations))}, "
+          f"judged {len(forward & set(col('name')))}, forwarding only {len(forward - set(n.stations))}")
+    print(f"   by kind: {dict(collections.Counter(col('kind')))}; with a status beacon "
+          f"{sum(1 for x in col('status_beacons') if x)}; with a position {sum(1 for x in col('lat') if x is not None)}")
+    print(f"   packets forwarded {sum(col('packets_forwarded')):,}; distinct aircraft per station (those forwarding) "
+          f"p10/50/90/max {q([a for a, p in zip(col('aircraft_heard'), col('packets_forwarded')) if p])} "
+          f"{max(col('aircraft_heard'))}")
+    print(f"   versions, top 8: {collections.Counter(v for v in col('version') if v).most_common(8)}")
+    for c in ("ntp_ms_last", "temp_c_last", "noise_db_last", "signal_10km_db_last",
+              "ntp_ms_median", "temp_c_median", "noise_db_median"):
+        print(f"   {c} p10/50/90 {q(col(c))} (n {sum(1 for x in col(c) if x is not None)})")
+    av = [a for a in col("availability") if a is not None]
+    if av:
+        print(f"   availability p10/50/90 {q(av)}, share >= 0.99 {sum(a >= 0.99 for a in av) / len(av):.3f}; "
+              f"total silence over 1 h {sum(1 for a in av if a < 1 - 3600 / 86400)}")
+    by = collections.Counter(c for d in col("notes") for c in d.split(",") if c)
+    clean = sum(1 for d in col("notes") if not d)
+    packets, through = sum(col("packets_forwarded")), sum(p for p, d in zip(col("packets_forwarded"), col("notes")) if d)
+    print(f"   without note {clean} of {len(rows)} ({clean / len(rows):.1%}); packets through an open-note "
+          f"station {through:,} of {packets:,} ({through / packets:.1%})" if packets else "")
+    for code, k in by.most_common():
+        print(f"   {code}: {k}")
+    k, sens, n_pairs, n_obs = n.sensitivity()
+    print(f"   sensitivity: k {None if k is None else round(k, 2)} (free space 20) from {n_obs:,} receptions in "
+          f"{n_pairs:,} pairs; judged {len(sens)}")
+    if sens:
+        v = [x[0] for x in sens.values()]
+        print(f"   sensitivity dB p5/10/25/50/75/90/95 {q(v, (5, 10, 25, 50, 75, 90, 95))} min {min(v):.1f} "
+              f"max {max(v):.1f}; below -6 {sum(x < -6 for x in v)}, below -10 {sum(x < -10 for x in v)}, "
+              f"below -15 {sum(x < -15 for x in v)}; partners median {statistics.median(x[1] for x in sens.values())}")
+        low = [x for x in sens.values() if x[0] < -10]
+        if low:
+            print(f"   the {len(low)} below -10: share of partners lower by over 3 dB p10/25/50/75/90 "
+                  f"{q([x[3] for x in low], (10, 25, 50, 75, 90))}; partners median "
+                  f"{statistics.median(x[1] for x in low)}")
+        ix2 = ix["signal_10km_db_median"]
+        pairs_ = [(r[ix2], sens[r[ix["name"]]][0]) for r in rows if r[ix2] is not None and r[ix["name"]] in sens]
+        if len(pairs_) > 3:
+            def ranks(v):
+                o = sorted(range(len(v)), key=v.__getitem__)
+                r = [0.0] * len(v)
+                for pos, i in enumerate(o):
+                    r[i] = pos
+                return r
+            ra, rb = ranks([p[0] for p in pairs_]), ranks([p[1] for p in pairs_])
+            ma = mb = (len(pairs_) - 1) / 2
+            rho = (sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+                   / math.sqrt(sum((x - ma) ** 2 for x in ra) * sum((y - mb) ** 2 for y in rb)))
+            print(f"   rank correlation with the self-declared dB@10km (median of the day), {len(pairs_)} stations: {rho:.2f}")
+    print(f"   geoid declared {sum(1 for x in col('geoid_declared') if x)} of "
+          f"{sum(1 for x in col('geoid_declared') if x is not None)} with a figure")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--day", help="UTC day, YYYY-MM-DD (default: yesterday)")
@@ -3300,7 +3826,7 @@ def main():
         logger.error(f"No recording for {day}")
         return 1
     families = n.rows()
-    tables = {**families["conspicuity"], **families["patterns"]}
+    tables = {**families["conspicuity"], **families["patterns"], **families["stations"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
@@ -3347,6 +3873,9 @@ def main():
                ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1))
     if args.dry_run:
         print_dry_run(tables, run_row)
+        if "stations" not in n.failed:
+            print_stations_dry_run(n, tables)
+            print_coverage_dry_run(n, tables)
     if args.dry_run and "patterns" not in n.failed:
         # Flight medians per kind, for checking the rule; aggregates only.
         by = collections.defaultdict(list)
@@ -3389,7 +3918,7 @@ def main():
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     failed = dict(n.failed)
     written = []
-    for family in ("conspicuity", "patterns"):
+    for family in ("conspicuity", "patterns", "stations"):
         if family in failed:
             continue
         if args.dry_run:
@@ -3413,7 +3942,8 @@ def main():
         # After the day's rows, so that the snapshot holds the whole month; a
         # family whose day failed keeps the month's snapshot it had, if any.
         for family in written:
-            snapshot(day.strftime("%Y-%m"), args.dry_run, family)
+            if snapshot_endpoints(family):
+                snapshot(day.strftime("%Y-%m"), args.dry_run, family)
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     logger.info(f"Peak memory {rss / 1024:.0f} MB")
     return 1 if failed else 0

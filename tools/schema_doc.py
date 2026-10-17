@@ -68,6 +68,9 @@ GROUPS = (
     ("quality", "Nightly: data quality",
      "Part of the conspicuity family's transaction in nightly.py (FAMILIES), listed apart because it "
      "describes the feed rather than the aircraft."),
+    ("stations", "Nightly: ground stations",
+     "One row per station and day (METHOD.md 10.5), a family of its own in nightly.py (FAMILIES) written in a "
+     "third transaction, so that a failure here leaves the other families' day written."),
     ("patterns", "Nightly: patterns family",
      "How light aviation flies (PATTERNS.md), from the same nightly run, written in a second transaction "
      "of its own so that a failure in one family leaves the other's day written."),
@@ -186,6 +189,20 @@ DESCRIPTIONS = {
         group="quality", doc="METHOD.md 10.4",
         row="One check of a day for a system or an OGN receiver: how many of how many failed it, and the measured "
             "value where there is one. Receivers have a row only when flagged, plus one row per check named '*'."),
+    # Nightly, stations
+    "daily_coverage_gaps": dict(
+        group="stations", doc="METHOD.md 10.5",
+        row="Per cell, family and band of height above the ground on a day: the radio seconds judged for the probe "
+            "aircraft and the part without signal, the probe aircraft, and the airborne seconds of the whole family."),
+    "daily_station_sensitivity": dict(
+        group="stations", doc="METHOD.md 10.5",
+        row="The network's figures of a day for station sensitivity: the fitted slope k, the station pairs and "
+            "observations it came from, and the stations judged. One row per day."),
+    "daily_stations": dict(
+        group="stations", doc="METHOD.md 10.5",
+        row="One OGN or FANET ground station on a day, by exact name: availability, the last and median figures of "
+            "its status beacon, aircraft heard and packets forwarded, the five receiver checks of 10.4 with their "
+            "values, its sensitivity against the neighbouring stations, and the codes of the open notes."),
     # Nightly, patterns
     "daily_hours_solar": dict(
         group="patterns", doc="PATTERNS.md 1",
@@ -908,7 +925,7 @@ def main():
     for t in tables:
         if t not in DESCRIPTIONS:
             warn(f"table {t} has no entry in DESCRIPTIONS")
-        elif DESCRIPTIONS[t]["group"] in ("conspicuity", "patterns", "quality") and t not in families:
+        elif DESCRIPTIONS[t]["group"] in ("conspicuity", "patterns", "quality", "stations") and t not in families:
             warn(f"{t} is described as nightly ({DESCRIPTIONS[t]['group']}) but is not in nightly.FAMILIES")
         elif t in families and DESCRIPTIONS[t]["group"] not in (families[t], "quality"):
             warn(f"{t} is in nightly family {families[t]} but described as {DESCRIPTIONS[t]['group']}")
