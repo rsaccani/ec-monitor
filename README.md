@@ -88,8 +88,10 @@ rule also covers aggregates of this kind is not settled in the terms.
 
 One gunicorn worker runs a listener thread on the OGN feed (the whole feed, about 1,200 lines a second at a busy hour)
 and the Flask endpoints that the page reads. `sources.py` keeps the totals in memory and writes them to
-MariaDB every 15 minutes, counted from the worker's start, so a restart loses what accumulated since
-the last write. Height above ground comes from a terrain model, a raw int16 grid cut from ETOPO 2022 at
+MariaDB every 15 minutes, counted from the worker's start, and once more when the worker stops, so a
+deploy, a restart or a reboot keeps what accumulated since the last write. The exit write fits in
+gunicorn's 30-second graceful timeout together with the requests still in flight; a worker killed
+after that, or one that crashes, still loses up to 15 minutes. Height above ground comes from a terrain model, a raw int16 grid cut from ETOPO 2022 at
 15 arc-seconds (`data/europe_15s.i16`, with its bounds and step in the `.json` beside it, or the path in
 `ADSL_DEM`); it is about 300 MB and is not in the repository. Without it, height above ground is recorded
 as unknown.
@@ -312,8 +314,8 @@ In production the service directory is a git checkout of this repository, and `d
 it to `origin/main`. It needs no root: it sends SIGHUP to the gunicorn master, which starts a new worker
 that re-imports the code. If the code does not compile, if the new worker does not answer within a
 minute, or if it logs a database write error in its first 30 seconds, the script checks the previous
-commit out again and reloads that. Deploy right after a 15-minute write, since a reload loses what
-accumulated since the last one. Changes to `requirements.txt`, to the systemd unit or to the schema are
+commit out again and reloads that. The old worker writes its totals as it exits, so a deploy needs no
+timing; on a rollback the rejected worker writes its own, up to a minute of them. Changes to `requirements.txt`, to the systemd unit or to the schema are
 not covered and are applied by hand, a schema change before the code that needs it. After a schema
 change, regenerate `schema.sql` and `SCHEMA.md` with `tools/schema_doc.py` (see Running it) and commit
 them.

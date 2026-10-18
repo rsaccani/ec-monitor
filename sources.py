@@ -1487,6 +1487,8 @@ class SourceTracker:
         # Visibility measure: last fix per (device, source, via), and totals.
         self.last_fix = {}
         self.totals = collections.defaultdict(lambda: [0.0] * N_TOTALS)
+        self._flush_lock = threading.Lock()   # one visibility flush at a time, the exit one included
+        self._closing = False
         self.visibility_cache = (0, None)
         self.detail = collections.defaultdict(lambda: [0.0] * len(DETAIL_COLUMNS))
         self.grid = collections.defaultdict(lambda: [0.0] * len(GRID_COLUMNS))
@@ -2025,79 +2027,110 @@ class SourceTracker:
         conn = None
         while True:
             time.sleep(VISIBILITY_FLUSH)
-            totals, self.totals = self.totals, collections.defaultdict(lambda: [0.0] * N_TOTALS)
-            detail, self.detail = self.detail, collections.defaultdict(lambda: [0.0] * len(DETAIL_COLUMNS))
-            grid, self.grid = self.grid, collections.defaultdict(lambda: [0.0] * len(GRID_COLUMNS))
-            pattern, self.pattern = self.pattern, collections.defaultdict(lambda: [0.0, 0.0, 0.0])
-            prediction, self.prediction = self.prediction, collections.defaultdict(lambda: [0.0] * len(PREDICTION_COLUMNS))
-            hours, self.hours = self.hours, collections.defaultdict(lambda: [0.0, 0.0])
-            self.addr_fix = {k: v for k, v in list(self.addr_fix.items())
-                             if time.time() - v[0] < SESSION_BREAK}
-            self.radio_fix = {k: v for k, v in list(self.radio_fix.items())
-                              if time.time() - v[0] < SESSION_BREAK}
-            self.radio_systems = {k: v for k, v in list(self.radio_systems.items())
-                                  if time.time() - max(v.values()) < SESSION_BREAK}
-            self.history = {k: v for k, v in list(self.history.items())
-                            if v and time.time() - v[-1][0] < HISTORY_SECONDS}
-            self.scored_at = {k: v for k, v in list(self.scored_at.items())
-                              if time.time() - v < HISTORY_SECONDS}
-            cutoff = time.time() - SESSION_BREAK
-            keep = {}
-            for k, v in list(self.last_fix.items()):
-                if v[0] > cutoff:
-                    keep[k] = v
-                elif (v[9] or 0) >= FLYING_KT.get(v[7], AIRBORNE_KT):
-                    # Silent for more than SESSION_BREAK and last seen flying: gone.
-                    self.count_vanish(v[8], k[1], k[2], v[7], v[1], v[2], v[6], SESSION_BREAK + 1)
-            self.last_fix = keep
-            self.zero.prune(cutoff)
-            if not totals and not detail and not grid and not pattern and not prediction and not hours:
-                continue
-            flushed = datetime.datetime.utcnow().replace(microsecond=0)
-            rows = [(day, tocall, via, cat, flushed, int(v[0]), int(v[1]), int(v[2]), int(v[3]), int(v[4])) +
-                    tuple(round(x, 1) for x in v[5:])
-                    for (day, tocall, via, cat), v in totals.items()]
-            try:
-                if conn is None:
-                    conn = self.connect_db()
-                with conn.cursor() as cur:
-                    cur.executemany(
-                        """INSERT INTO daily_visibility
-                           (day, source, via, category, flushed_at, packets, rot_packets,
-                            segments, sessions, implausible, air_seconds,
-                            p0_300, p0_1000, p0_3000, p1_300, p1_1000, p1_3000)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                        rows,
-                    )
-            except pymysql.MySQLError as e:
-                logger.error(f"Error writing to database (daily_visibility, {len(rows)} rows): {e}")
-                conn = None
-            try:
-                if conn is None:
-                    conn = self.connect_db()
-                with conn.cursor() as cur:
-                    cur.executemany(DETAIL_SQL, [k + tuple(round(x, 1) for x in v) for k, v in detail.items()])
-                    cur.executemany(GRID_SQL, [k + tuple(round(x, 1) for x in v) for k, v in grid.items()])
-            except pymysql.MySQLError as e:
-                logger.error(f"Error writing to database (visibility detail/grid, {len(detail)}+{len(grid)} rows): {e}")
-                conn = None
-            try:
-                if conn is None:
-                    conn = self.connect_db()
-                with conn.cursor() as cur:
-                    cur.executemany(PATTERN_SQL, [k + tuple(round(x, 2) for x in v) for k, v in pattern.items()])
-                    cur.executemany(PREDICTION_SQL, [k + tuple(round(x, 1) for x in v) for k, v in prediction.items()])
-            except pymysql.MySQLError as e:
-                logger.error(f"Error writing to database (pattern/prediction, {len(pattern)}+{len(prediction)} rows): {e}")
-                conn = None
-            try:
-                if conn is None:
-                    conn = self.connect_db()
-                with conn.cursor() as cur:
-                    cur.executemany(HOURS_SQL, [k + tuple(round(x, 1) for x in v) for k, v in hours.items()])
-            except pymysql.MySQLError as e:
-                logger.error(f"Error writing to database (hours, {len(hours)} rows): {e}")
-                conn = None
+            with self._flush_lock:
+                if self._closing:
+                    return
+                taken = self.take_visibility()
+                self.prune_sessions()
+                conn = self.write_visibility(conn, taken)
+
+    def flush_on_exit(self):
+        """Write what accumulated since the last flush when the worker stops.
+
+        Run from atexit: gunicorn ends a worker with sys.exit(0) after SIGTERM,
+        on a deploy (SIGHUP to the master) as on a stop or a reboot. Without it
+        a restart loses up to VISIBILITY_FLUSH seconds of totals. The lock waits
+        for a flush already in progress. Sessions are not pruned here, since
+        the worker's state ends with it.
+        """
+        with self._flush_lock:
+            self._closing = True
+            self.write_visibility(None, self.take_visibility())
+
+    def take_visibility(self):
+        """Swap the accumulators for empty ones and return the old ones."""
+        totals, self.totals = self.totals, collections.defaultdict(lambda: [0.0] * N_TOTALS)
+        detail, self.detail = self.detail, collections.defaultdict(lambda: [0.0] * len(DETAIL_COLUMNS))
+        grid, self.grid = self.grid, collections.defaultdict(lambda: [0.0] * len(GRID_COLUMNS))
+        pattern, self.pattern = self.pattern, collections.defaultdict(lambda: [0.0, 0.0, 0.0])
+        prediction, self.prediction = self.prediction, collections.defaultdict(lambda: [0.0] * len(PREDICTION_COLUMNS))
+        hours, self.hours = self.hours, collections.defaultdict(lambda: [0.0, 0.0])
+        return totals, detail, grid, pattern, prediction, hours
+
+    def prune_sessions(self):
+        """Forget sessions silent for too long, counting the ones that vanished in flight."""
+        self.addr_fix = {k: v for k, v in list(self.addr_fix.items())
+                         if time.time() - v[0] < SESSION_BREAK}
+        self.radio_fix = {k: v for k, v in list(self.radio_fix.items())
+                          if time.time() - v[0] < SESSION_BREAK}
+        self.radio_systems = {k: v for k, v in list(self.radio_systems.items())
+                              if time.time() - max(v.values()) < SESSION_BREAK}
+        self.history = {k: v for k, v in list(self.history.items())
+                        if v and time.time() - v[-1][0] < HISTORY_SECONDS}
+        self.scored_at = {k: v for k, v in list(self.scored_at.items())
+                          if time.time() - v < HISTORY_SECONDS}
+        cutoff = time.time() - SESSION_BREAK
+        keep = {}
+        for k, v in list(self.last_fix.items()):
+            if v[0] > cutoff:
+                keep[k] = v
+            elif (v[9] or 0) >= FLYING_KT.get(v[7], AIRBORNE_KT):
+                # Silent for more than SESSION_BREAK and last seen flying: gone.
+                self.count_vanish(v[8], k[1], k[2], v[7], v[1], v[2], v[6], SESSION_BREAK + 1)
+        self.last_fix = keep
+        self.zero.prune(cutoff)
+
+    def write_visibility(self, conn, taken):
+        """Insert the taken accumulators; return the connection, None after an error."""
+        totals, detail, grid, pattern, prediction, hours = taken
+        if not totals and not detail and not grid and not pattern and not prediction and not hours:
+            return conn
+        flushed = datetime.datetime.utcnow().replace(microsecond=0)
+        rows = [(day, tocall, via, cat, flushed, int(v[0]), int(v[1]), int(v[2]), int(v[3]), int(v[4])) +
+                tuple(round(x, 1) for x in v[5:])
+                for (day, tocall, via, cat), v in totals.items()]
+        try:
+            if conn is None:
+                conn = self.connect_db()
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """INSERT INTO daily_visibility
+                       (day, source, via, category, flushed_at, packets, rot_packets,
+                        segments, sessions, implausible, air_seconds,
+                        p0_300, p0_1000, p0_3000, p1_300, p1_1000, p1_3000)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    rows,
+                )
+        except pymysql.MySQLError as e:
+            logger.error(f"Error writing to database (daily_visibility, {len(rows)} rows): {e}")
+            conn = None
+        try:
+            if conn is None:
+                conn = self.connect_db()
+            with conn.cursor() as cur:
+                cur.executemany(DETAIL_SQL, [k + tuple(round(x, 1) for x in v) for k, v in detail.items()])
+                cur.executemany(GRID_SQL, [k + tuple(round(x, 1) for x in v) for k, v in grid.items()])
+        except pymysql.MySQLError as e:
+            logger.error(f"Error writing to database (visibility detail/grid, {len(detail)}+{len(grid)} rows): {e}")
+            conn = None
+        try:
+            if conn is None:
+                conn = self.connect_db()
+            with conn.cursor() as cur:
+                cur.executemany(PATTERN_SQL, [k + tuple(round(x, 2) for x in v) for k, v in pattern.items()])
+                cur.executemany(PREDICTION_SQL, [k + tuple(round(x, 1) for x in v) for k, v in prediction.items()])
+        except pymysql.MySQLError as e:
+            logger.error(f"Error writing to database (pattern/prediction, {len(pattern)}+{len(prediction)} rows): {e}")
+            conn = None
+        try:
+            if conn is None:
+                conn = self.connect_db()
+            with conn.cursor() as cur:
+                cur.executemany(HOURS_SQL, [k + tuple(round(x, 1) for x in v) for k, v in hours.items()])
+        except pymysql.MySQLError as e:
+            logger.error(f"Error writing to database (hours, {len(hours)} rows): {e}")
+            conn = None
+        return conn
 
     def archive_loop(self):
         """Keep device addresses for the current and the previous month only.

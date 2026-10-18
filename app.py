@@ -1074,6 +1074,7 @@ def bootstrap():
         Thread(target=tracker.visibility_loop, daemon=True).start()
         Thread(target=tracker.archive_loop, daemon=True).start()
         Thread(target=tracker.warm_loop, daemon=True).start()
+        atexit.register(tracker.flush_on_exit)   # runs before close_db: atexit is last in, first out
     Thread(target=tracker.prune_loop, daemon=True).start()
     tracker.check = check.DeviceCheck(tracker.stations, tracker.terrain, ddb_info)
     Thread(target=tracker.check.loop, daemon=True).start()
