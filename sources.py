@@ -417,7 +417,10 @@ def parse_fix(body, now):
         lat = -lat
     if ew == "W":
         lon = -lon
-    t = now.replace(hour=int(hh), minute=int(mi), second=int(ss), microsecond=0)
+    try:
+        t = now.replace(hour=int(hh), minute=int(mi), second=int(ss), microsecond=0)
+    except ValueError:
+        return None                        # a timestamp such as 093560h
     if t - now > datetime.timedelta(minutes=5):
         t -= datetime.timedelta(days=1)   # a fix from just before midnight
     course = int(course) if course is not None else None
