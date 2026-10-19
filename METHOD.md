@@ -143,6 +143,14 @@ aircraft, a helicopter or a paraglider.
 Drone Remote ID, decoded by some OGN receivers and forwarded under its own
 source, is counted as a radio system from 7 October 2026, and its devices as
 drones whatever their id declares.
+Remote ID can also reach OGN without any receiver on the ground: a phone
+app picks it up and a server forwards it over the internet. The one such
+path known, Drone Sky Check's AirSense, arrives under the ADS-B tocall
+through the gateway IZ0QWM-10, as its developer described on 19 October
+2026. From that evening those packets are counted as Remote ID, under
+"net" since they carry no signal report, and so apart from the Remote ID
+that receivers hear. Before then they would have counted as ADS-B
+heard by radio; none appears in the raw recording of 12 to 19 October.
 
 **Do not track.** A packet whose id carries the owner's no-tracking flag is
 dropped on arrival, like a device marked in the OGN device database, from
