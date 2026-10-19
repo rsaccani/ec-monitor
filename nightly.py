@@ -1272,7 +1272,7 @@ class Nightly:
                     continue
                 if not body.startswith("/") or len(src) != 9:
                     continue
-                if sources.same_system(head.split(",", 1)[0], src) not in EPRA_TOCALLS:
+                if sources.packet_system(head.split(","), src) not in EPRA_TOCALLS:
                     continue
                 if sources.id_info(body)[1]:
                     continue
@@ -1340,7 +1340,7 @@ class Nightly:
                 cat, no_track = sources.id_info(body)
                 if no_track:
                     continue
-                tocall = sources.same_system(raw, src)
+                tocall = sources.packet_system(head.split(","), src)
                 src = self.chained(src, tocall)
                 if cat is None:
                     if tocall not in sources.AIRCRAFT_ONLY:
@@ -1502,7 +1502,7 @@ class Nightly:
             return                              # FANET ground stations, delayed and synthetic copies
         if body[26:27] == "_":
             return                              # weather stations
-        tocall = sources.same_system(raw_tc, src)
+        tocall = sources.packet_system(path, src)
         rnd = src.startswith(sources.RANDOM_PREFIX) and tocall in sources.RANDOM_ROTATING
         src = self.chained(src, tocall)
         id_category, no_track = sources.id_info(body)

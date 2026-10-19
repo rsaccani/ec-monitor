@@ -97,6 +97,14 @@ SOURCES = {
 # the category in their id (7 October 2026).
 REMOTE_ID, DRONE_CATEGORY = "OGNMAV", 13
 
+# Remote ID that a phone receives and a server forwards to OGN, with no ground
+# station in between: Drone Sky Check's AirSense app sends it to DSC, whose
+# gateway IZ0QWM-10 converts it to APRS (its developer, 19 October 2026). It
+# arrives under OGADSB with no RF data, so by its tocall alone it would count
+# as ADS-B heard by radio. It is counted as Remote ID, and since it carries no
+# signal report it falls under via "net", apart from what receivers hear.
+REMOTE_ID_GATEWAYS = {"IZ0QWM-10"}
+
 # Not aircraft: receivers announcing their own position, and delayed or
 # synthesised copies of packets already counted elsewhere.
 EXCLUDED = {"OGNSDR", "OGNSXR", "OGNDELAY", "OGMLAT", "OGNDVS"}
@@ -190,6 +198,13 @@ UPGRADE_CATEGORY_SQL = (
 def same_system(tocall, device_id):
     """The source a packet is counted under, merging names of one system."""
     return GENERIC_TOCALL.get((tocall, device_id[:3])) or SAME_SYSTEM.get(tocall, tocall)
+
+
+def packet_system(path, device_id):
+    """same_system for a packet's path (tocall first, receiver or gateway last)."""
+    if path[0] == "OGADSB" and path[-1] in REMOTE_ID_GATEWAYS:
+        return REMOTE_ID
+    return same_system(path[0], device_id)
 
 
 # The same mapping in SQL, for rows written before it applied.
@@ -1545,7 +1560,7 @@ class SourceTracker:
         except ValueError:
             return
         path = head.split(",")
-        tocall = same_system(path[0], src)
+        tocall = packet_system(path, src)
         # FANET ground stations send their own beacon under the aircraft tocall,
         # with the receiver symbol: they are stations, not devices.
         if (tocall == "OGNSDR" or body[26:27] == "&") and body.startswith("/"):

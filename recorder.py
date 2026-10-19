@@ -35,6 +35,8 @@ import subprocess
 import threading
 import time
 
+import sources
+
 logger = logging.getLogger("ads_l_map")
 
 # zstd level for finished hours. Until 7 October 2026 it was 19, which took
@@ -99,7 +101,9 @@ class Recorder:
                 return False                    # the device asks not to be tracked
             if tocall == "OGADSB" and self.no_jets and (b >> 2) & 0x0F == JET:
                 return False
-        if tocall == "OGADSB":
+        if tocall == "OGADSB" and head.rpartition(",")[2] not in sources.REMOTE_ID_GATEWAYS:
+            # Remote ID forwarded under OGADSB is kept whatever its altitude and
+            # speed: its formatter was still being checked in October 2026.
             if self.no_adsb:
                 return False
             if self.no_airliners:
