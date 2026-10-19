@@ -438,7 +438,10 @@ def ads_l_listener():
                     if raw_recorder is not None:
                         raw_recorder.write(line)
                     if tracker is not None:
-                        tracker.handle(line)
+                        try:
+                            tracker.handle(line)
+                        except Exception:
+                            main_logger.exception("tracker.handle failed on: %s", line)
                     if ">OGADSL" in line:
                         pkt = parse_aprs_line(line)
                         main_logger.debug("[RAW] %s", line)
