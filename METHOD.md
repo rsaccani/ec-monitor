@@ -289,6 +289,16 @@ count as two aircraft. Combinations shared by fewer than 5 aircraft are
 pooled. These counts need the device addresses, so they exist for the months
 whose addresses are still kept (section 9).
 
+**The summary table.** The "In brief" table at the top of the page shows
+figures defined elsewhere in this method, for one month: the current one or,
+in its first seven days, the previous one, complete. ADS-B is left out of
+every column. The radio column counts the aircraft of "Systems per aircraft"
+less those heard on phone apps only and less those whose only systems are
+ADS-B and phone apps; pooled combinations are taken off as well, so the
+figure is a lower bound. Time without signal by radio leaves ADS-B out
+already (section 2). Ground vehicles and static objects, categories 14 and
+15, are left out of the totals. In force from 23 October 2026.
+
 ## 2. Visibility through the network
 
 The question: for how much of its flight does somebody watching through a
