@@ -213,6 +213,33 @@ kinds keep the reported speed, because none of them showed the pattern.
 (the device was switched off, or the pilot drove to another site) by the
 measures of sections 2, 3 and 5. Section 4 counts it as a disappearance.
 
+**When the feed is cut** (from 24 October 2026). The service reconnects to the
+feed whenever the server ends the connection or nothing arrives for 300
+seconds, and the packets sent meanwhile are lost to it. Each reconnect is a
+feed break, marked in the recording (section 9) so that the nightly measures
+see it at the same instant. A feed break ends every open track of every
+aircraft, as an implausible fix ends one aircraft's, and the next fix of each
+aircraft starts a new one: no silence, time without signal, disappearance,
+reception pattern or prediction spans it, and a device check (section 10.4)
+records no interval or gap across it. A ground station's silence is counted up
+to the break. The flights, circling runs, tows, parked runs and drone sessions
+of section 10 run on through a reconnect, since the aircraft flew on while the
+service was not listening, and ending them there would split one flight into
+two.
+
+Windows in which the feed is known bad are listed in
+`data/feed-exclusions.txt` with their reason. Every packet arriving inside a
+window is ignored by the live measures and by the nightly ones, and each edge
+of a window is a feed break that also ends the flights and runs of section 10,
+without inferring a landing. A ground station's silence inside a window is not
+counted. The first window is 05:30 to 08:20 UTC on 24 October 2026, when the
+service read the feed too slowly and the server dropped the connection 137
+times; most of the packets of those hours were lost or arrived minutes late,
+and the old rules counted the loss as aircraft out of reception. The totals
+already stored for that day are corrected by replaying the recording under
+both rules (`tools/ec_backfill_20261024.py`), except the per-day counts of
+packets, segments and sessions, which are append-only and keep the window.
+
 **Implausible segment.** A segment implying more than 500 km/h is excluded:
 some addresses are shared by several devices at once, and followed as one
 device they produce jumps of hundreds of kilometres. From 11:00 UTC on
