@@ -425,7 +425,7 @@ def ads_l_listener():
             while True:
                 data = s.recv(4096)
                 if not data:
-                    raise ConnectionError("No data from OGN for 300s")
+                    raise ConnectionError("OGN closed the connection")
 
                 last_rx = time.time()
                 buffer += data.decode(errors="ignore")
