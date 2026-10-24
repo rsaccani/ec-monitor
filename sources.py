@@ -18,6 +18,7 @@ source and month (plus one last_seen update per day).
 import bisect
 import calendar
 import collections
+import ctypes
 import datetime
 import decimal
 import logging
@@ -310,6 +311,15 @@ HEARD_CACHE_SECONDS = 5
 HEARD_KINDS = {2: "powered", 8: "powered", 9: "powered", 1: "glider", 6: "free_flight", 7: "free_flight",
                3: "helicopter", 13: "drone"}
 STATS_CACHE_SECONDS = 600
+
+
+# glibc keeps memory a program frees for its own reuse. Every warm cycle builds
+# the statistics as Python objects and drops them once frozen, some 60 MB; this
+# hands the freed heap back to the system. None where there is no glibc.
+try:
+    _malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+except (OSError, AttributeError):
+    _malloc_trim = None
 
 
 class Frozen:
@@ -2462,6 +2472,8 @@ class SourceTracker:
             finally:
                 self._force.on = False
             logger.debug(f"Statistics warmed in {time.time() - started:.1f} s")
+            if _malloc_trim is not None:
+                _malloc_trim(0)
             time.sleep(max(60, STATS_CACHE_SECONDS - 120 - (time.time() - started)))
 
     def visibility_stats(self, days=62):
