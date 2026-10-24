@@ -652,11 +652,13 @@ def respond(rows, name, source=None, extra="", build_rows=None):
     """
     csv_out = request.args.get("format") == "csv"
     src = rows if source is None else source
+    if not csv_out and isinstance(rows, sources.Frozen):
+        # Already the body. Kept in _bodies it would also keep the previous
+        # cycle's text alive until the next visit: 17 MB on 24 October 2026.
+        return app.response_class(rows.text, mimetype="application/json")
 
     def build():
         if not csv_out:
-            if isinstance(rows, sources.Frozen):
-                return rows.text, "application/json", None
             return app.json.dumps(rows) + "\n", "application/json", None
         if build_rows is not None:
             tree = build_rows()
