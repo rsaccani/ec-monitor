@@ -647,15 +647,22 @@ def respond(rows, name, source=None, extra="", build_rows=None):
 
     `source` is the object the tracker caches (default `rows`); `extra` is any
     route parameter that changes the answer; `build_rows` makes the CSV's rows when
-    `rows` is not itself a list of them.
+    `rows` is not itself a list of them. A sources.Frozen statistic is already its
+    JSON text, and is read back only for the CSV.
     """
     csv_out = request.args.get("format") == "csv"
     src = rows if source is None else source
 
     def build():
         if not csv_out:
+            if isinstance(rows, sources.Frozen):
+                return rows.text, "application/json", None
             return app.json.dumps(rows) + "\n", "application/json", None
-        flat = [_flatten(r) for r in (rows if build_rows is None else build_rows())]
+        if build_rows is not None:
+            tree = build_rows()
+        else:
+            tree = rows.thaw() if isinstance(rows, sources.Frozen) else rows
+        flat = [_flatten(r) for r in tree]
         columns = []
         for r in flat:
             columns += [k for k in r if k not in columns]
@@ -918,7 +925,8 @@ def respond_parts(out, name):
     # Only the lists of rows go into the CSV; the band edges and thresholds
     # beside them are in the JSON (until 7 October 2026 they broke it).
     return respond(out, name, source=out, build_rows=lambda: [
-        dict({"part": part}, **row) for part, rows in out.items()
+        dict({"part": part}, **row)
+        for part, rows in (out.thaw() if isinstance(out, sources.Frozen) else out).items()
         if isinstance(rows, list) for row in rows if isinstance(row, dict)])
 
 
@@ -1188,6 +1196,7 @@ def bootstrap():
     global tracker, raw_recorder
     raw_recorder = recorder.from_env(hidden)
     tracker = sources.SourceTracker(parse_aprs_line, lambda: get_db_connection(max_retries=1), hidden)
+    tracker.freeze = lambda out: app.json.dumps(out) + "\n"     # exactly the body respond() makes
     if not SKIP_STATS_DATABASE:
         Thread(target=tracker.writer_loop, daemon=True).start()
         Thread(target=tracker.visibility_loop, daemon=True).start()

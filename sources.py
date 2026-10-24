@@ -311,6 +311,48 @@ HEARD_KINDS = {2: "powered", 8: "powered", 9: "powered", 1: "glider", 6: "free_f
                3: "helicopter", 13: "drone"}
 STATS_CACHE_SECONDS = 600
 
+
+class Frozen:
+    """A statistic kept as the JSON text it is served as. The object trees took
+    86 MB in the worker against 25 MB of JSON (24 October 2026), and the API
+    is all that reads them; thaw() gives the tree back for the rare CSV.
+
+    The text has its keys sorted, as Flask serves any JSON, while a CSV takes
+    its columns from the order the code wrote the keys in: that order is kept
+    beside the text, one per distinct set of keys (the same keys come in a
+    different order in different parts), and put back by thaw()."""
+    __slots__ = ("text", "orders")
+
+    def __init__(self, text, orders):
+        self.text = text
+        self.orders = orders
+
+    def thaw(self):
+        orders = self.orders
+
+        def hook(pairs):
+            order = orders.get(frozenset(k for k, _ in pairs))
+            if order is None:
+                return dict(pairs)
+            d = dict(pairs)
+            return {k: d[k] for k in order}
+        return json.loads(self.text, object_pairs_hook=hook)
+
+
+def key_orders(tree):
+    """Each distinct set of dict keys in the tree, as strings, -> the order first met."""
+    orders = {}
+    stack = [tree]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            keys = tuple(str(k) for k in x)
+            orders.setdefault(frozenset(keys), keys)
+            stack.extend(x.values())
+        elif isinstance(x, (list, tuple)):
+            stack.extend(x)
+    return orders
+
 # --- Visibility measure (METHOD.md) -----------------------------------------
 GAP_THRESHOLDS = (300, 1000, 3000)      # metres
 AIRBORNE_KT = 10 / 1.852                 # 10 km/h, at either end of a segment
@@ -1606,6 +1648,9 @@ class SourceTracker:
         self.snapshots_cache = (0, None)
         self.encounters_cache = (0, None)
         self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
+        # Set by app.py to its JSON serialiser: the large statistics are then
+        # cached as Frozen text. nightly.py leaves it unset and gets the objects.
+        self.freeze = None
         # One lock per statistic, so a slow one (the device counts) never holds
         # up the others, and a thread-local flag with which warm_loop forces a
         # recomputation while visitors keep reading the cached copy.
@@ -2456,6 +2501,7 @@ class SourceTracker:
                     "last_point": {str(d): float(r[10 + i]) for i, d in enumerate(GAP_THRESHOLDS)},
                     "estimate": {str(d): float(r[13 + i]) for i, d in enumerate(GAP_THRESHOLDS)},
                 })
+            out = self.keep(out)
             self.visibility_cache = (time.time(), out)
             return out
 
@@ -2492,6 +2538,7 @@ class SourceTracker:
                 cad = cadence_of(r[1], kind, r[2])
                 d["cadence_m"], d["cadence_floor"], d["cadence_heartbeat"] = cad or (None, None, None)
                 out.append(d)
+            out = self.keep(out)
             self.detail_cache = (time.time(), out)
             return out
 
@@ -2645,6 +2692,7 @@ class SourceTracker:
                     "dist_band": int(r[3]), "centred": int(r[4]) >= PATTERN_CENTRED,
                     "sector_deg": int(r[4]) % PATTERN_CENTRED * PATTERN_SECTOR,
                     "packets": int(r[5]), "snr_sum": float(r[6]), "snr_n": int(r[7])} for r in rows]
+            out = self.keep(out)
             self.pattern_cache = (time.time(), out)
             return out
 
@@ -2676,6 +2724,7 @@ class SourceTracker:
                 for c, v in zip(PREDICTION_COLUMNS, r[6:]):
                     d[c] = float(v)
                 out.append(d)
+            out = self.keep(out)
             self.prediction_cache = (time.time(), out)
             return out
 
@@ -2693,11 +2742,15 @@ class SourceTracker:
             conn = self.connect_db()
             try:
                 with conn.cursor() as cur:
-                    out = compute(cur)
+                    out = self.keep(compute(cur))
             finally:
                 conn.close()
             setattr(self, attr, (time.time(), out))
             return out
+
+    def keep(self, out):
+        """What a statistic's cache holds: its JSON text when app.py has set a serialiser."""
+        return out if self.freeze is None else Frozen(self.freeze(out), key_orders(out))
 
     @staticmethod
     def _nightly_days(cur):
@@ -3643,6 +3696,7 @@ class SourceTracker:
                 for c, v in zip(GRID_COLUMNS, r[4:]):
                     d[c] = float(v)
                 out.append(d)
+            out = self.keep(out)
             self.grid_cache[month] = (time.time(), out)
             # Any month can be asked for, and each one kept stays: warm_loop
             # renews the current and the previous one, any other goes once stale.
