@@ -212,10 +212,12 @@ CLAUDE.md
 .DS_Store
 
 # Terrain model and other large local data (see METHOD.md); the place and
-# site lists naming thermal cells are tracked (README, "Data from others").
+# site lists naming thermal cells are tracked (README, "Data from others"),
+# and so is the list of windows in which the feed is known bad.
 data/*
 !data/places-europe.tsv
 !data/fivl-sites.tsv
 !data/osm-takeoffs.tsv
 !data/osm-airfields.tsv
 !data/landmarks-europe.tsv
+!data/feed-exclusions.txt

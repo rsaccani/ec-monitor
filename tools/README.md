@@ -23,6 +23,7 @@ marker file in `~/ec-replay/` if they already wrote.
 | `ec_radio_silence_check.py` | Where free flight's radio time without signal comes from: by device, length of silence and height | 6 October 2026 |
 | `ec_fanet_neighbours.py` | FANET intervals in flight by number of FANET neighbours, behind the 15-second rule | 6 October 2026 |
 | `ec_circling_direction.py` | First look at circling direction by kind and by pilot, behind section 10.2 | 7 October 2026 |
+| `ec_backfill_20261024.py` | Takes the feed outage of 24 October (05:30-08:20 UTC, 137 dropped connections) out of the stored totals: replays the day from the recording as the old worker (no feed break, no exclusion) and as the new one, and adds new minus old to the detail, grid and hours tables; `--apply` writes, the default run only prints aggregates | 24 October 2026 |
 
 The backfills take the `sources.py` versions to compare as arguments; the
 copies used were saved on the host in `~/ec-replay/`. The new side of each was

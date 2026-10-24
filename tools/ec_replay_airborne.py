@@ -36,6 +36,16 @@ KT = 1 / 1.852
 FREE, GLIDER, POWERED = (6, 7), (1,), (2, 8, 9)
 TYPE = {6: "free flight", 7: "free flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered"}
 
+# What the recording holds where the service reconnected to the feed (from 24 October 2026).
+# A version of sources.py older than that has no feed_break and goes on across it.
+FEED_BREAK = "# feed break"
+
+
+def feed_break(tr, t):
+    if hasattr(tr, "feed_break"):
+        tr.feed_break(t)
+
+
 clock = [0.0]
 
 
@@ -183,7 +193,10 @@ def main():
         first = first or clock[0]
         last = clock[0]
         for mod, tr in trackers.values():
-            tr.handle(raw)
+            if raw == FEED_BREAK:
+                feed_break(tr, clock[0])
+            else:
+                tr.handle(raw)
         n += 1
     fmt = lambda s: real_time.strftime("%Y-%m-%d %H:%M", real_time.gmtime(s))
     print("replayed %d lines, %s to %s UTC, in %.0f s" % (n, fmt(first), fmt(last), real_time.time() - t0))

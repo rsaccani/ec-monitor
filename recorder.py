@@ -24,6 +24,9 @@ EC_RAW_KEEP is a comma-separated list:
   no-jets       drop ADS-B packets from jet aircraft only
   no-adsb       drop every ADS-B packet
 Lines without a position (status lines) are kept wherever they come from.
+A line "<epoch> # feed break" is written whenever the service reconnects to the
+feed (from 24 October 2026): what came before it and what came after are not
+one continuous stream, and a replay must not measure a silence across it.
 Packets whose id carries the no-track flag, and devices hidden by the OGN
 device database, are never recorded.
 """
@@ -135,6 +138,19 @@ class Recorder:
             if now - self.flushed_at >= FLUSH_SECONDS:
                 self.flush(now)
         except Exception as e:      # recording must never stop the listener
+            logger.error("Raw feed recording: %s", e)
+
+    def mark(self, text):
+        """Record a line that is not a packet (sources.FEED_BREAK, from 24 October 2026),
+        with the epoch like any other and written at once, so that a replay meets
+        it between the lines before and after it. It starts with a # like the
+        server's own comment lines, which are never recorded, so no APRS line can be
+        mistaken for it, and it holds no > for the readers that split on one."""
+        try:
+            now = time.time()
+            self.pending.append("%.3f %s\n" % (now, text))
+            self.flush(now)
+        except Exception as e:
             logger.error("Raw feed recording: %s", e)
 
     def flush(self, now):

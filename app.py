@@ -474,6 +474,16 @@ def ads_l_listener():
                 s.close()
             except:
                 pass
+            # Whatever is heard from here on is a new stream: no track, silence or
+            # flight may run across the cut (24 October 2026). The recording gets
+            # a marker at the same instant, so that a replay cuts where this did.
+            try:
+                if tracker is not None:
+                    tracker.feed_break(time.time())
+                if raw_recorder is not None:
+                    raw_recorder.mark(sources.FEED_BREAK)
+            except Exception:
+                main_logger.exception("feed break failed")
             main_logger.info(f"Waiting 5 seconds before reconnecting...")
             time.sleep(5)
             main_logger.info(f"Attempting to reconnect...")

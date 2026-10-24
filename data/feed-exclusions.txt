@@ -1,0 +1,16 @@
+# Windows in which the OGN feed is known bad, by time of arrival at the service.
+#
+# Everything received inside a window is ignored by the live tracker and by the
+# nightly replay (nightly.py), and a feed break is made at its start and at its
+# end: no track, silence, flying time or pattern runs across it. The live
+# tracker reads this file when it starts, so a new line is live after the next
+# deploy; the nightly batch reads it on every run.
+#
+# One window per line: start and end as UTC times, 2026-10-24T05:30:00Z, the
+# end not included. Everything after a # is a comment, and a line that cannot
+# be read is logged and left out. Say why in a comment above each window.
+
+# 24 October 2026: the service read the feed too slowly, the server dropped the
+# connection 137 times, and most of the packets of the window were lost or
+# arrived minutes late.
+2026-10-24T05:30:00Z 2026-10-24T08:20:00Z

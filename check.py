@@ -99,6 +99,9 @@ def _median(lst):
 
 class System:
     """What one system of one address sent: plain attributes, so it pickles."""
+    # Set by DeviceCheck.feed_break: the next fix starts again, with no interval or
+    # silence to the one before. A class attribute, so that a state saved without it reads back.
+    cut = False
 
     def __init__(self, label, kind, via, tocall):
         self.label, self.kind, self.via, self.tocall = label, kind, via, tocall
@@ -196,10 +199,13 @@ class DeviceCheck:
             prev = s.fix
             if prev is not None and t_fix <= prev[0]:
                 return          # a duplicate, or a late copy of an older fix
+            cut, s.cut = s.cut, False
             if prev is not None:
                 dt = t_fix - prev[0]
                 cadence = sources.cadence_of(tocall, kind, via)
-                if dt > SESSION_S:
+                if cut:
+                    pass        # the feed was cut in between (24 October 2026): not a silence of the device
+                elif dt > SESSION_S:
                     floor = sources.FLYING_KT.get(category, sources.AIRBORNE_KT)
                     if dt <= FLIGHT_MAX_S and min(prev[5] or 0, speed or 0) >= floor:
                         _push(s.gaps, (prev[0], t_fix), N_GAPS)
@@ -238,6 +244,15 @@ class DeviceCheck:
                 b = band_of(km)
                 _push(s.signal.setdefault((station, b), []), (tick, round(snr)), N_SIGNAL)
                 _push(self.ref.setdefault((station, label, b), []), (tick, address, round(snr)), N_REF)
+
+    def feed_break(self, epoch=None):
+        """The feed was cut (SourceTracker.feed_break): the time between the last
+        fix of each system and its next is not a silence of the device, so it
+        is neither an interval nor a listed gap."""
+        with self.lock:
+            for systems in self.devices.values():
+                for s in systems.values():
+                    s.cut = True
 
     # --- housekeeping (prune thread) ----------------------------------------
 

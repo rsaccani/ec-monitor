@@ -330,6 +330,9 @@ SESSION_BREAK = 20 * 60                  # seconds; longer segments are new sess
 CIRCLING_ROT = 2.0                       # half-turns per minute (6 deg/s)
 IMPLAUSIBLE_MS = 500 / 3.6               # 500 km/h: a shared address or a corrupt fix
 STALE_SECONDS = 5 * 60                   # a fix older than this on arrival is ignored
+FEED_BREAK = "# feed break"              # what the raw recording holds after the epoch where the feed was cut (24 October 2026)
+EXCLUSIONS_PATH = os.environ.get("EC_FEED_EXCLUSIONS", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "feed-exclusions.txt"))
 VISIBILITY_FLUSH = 15 * 60               # seconds between appends to the database
 ARCHIVE_EVERY = 6 * 3600                 # seconds between checks for months to archive
 # When each phone app sends a fix while its phone has signal (METHOD.md,
@@ -537,6 +540,62 @@ ZERO_SPEED_CATEGORIES = {6, 7}
 ZERO_BASE_S, ZERO_MAX_S = 5, 60
 
 
+def load_exclusions(path=EXCLUSIONS_PATH):
+    """The windows in which the feed is known bad, as (start, end) epochs of
+    arrival time, from data/feed-exclusions.txt (24 October 2026): one window
+    per line, two UTC times as 2026-10-24T05:30:00Z, comments after a #. A
+    missing file means no window; a line that cannot be read is logged and
+    left out."""
+    windows = []
+    try:
+        f = open(path)
+    except FileNotFoundError:
+        return windows
+    with f:
+        for n, line in enumerate(f, 1):
+            words = line.split("#", 1)[0].split()
+            if not words:
+                continue
+            try:
+                if len(words) != 2:
+                    raise ValueError("expected a start and an end")
+                a, b = (calendar.timegm(time.strptime(w, "%Y-%m-%dT%H:%M:%SZ")) for w in words)
+                if b <= a:
+                    raise ValueError("the end is not after the start")
+            except ValueError as e:
+                logger.error("%s line %d ignored: %s", path, n, e)
+                continue
+            windows.append((a, b))
+    return sorted(windows)
+
+
+class FeedGate:
+    """Tells, packet by packet in arrival order, whether the feed is inside an
+    excluded window, and which edges of a window lie between this packet and
+    the one before: each is a feed break, also when no packet came in the
+    window at all."""
+
+    def __init__(self, windows):
+        self.windows = windows
+        self.last = None
+
+    def step(self, t):
+        """(inside a window, the instants of the edges crossed, in order)."""
+        if not self.windows:
+            return False, ()
+        inside = False
+        edges = []
+        p, self.last = self.last, t
+        for a, b in self.windows:
+            if a <= t < b:
+                inside = True
+                if p is None:
+                    edges.append(a)         # the first packet is already inside a window
+            if p is not None:
+                edges.extend(e for e in (a, b) if p < e <= t)
+        return inside, sorted(edges)
+
+
 class ZeroSpeed:
     """The speed a fix stands for when FLARM reports 0 on a moving instrument."""
 
@@ -564,6 +623,10 @@ class ZeroSpeed:
 
     def prune(self, cutoff):
         self.recent = {k: q for k, q in list(self.recent.items()) if q and q[-1][0] >= cutoff}
+
+    def feed_break(self):
+        """The feed was cut: no speed from positions may span the break."""
+        self.recent.clear()
 
 
 def msl_band(alt_m):
@@ -1550,10 +1613,35 @@ class SourceTracker:
         self._stat_locks_guard = threading.Lock()
         self._force = threading.local()
         self.check = None         # check.DeviceCheck, set by app.py
+        self.gate = FeedGate(load_exclusions())   # windows of bad feed, ignored whole (24 October 2026)
 
     # --- per packet ---------------------------------------------------------
 
+    def feed_break(self, epoch=None):
+        """The feed was cut at this instant (a reconnect, or the edge of an
+        excluded window; 24 October 2026): every open track ends, as an
+        implausible fix ends one aircraft's, and the next fix of each aircraft
+        starts a new one. No silence, flying time, disappearance, prediction or
+        pattern measure runs across the break, and a track cut here is not
+        counted as vanished. Called from the listener thread, which is also the
+        only one that feeds `handle`."""
+        self.last_fix.clear()
+        self.addr_fix.clear()
+        self.radio_fix.clear()
+        self.radio_systems.clear()
+        self.history.clear()
+        self.scored_at.clear()
+        self.zero.feed_break()
+        if self.check is not None:
+            self.check.feed_break(epoch)
+
     def handle(self, line):
+        if self.gate.windows:
+            skipped, edges = self.gate.step(time.time())
+            for edge in edges:
+                self.feed_break(edge)
+            if skipped:
+                return              # the feed is known bad in this window: nothing of it counts
         try:
             src, rest = line.split(">", 1)
             head, body = rest.split(":", 1)

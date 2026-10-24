@@ -43,7 +43,10 @@ def main():
         first = first or base.clock[0]
         last = base.clock[0]
         for mod, tr in trackers.values():
-            tr.handle(raw)
+            if raw == base.FEED_BREAK:
+                base.feed_break(tr, base.clock[0])
+            else:
+                tr.handle(raw)
         n += 1
     fmt = lambda s: real_time.strftime("%Y-%m-%d %H:%M", real_time.gmtime(s))
     print("replayed %d lines, %s to %s UTC, in %.0f s" % (n, fmt(first), fmt(last), real_time.time() - t0))

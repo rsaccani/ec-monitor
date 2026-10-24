@@ -447,6 +447,20 @@ def read_lines(path, stop=None, contains=None):
         proc.wait()
 
 
+def gated(lines, gate):
+    """`lines` of (epoch, line) in arrival order with the excluded windows of
+    data/feed-exclusions.txt taken out (24 October 2026): nothing inside a
+    window is yielded, and a feed-break marker stands at each edge, at the
+    instant of the edge. The markers the live service recorded at each
+    reconnect pass through as they are."""
+    for epoch, line in lines:
+        skipped, edges = gate.step(epoch)
+        for edge in edges:
+            yield edge, sources.FEED_BREAK
+        if not skipped:
+            yield epoch, line
+
+
 # Thermal positions are kept for the whole day, a few hundred thousand of
 # them, so each is packed into one integer: latitude and longitude in units of
 # 1e-5 degree (about a metre), altitude in metres plus 1,000.
@@ -1015,6 +1029,20 @@ class CrewedEncounters:
         while self.order and self.order[0][2] * self.BUCKET < self.max_t - self.WINDOW:
             self.index.pop(self.order.popleft(), None)
 
+    def feed_break(self, full=True):
+        """The feed was cut (24 October 2026): no fix reaches back across it. The
+        last fix of each address, which gives the denominator its seconds, is
+        forgotten. At the edge of an excluded window (`full`) the runs of flying
+        together or close by that the pairs have open end too, a tow being filed
+        if its run was long enough; a reconnect leaves them open."""
+        self.last.clear()
+        if not full:
+            return
+        for f in self.slow.values():
+            self.close_slow(f)
+        self.slow.clear()
+        self.near.clear()
+
     def close_slow(self, f):
         """A run of flying together has ended: a tow if it began near the ground
         with a glider or hang glider behind a powered aircraft; released where
@@ -1105,6 +1133,19 @@ class Station:
             self.last = epoch
         self.beacons += 1
 
+    def feed_break(self, epoch, resumed=False):
+        """The feed was cut at `epoch`: the silence up to it is the station's, the
+        time after it is counted from it. At the end of an excluded window
+        (`resumed`) nothing is counted, since the window itself was not watched."""
+        if not resumed:
+            g = epoch - self.last
+            if g > self.max_gap:
+                self.max_gap = g
+            if g > sources.STATION_SILENCE_S:
+                self.silence += g
+        if epoch > self.last:
+            self.last = epoch
+
     def add(self, field, value):
         v = self.vals.get(field)
         if v is None:
@@ -1165,6 +1206,8 @@ class Nightly:
         self.rx_cat = collections.Counter()       # receiver -> radio packets with a voted category
         self.rx_cat_stray = collections.Counter()
         self.d0 = calendar.timegm(day.timetuple())
+        self.exclusions = sources.load_exclusions()   # windows of bad feed, ignored whole (24 October 2026)
+        self.pre_gen = 0                       # feed breaks met by the first pass
         self.d1 = self.d0 + 86400
         self.terrain = sources.Terrain(sources.DEM_PATH)
         self.lines = 0
@@ -1174,7 +1217,7 @@ class Nightly:
         self.zero = sources.ZeroSpeed()        # FLARM's 0 on moving free-flight instruments
         self.zero_gain = collections.Counter() # category -> s flown only thanks to the speed from positions
         # impossible tracks: the first pass's per-stream record and its verdict
-        self.streams = {}                      # (address, tocall) -> [t, lat, lon, fixes, seconds, levels]
+        self.streams = {}                      # (address, tocall) -> [t, lat, lon, fixes, seconds, levels, feed breaks met]
         self.dropped = set()                   # (address, tocall) set aside for the day
         self.imp = collections.Counter()       # (label, check) -> count, for daily_quality
         self.imp_cat = collections.Counter()   # (category, what) -> fixes, streams or seconds, for the log
@@ -1195,6 +1238,7 @@ class Nightly:
         self.drone_air = collections.defaultdict(float)     # (lat, lon, hband, sband, address) -> s
         self.drone_air_q = collections.defaultdict(float)   # (lat_idx, lon_idx, address) -> s, 0.25-degree cells
         self.drone_session = {}                # address -> [last t, lat0, lon0, max distance]
+        self.drone_cuts = collections.defaultdict(set)   # address declaring a drone -> indexes in drone_fx of the fix that follows a feed break
         self.drone_extent = {}                 # address -> largest distance from a session's first fix
         self.drone_index = collections.defaultdict(collections.deque)    # cell -> (t, lat, lon, alt, address)
         self.crewed_index = collections.defaultdict(collections.deque)   # cell -> (t, lat, lon, alt, address, cat)
@@ -1258,10 +1302,11 @@ class Nightly:
         of a chain to its first one.
         """
         first, last = {}, {}
+        gate = sources.FeedGate(self.exclusions)
         for path, stop in files:
             if path is None:
                 continue
-            for epoch, line in read_lines(path, stop, contains=(" " + sources.RANDOM_PREFIX).encode()):
+            for epoch, line in gated(read_lines(path, stop, contains=(" " + sources.RANDOM_PREFIX).encode()), gate):
                 if not line.startswith(sources.RANDOM_PREFIX):
                     continue
                 try:
@@ -1323,10 +1368,14 @@ class Nightly:
         of the main pass. The same exclusions apply as there.
         """
         votes = collections.defaultdict(collections.Counter)
+        gate = sources.FeedGate(self.exclusions)
         for path, stop in files:
             if path is None:
                 continue
-            for epoch, line in read_lines(path, stop):
+            for epoch, line in gated(read_lines(path, stop), gate):
+                if line == sources.FEED_BREAK:
+                    self.pre_gen += 1
+                    continue
                 try:
                     src, rest = line.split(">", 1)
                     head, body = rest.split(":", 1)
@@ -1407,16 +1456,17 @@ class Nightly:
         # 7 paraglider streams on 6 October 2026) leaves the positions right.
         need = 0.0
         if st is None:
-            st = self.streams[key] = [t, lat, lon, 0, 0, None]
+            st = self.streams[key] = [t, lat, lon, 0, 0, None, self.pre_gen]
         else:
-            dt = t - st[0]
-            if dt <= sources.SESSION_BREAK:
-                st[4] += dt
-            d = dist(st[1], st[2], lat, lon)
-            v = d * 3.6 / max(dt, 1)
-            if d > sources.JUMP_MIN_M or v > sources.IMPLAUSIBLE_MS * 3.6:
-                need = max(need, v)             # judged against the category as in sources.impossible_jump
-            st[0], st[1], st[2] = t, lat, lon
+            if st[6] == self.pre_gen:           # not across a feed break (24 October 2026)
+                dt = t - st[0]
+                if dt <= sources.SESSION_BREAK:
+                    st[4] += dt
+                d = dist(st[1], st[2], lat, lon)
+                v = d * 3.6 / max(dt, 1)
+                if d > sources.JUMP_MIN_M or v > sources.IMPLAUSIBLE_MS * 3.6:
+                    need = max(need, v)         # judged against the category as in sources.impossible_jump
+            st[0], st[1], st[2], st[6] = t, lat, lon, self.pre_gen
         st[3] += 1
         lv = (bisect.bisect_left(SPEED_LEVELS, need), bisect.bisect_left(ALT_LEVELS, alt))
         if lv != (0, 0):
@@ -1463,10 +1513,11 @@ class Nightly:
             files.append((nxt, self.d1 + STALE + 1))
         self.chain_pass(files)
         self.vote(files)
+        gate = sources.FeedGate(self.exclusions)
         for path, stop in files:
             if path is None:
                 continue
-            for epoch, line in read_lines(path, stop):
+            for epoch, line in gated(read_lines(path, stop), gate):
                 self.lines += 1
                 self.handle(epoch, line)
             logger.info(f"{os.path.basename(path)}: {self.lines:,} lines, {self.progress()}")
@@ -1478,6 +1529,9 @@ class Nightly:
         return 24 - len(missing), missing
 
     def handle(self, epoch, line):
+        if line == sources.FEED_BREAK:
+            self.feed_break(epoch)
+            return
         try:
             src, rest = line.split(">", 1)
             head, body = rest.split(":", 1)
@@ -1700,6 +1754,63 @@ class Nightly:
             self.circle(address, tocall, category, t, course, kt, lat, lon, alt_m, moved)
         if self.c and category in PARKED_CATEGORIES:
             self.park(address, label, category, t, lat, lon, alt_m)
+
+    def feed_break(self, epoch):
+        """The feed was cut at `epoch`, by a reconnect of the service (the marker
+        in the recording) or at an edge of an excluded window (24 October 2026):
+        every open track ends, as an impossible fix ends one aircraft's, and the
+        next fix of each aircraft starts a new one. What each measure kept of a
+        track so far stays; only what would span the break is dropped.
+
+        A reconnect loses seconds of feed, so it ends only what measures
+        reception: an aircraft flies on through it, and ending its flight,
+        circling run or drone session there would split one flight into two.
+        The edge of an excluded window, hours long, ends those too."""
+        resumed = any(b == epoch for a, b in self.exclusions)   # the end of a window: it was not watched
+        full = resumed or any(a == epoch for a, b in self.exclusions)
+        # The stream state, as in sources.SourceTracker.feed_break.
+        self.last_fix.clear()
+        self.addr_fix.clear()
+        self.zero.feed_break()
+        self.cut.clear()                        # an impossible fix's seconds are measured at the address's next fix
+        self.cg_radio.clear()
+        self.cg_heard.clear()
+        self.crewed.feed_break(full)
+        for st in self.stations.values():
+            st.feed_break(epoch, resumed)
+        if not full:
+            return
+        # 2. circling: the open run and thermal are closed where they stand.
+        for tr in self.circles.values():
+            tr.finish()
+            tr.last = None
+        # 3. parked: a run ends at its last fix.
+        for key, r in self.parked_runs.items():
+            self.close_parked(key, r)
+        self.parked_runs.clear()
+        # 4. drones: sessions end, and the fixes kept for the flight class get a cut.
+        for address, s in self.drone_session.items():
+            self.drone_extent[address] = max(self.drone_extent.get(address, 0), s[3])
+        self.drone_session.clear()
+        for address, a in self.drone_fx.items():
+            self.drone_cuts[address].add(len(a) // 5)
+        # Patterns (PATTERNS.md): level runs, flights, launch climbs, winches, waves. A flight is
+        # ended without inferring a landing, and a launch session is not ended (launch_air stays):
+        # whether the aircraft was flying does not depend on being heard.
+        for address, tr in self.powered.items():
+            for ref, run in tr.runs.items():
+                self.close_level(address, self.addr_major.get(address), ref, run)
+            tr.runs.clear()
+        for address, f in self.flight.items():
+            self.end_flight(address, f, infer=False)
+        self.flight.clear()
+        self.climb_open.clear()
+        for address, w in self.winch_open.items():
+            self.winches.append((address,) + tuple(w))
+        self.winch_open.clear()
+        self.winch_recent.clear()
+        self.wave_q.clear()
+        self.wave_last.clear()
 
     # --- 9-11. powered aircraft ------------------------------------------------------------
 
@@ -2073,7 +2184,7 @@ class Nightly:
             a = self.drone_fx[address] = array.array("d")
         a.extend((t, lat, lon, kt if kt is not None else -1.0, alt_m if alt_m is not None else -9999.0))
 
-    def drone_features(self, a):
+    def drone_features(self, address, a):
         """How one address-day flew, from its fixes (drone_track): seconds
         flown, the median and 90th percentile of its speed, its largest height
         above ground, time above DF_HIGH_AGL, time hovering, its speed when it
@@ -2093,9 +2204,10 @@ class Nightly:
             return None
         sec = high = hover = 0.0
         speeds = []
-        for p, q in zip(rows, rows[1:]):
+        cuts = self.drone_cuts.get(address, ())
+        for k, (p, q) in enumerate(zip(rows, rows[1:]), 1):
             dt = q[0] - p[0]
-            if dt > DF_MAX_GAP or not airborne(p):
+            if k in cuts or dt > DF_MAX_GAP or not airborne(p):
                 continue
             sec += dt
             if p[3] is not None:
@@ -2126,8 +2238,9 @@ class Nightly:
         away as well (DF_SHARED_JUMP_M)."""
         if self.drone_far[address] < DF_SHARED_JUMPS or not a:
             return False
+        cuts = self.drone_cuts.get(address, ())
         switches = sum(1 for i in range(5, len(a), 5)
-                       if dist(a[i - 4], a[i - 3], a[i + 1], a[i + 2]) > DF_SHARED_SWITCH_M)
+                       if i // 5 not in cuts and dist(a[i - 4], a[i - 3], a[i + 1], a[i + 2]) > DF_SHARED_SWITCH_M)
         return switches >= DF_SHARED_SWITCHES
 
     @staticmethod
@@ -2164,7 +2277,7 @@ class Nightly:
             if self.drone_shared(address, a):
                 out[address] = FLIGHT_SHARED
                 continue
-            out[address] = self.drone_flight_class(self.drone_features(a) if a else None)
+            out[address] = self.drone_flight_class(self.drone_features(address, a) if a else None)
         self._flights = out
         return out
 
@@ -2261,7 +2374,7 @@ class Nightly:
                 while hist and t - hist[0][0] > 90:
                     hist.pop(0)
 
-    def end_flight(self, address, f):
+    def end_flight(self, address, f, infer=True):
         """A flight is over: (address, category, t0, lon0, seconds, max distance,
         path, lat0, start altitude, start height above ground, landing or None,
         "seen", "inferred" or "none").
@@ -2270,10 +2383,12 @@ class Nightly:
         flight that ends in silence is taken as landed at its last fix when
         that fix is below INFER_AGL above the ground and lower than the
         aircraft was 30 to 60 s earlier (PATTERNS.md, section 6); a powered
-        aircraft also needs an aerodrome there, checked in flight_classes.
+        aircraft also needs an aerodrome there, checked in flight_classes. A
+        flight ended by a feed break (`infer` off) is not taken as landed: it
+        is the feed that went silent.
         """
         landing, how = f[11] or None, "seen" if f[11] else "none"
-        if landing is None and f[15] is not None and f[15][1] is not None and f[15][1] < INFER_AGL:
+        if infer and landing is None and f[15] is not None and f[15][1] is not None and f[15][1] < INFER_AGL:
             last_t, last_alt = f[3], f[15][0]
             before = [a for t, a in f[14] if INFER_BACK[0] <= last_t - t <= INFER_BACK[1]]
             if before and last_alt is not None and last_alt < max(before):
