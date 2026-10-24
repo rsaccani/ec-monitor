@@ -64,8 +64,19 @@ device_type_map = {}
 ddb_notrack = set()
 ddb_noident = set()
 # Identified devices by registration and competition number, normalised
-# (upper case, no dashes or spaces), for the device check's shortcut.
+# (upper case, no dashes or spaces), for the device check's shortcut: name ->
+# tuple of device ids, and each device's card once, as (type, model,
+# registration, cn). Until 24 October 2026 every name held a dict per device,
+# the same card twice for registration and competition number: 22 MB.
 ddb_by_reg = {}
+ddb_cards = {}
+
+
+def ddb_named(name):
+    """The card of every identified device that answers to this name."""
+    cards = ddb_cards
+    return [{"id": d, "type": c[0], "model": c[1], "registration": c[2], "cn": c[3]}
+            for d in ddb_by_reg.get(name, ()) for c in (cards.get(d),) if c is not None]
 
 
 def hidden(device_id):
@@ -492,14 +503,14 @@ def ads_l_listener():
 
 
 def update_device_type_map():
-    global device_type_map
+    global device_type_map, ddb_by_reg, ddb_cards
     try:
         r = requests.get(DEVICE_TYPE_URL)
         r.raise_for_status()
         text = r.text
 
         reader = csv.DictReader(StringIO(text))
-        new_map, notrack, noident, by_reg = {}, set(), set(), {}
+        new_map, notrack, noident, by_reg, cards = {}, set(), set(), {}, {}
         for row in reader:
             device_id = row["DEVICE_ID"].strip().strip("'")  # remove quotes
             aircraft_model = row["AIRCRAFT_MODEL"].strip().strip("'")
@@ -518,10 +529,13 @@ def update_device_type_map():
                 if len(name) >= 2:
                     # Every device that answers to the name, once each: the
                     # first row used to win, and 6,571 names have several.
-                    by_reg.setdefault(name, {}).setdefault(device_id, {
-                        "id": device_id, "type": kind or None,
-                        "model": aircraft_model or None,
-                        "registration": registration or None, "cn": cn or None})
+                    ids = by_reg.get(name, ())
+                    if device_id not in ids:
+                        by_reg[name] = ids + (device_id,)
+                    if device_id not in cards:
+                        cards[device_id] = (sys.intern(kind) if kind else None,
+                                            sys.intern(aircraft_model) if aircraft_model else None,
+                                            registration or None, cn or None)
             if not aircraft_model:
                 new_map[device_id] = "Unknown"
             elif registration:
@@ -532,7 +546,9 @@ def update_device_type_map():
         device_type_map = new_map
         ddb_notrack.clear(); ddb_notrack.update(notrack)
         ddb_noident.clear(); ddb_noident.update(noident)
-        ddb_by_reg.clear(); ddb_by_reg.update({k: list(v.values()) for k, v in by_reg.items()})
+        # Cards first: a lookup between the two assignments finds every id it needs.
+        ddb_cards = cards
+        ddb_by_reg = by_reg
         main_logger.info(f"[Device map] Loaded {len(device_type_map)} entries, "
                          f"{len(notrack)} not to be tracked, {len(noident)} not to be identified")
 
@@ -730,7 +746,7 @@ def get_check():
     m = _check_id.match(q)
     # "0x" before six hex digits is how the page asks for that device ID itself,
     # which settles an ambiguity between an ID and a registration.
-    named = [] if m and q.startswith("0X") else ddb_by_reg.get(q, [])
+    named = [] if m and q.startswith("0X") else ddb_named(q)
     if len(named) > 1 or (m and named):
         # An uncertain match gets no position: the visitor picks a device and
         # the check runs again by its id. Only what the public OGN device
