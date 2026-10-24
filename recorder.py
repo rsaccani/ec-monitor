@@ -26,7 +26,9 @@ EC_RAW_KEEP is a comma-separated list:
 Lines without a position (status lines) are kept wherever they come from.
 A line "<epoch> # feed break" is written whenever the service reconnects to the
 feed (from 24 October 2026): what came before it and what came after are not
-one continuous stream, and a replay must not measure a silence across it.
+one continuous stream, and a replay must not measure a silence across it. The
+recorder also writes one when it starts more than 30 seconds after the last
+write (from 25 October 2026), since a reboot or a crash is no reconnection.
 Packets whose id carries the no-track flag, and devices hidden by the OGN
 device database, are never recorded.
 """
@@ -58,6 +60,7 @@ AIRLINER_KT = 200
 _speed = re.compile(r".{27}(\d{3})/(\d{3})")      # course/speed after the symbol
 _altitude = re.compile(r"/A=(-?\d{5,6})")
 FLUSH_SECONDS = 1.0
+BREAK_AFTER = 30            # seconds since the last write: a start later than this marks a feed break
 NAME = "%Y%m%d-%H"          # one file per UTC hour: <name>.aprs, then <name>.aprs.zst
 EUROPE = (35, 72, -25, 45)  # lat min, max, lon min, max: "europe" here, EC_SCOPE=europe in nightly.py
 
@@ -106,7 +109,21 @@ class Recorder:
         self.lock = threading.Lock()
         self.children = []
         logger.info("Raw feed recording to %s, %s days, keep %s", self.dir, days, sorted(keep))
-        self.rotate(time.time())
+        last = self.last_write()                # before rotate creates this hour's file
+        now = time.time()
+        self.rotate(now)
+        # A start after a stop (a reboot, a crash) is a break the listener never
+        # sees, since it only marks reconnections: mark it here, so that a replay
+        # does not read the downtime as silence. A reload is not one, since the
+        # old worker writes every second until it exits.
+        if last is not None and now - last > BREAK_AFTER:
+            self.mark(sources.FEED_BREAK)
+            logger.info("Raw feed recording: feed break marked, last write %.0f s ago", now - last)
+
+    def last_write(self):
+        """Modification time of the newest recording, or None; zstd keeps that of the file it compresses."""
+        files = glob.glob(os.path.join(self.dir, "*.aprs")) + glob.glob(os.path.join(self.dir, "*.aprs.zst"))
+        return max((os.path.getmtime(f) for f in files), default=None)
 
     def keep(self, line):
         src, _, rest = line.partition(">")
