@@ -3644,6 +3644,11 @@ class SourceTracker:
                     d[c] = float(v)
                 out.append(d)
             self.grid_cache[month] = (time.time(), out)
+            # Any month can be asked for, and each one kept stays: warm_loop
+            # renews the current and the previous one, any other goes once stale.
+            for m, (stamp, _) in list(self.grid_cache.items()):
+                if m != month and time.time() - stamp > STATS_CACHE_SECONDS:
+                    del self.grid_cache[m]
             return out
 
     # --- background threads -------------------------------------------------

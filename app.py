@@ -619,19 +619,26 @@ def _flatten(row, prefix=""):
 # name, the format and the month), so an invented parameter such as ?cb=1,
 # which nginx's cache treats as a new URL, costs a lookup and not 7 MB of
 # JSON. One entry per key, so the cache stays as small as the statistics.
+# An entry not served for BODY_IDLE_S goes, and with it the statistic it holds
+# on to: a month asked for once would otherwise stay in memory for good.
+BODY_IDLE_S = 3600
 _bodies = {}
 _bodies_lock = threading.Lock()
 
 
 def _cached(source, key, build):
     """build() -> (body, mimetype, headers); redone only when `source` is not the object last served."""
+    now = time.time()
     with _bodies_lock:
         hit = _bodies.get(key)
     if hit is None or hit[0] is not source:
         body, mimetype, headers = build()
-        hit = (source, body, mimetype, headers)
+        hit = [source, body, mimetype, headers, now]
         with _bodies_lock:
+            for k in [k for k, v in _bodies.items() if now - v[4] > BODY_IDLE_S]:
+                del _bodies[k]
             _bodies[key] = hit
+    hit[4] = now
     return app.response_class(hit[1], mimetype=hit[2], headers=hit[3])
 
 
