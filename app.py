@@ -1,3 +1,4 @@
+import collections
 import socket
 import threading
 import time
@@ -1068,6 +1069,88 @@ def get_method():
 @app.route("/device-map")
 def show_device_map():
     return jsonify(device_type_map)
+
+
+def _deep_sizes(roots):
+    """Bytes and object count reachable from each (name, object), largest first.
+    Objects shared between roots are counted once, under the first root that
+    reaches them. Modules, classes, functions and locks are not followed: they
+    are code, not data. Containers are copied before they are read, because the
+    listener keeps writing to them meanwhile.
+
+    Objects already counted are marked in one bit per 16 bytes of address
+    space (CPython aligns every object to 16), 8 KB per MB of heap touched: a
+    set of ids would itself take hundreds of MB for a few million objects."""
+    pages = {}
+    stop = (type(sys), type, type(_deep_sizes), type(threading.Lock()), threading.Thread)
+    out = []
+    for name, root in roots:
+        size = objects = 0
+        stack = [root]
+        while stack:
+            obj = stack.pop()
+            if isinstance(obj, stop):
+                continue
+            i = id(obj)
+            page = pages.get(i >> 20)
+            if page is None:
+                page = pages[i >> 20] = bytearray(8192)
+            bit = (i & 0xFFFFF) >> 4
+            if page[bit >> 3] & (1 << (bit & 7)):
+                continue
+            page[bit >> 3] |= 1 << (bit & 7)
+            size += sys.getsizeof(obj, 0)
+            objects += 1
+            try:
+                if isinstance(obj, dict):
+                    for k, v in list(obj.items()):
+                        stack.append(k)
+                        stack.append(v)
+                elif isinstance(obj, (list, tuple, set, frozenset, collections.deque)):
+                    stack.extend(list(obj))
+                else:
+                    d = getattr(obj, "__dict__", None)
+                    if isinstance(d, dict):
+                        stack.append(d)
+                    for cls in type(obj).__mro__:
+                        slots = cls.__dict__.get("__slots__", ())
+                        for slot in (slots,) if isinstance(slots, str) else slots:
+                            if slot not in ("__dict__", "__weakref__") and hasattr(obj, slot):
+                                stack.append(getattr(obj, slot))
+            except RuntimeError:
+                pass        # changed while copied: a few objects missed, the total stays close
+        out.append({"name": name, "mb": round(size / 1e6, 2), "objects": objects,
+                    "len": len(root) if hasattr(root, "__len__") and not isinstance(root, str) else None})
+    out.sort(key=lambda r: -r["mb"])
+    return out
+
+
+@app.route("/internal/memory")
+def internal_memory():
+    """Where the worker's memory is, by structure: sizes and counts only, no
+    content. Not under API, so nginx does not proxy it; a request that came
+    through a proxy is refused anyway. It walks every object once, so it takes
+    seconds and is for occasional use from the host (24 October 2026)."""
+    if request.remote_addr != "127.0.0.1" or request.headers.get("X-Real-IP") \
+            or request.headers.get("X-Forwarded-For"):
+        return "Not found", 404
+    t0 = time.time()
+    roots = []
+    if tracker is not None:
+        roots += [("tracker." + k, v) for k, v in vars(tracker).items()]
+        if tracker.check is not None:
+            roots += [("check." + k, v) for k, v in vars(tracker.check).items()]
+    if raw_recorder is not None:
+        roots += [("recorder." + k, v) for k, v in vars(raw_recorder).items()]
+    for label, module in (("app", sys.modules[__name__]), ("sources", sources), ("check", check)):
+        for k, v in list(vars(module).items()):
+            if isinstance(v, (dict, list, set, tuple, collections.deque)) and not k.startswith("__"):
+                roots.append((f"{label}.{k}", v))
+    rows = _deep_sizes(roots)
+    with open("/proc/self/status") as f:
+        status = {l.split(":")[0]: l.split(":")[1].strip() for l in f if l.startswith(("VmRSS", "RssAnon", "RssFile", "VmSwap"))}
+    return jsonify({"status": status, "seconds": round(time.time() - t0, 1),
+                    "total_mb": round(sum(r["mb"] for r in rows), 1), "rows": rows})
 
 
 def bootstrap():
