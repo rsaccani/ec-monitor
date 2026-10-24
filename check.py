@@ -27,6 +27,11 @@ seconds and can never be looked up, so they are not kept at all.
 The state is pickled every SAVE_EVERY seconds and at exit, and read back at
 start, because a deploy reloads the worker and would otherwise empty it. The
 receivers' positions (SourceTracker.stations) are saved with it.
+
+The timed samples (signal, frequency offset, and the reference of other
+devices) are half a million records over a day, and as lists of tuples of
+Python numbers they took some 75 MB of the state's 100 (24 October 2026).
+They are kept packed in Samples instead, 6 to 12 bytes a record.
 """
 
 import atexit
@@ -34,6 +39,7 @@ import logging
 import os
 import pickle
 import statistics
+import struct
 import threading
 import time
 
@@ -68,7 +74,7 @@ N_SIGNAL = 15               # per (receiver, band)
 N_SAMPLES = 20              # frequency offset, delay
 N_GAPS = 10
 N_REF = 40                  # reference samples per (receiver, system, band)
-STATE_VERSION = 2           # 2: samples carry their time (10 October 2026)
+STATE_VERSION = 3           # 2: samples carry their time (10 October 2026); 3: packed (24 October 2026)
 STATE_PATH = os.environ.get("EC_CHECK_STATE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "check-state.pickle"))
 
@@ -97,6 +103,113 @@ def _median(lst):
     return statistics.median(lst) if lst else None
 
 
+class Samples:
+    """A series of fixed-size records packed in one bytearray, read back as
+    tuples: append, len, del [i] and iteration, which is all _push and the
+    readers use. A subclass names the struct format and how a tuple is
+    packed and unpacked. Every record starts with its epoch, as an unsigned
+    32-bit integer."""
+    __slots__ = ("buf",)
+    fmt = None
+
+    def __init__(self, data=b""):
+        self.buf = bytearray(data)
+
+    @classmethod
+    def of(cls, items):
+        out = cls()
+        for x in items:
+            out.append(x)
+        return out
+
+    def __reduce__(self):
+        return (type(self), (bytes(self.buf),))
+
+    def __len__(self):
+        return len(self.buf) // self.fmt.size
+
+    def __iter__(self):
+        # Over a copy: an iterator left open on the bytearray itself (any()
+        # stopping early) would make the next append raise BufferError.
+        return map(self.unpack, self.fmt.iter_unpack(bytes(self.buf)))
+
+    def __delitem__(self, i):
+        n = len(self)
+        if i < 0:
+            i += n
+        if not 0 <= i < n:
+            raise IndexError(i)
+        size = self.fmt.size
+        del self.buf[i * size:(i + 1) * size]
+
+    def append(self, x):
+        self.buf += self.fmt.pack(*self.pack(x))
+
+    def since(self, cutoff):
+        """The records from cutoff on, as a new series."""
+        size = self.fmt.size
+        out = type(self)()
+        for i in range(0, len(self.buf), size):
+            if _EPOCH.unpack_from(self.buf, i)[0] >= cutoff:
+                out.buf += self.buf[i:i + size]
+        return out
+
+    @staticmethod
+    def pack(x):
+        return x
+
+    @staticmethod
+    def unpack(rec):
+        return rec
+
+
+_EPOCH = struct.Struct("<I")
+
+
+def _int16(v):
+    return max(-32768, min(32767, v))
+
+
+class Signal(Samples):
+    """(epoch, dB) of one device at one receiver and distance band."""
+    __slots__ = ()
+    fmt = struct.Struct("<Ih")
+
+    @staticmethod
+    def pack(x):
+        return x[0], _int16(x[1])
+
+
+class Khz(Samples):
+    """(epoch, kHz to one decimal), kept as tenths so that reading back gives
+    the same float round(x, 1) did."""
+    __slots__ = ()
+    fmt = struct.Struct("<Ii")
+
+    @staticmethod
+    def pack(x):
+        return x[0], round(x[1] * 10)
+
+    @staticmethod
+    def unpack(rec):
+        return rec[0], rec[1] / 10
+
+
+class Ref(Samples):
+    """(epoch, address, dB) of every device at one receiver, system and band.
+    The address is the six-character string the feed gives (ASCII)."""
+    __slots__ = ()
+    fmt = struct.Struct("<I6sh")
+
+    @staticmethod
+    def pack(x):
+        return x[0], x[1].encode("ascii", "replace"), _int16(x[2])
+
+    @staticmethod
+    def unpack(rec):
+        return rec[0], rec[1].rstrip(b"\0").decode("ascii"), rec[2]
+
+
 class System:
     """What one system of one address sent: plain attributes, so it pickles."""
     # Set by DeviceCheck.feed_break: the next fix starts again, with no interval or
@@ -113,8 +226,8 @@ class System:
         self.stealth = False
         self.fix = None         # (t_fix, lat, lon, alt_m, course, speed_kt, station, snr, err)
         self.intervals = []
-        self.signal = {}        # (station, band) -> [(epoch, dB)]
-        self.khz = []           # (epoch, offset minus the receiver's own median, kHz)
+        self.signal = {}        # (station, band) -> Signal of (epoch, dB)
+        self.khz = Khz()        # (epoch, offset minus the receiver's own median, kHz)
         self.delay = []         # seconds between the fix and its arrival
         self.err_packets = 0    # packets with corrected bit errors
         self.radio_packets = 0
@@ -131,8 +244,8 @@ class DeviceCheck:
         self.path = path
         self.devices = {}           # address -> {label: System}
         self.active = {}            # receiver -> last epoch it relayed a packet
-        self.ref = {}               # (receiver, label, band) -> [(epoch, address, dB)], every device
-        self.ref_khz = {}           # receiver -> [(epoch, kHz)], every device
+        self.ref = {}               # (receiver, label, band) -> Ref of (epoch, address, dB), every device
+        self.ref_khz = {}           # receiver -> Khz of (epoch, kHz), every device
         self.cache = {}
         self.lock = threading.Lock()
         self.load()
@@ -179,7 +292,7 @@ class DeviceCheck:
             if s is None:
                 s = systems[label] = System(label, kind, via, tocall)
             if s.last is not None and tick - s.last > SESSION_S:
-                s.intervals, s.signal, s.khz, s.delay = [], {}, [], []
+                s.intervals, s.signal, s.khz, s.delay = [], {}, Khz(), []
                 s.err_packets = s.radio_packets = 0
             s.src = src
             if via == "radio":
@@ -236,14 +349,22 @@ class DeviceCheck:
                 st[2] = km if st[2] is None else min(st[2], km)
                 st[3] = km if st[3] is None else max(st[3], km)
             if khz is not None:
-                ref = self.ref_khz.setdefault(station, [])
+                ref = self.ref_khz.get(station)
+                if ref is None:
+                    ref = self.ref_khz[station] = Khz()
                 _push(ref, (tick, round(khz, 1)), N_REF)
                 base = statistics.median(v for t, v in ref)
                 _push(s.khz, (tick, round(khz - base, 1)), N_SAMPLES)
             if snr is not None and km is not None:
                 b = band_of(km)
-                _push(s.signal.setdefault((station, b), []), (tick, round(snr)), N_SIGNAL)
-                _push(self.ref.setdefault((station, label, b), []), (tick, address, round(snr)), N_REF)
+                sig = s.signal.get((station, b))
+                if sig is None:
+                    sig = s.signal[(station, b)] = Signal()
+                _push(sig, (tick, round(snr)), N_SIGNAL)
+                ref = self.ref.get((station, label, b))
+                if ref is None:
+                    ref = self.ref[(station, label, b)] = Ref()
+                _push(ref, (tick, address, round(snr)), N_REF)
 
     def feed_break(self, epoch=None):
         """The feed was cut (SourceTracker.feed_break): the time between the last
@@ -268,8 +389,8 @@ class DeviceCheck:
                         continue
                     s.hours = {h: n for h, n in s.hours.items() if h >= cutoff}
                     s.gaps = [g for g in s.gaps if g[0] >= cutoff]
-                    s.khz = [x for x in s.khz if x[0] >= cutoff]
-                    s.signal = {k: [x for x in v if x[0] >= cutoff] for k, v in s.signal.items()}
+                    s.khz = s.khz.since(cutoff)
+                    s.signal = {k: v.since(cutoff) for k, v in s.signal.items()}
                     s.signal = {k: v for k, v in s.signal.items() if v}
                     s.jumps = [j for j in s.jumps if j > cutoff]
                     s.stations = {k: v for k, v in s.stations.items() if v[1] > cutoff}
@@ -278,13 +399,13 @@ class DeviceCheck:
                     del self.devices[address]
             self.active = {k: v for k, v in self.active.items() if v > cutoff}
             for k in list(self.ref):
-                v = [x for x in self.ref[k] if x[0] >= cutoff]
+                v = self.ref[k].since(cutoff)
                 if v:
                     self.ref[k] = v
                 else:
                     del self.ref[k]
             for k in list(self.ref_khz):
-                v = [x for x in self.ref_khz[k] if x[0] >= cutoff]
+                v = self.ref_khz[k].since(cutoff)
                 if v:
                     self.ref_khz[k] = v
                 else:
@@ -341,7 +462,15 @@ class DeviceCheck:
             ref, ref_khz = {}, {}
             for systems in devices.values():
                 for s in systems.values():
-                    s.signal, s.khz = {}, []
+                    s.signal, s.khz = {}, Khz()
+        elif saved[6] < 3:
+            # Saved as lists of tuples (before 24 October 2026): packed here.
+            for systems in devices.values():
+                for s in systems.values():
+                    s.signal = {k: Signal.of(v) for k, v in s.signal.items()}
+                    s.khz = Khz.of(s.khz)
+            ref = {k: Ref.of(v) for k, v in ref.items()}
+            ref_khz = {k: Khz.of(v) for k, v in ref_khz.items()}
         self.devices, self.active, self.ref, self.ref_khz = devices, active, ref, ref_khz
         self.prune()
         logger.info("Device check: %d addresses read back", len(self.devices))
