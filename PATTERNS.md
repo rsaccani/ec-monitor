@@ -689,6 +689,14 @@ wide sits in mountains, a high plateau in plain and hills.
   banner, on a rescue or on police work, or infringing the rules, and the
   feed cannot tell these apart. A figure would read as a count of
   infringements and could not be one, so none is computed.
+- **Aerotows heard late, or behind a tug typed as a glider, are missed.**
+  Section 7 needs the towed aircraft under 100 m above the terrain at the
+  first contact of the pair, and a tug that declares the glider type makes
+  the pair two gliders. Over five days in October 2026 (18 and 20 to 23)
+  1,268 tows were recognised; 39 more began with the glider low within
+  180 seconds before a first contact above 100 m, and at most 35 more were
+  glider pairs. The release and duration distributions do not change when
+  they are added, so the counts of tows are a lower bound by a few per cent.
 
 ## Log of changes
 
@@ -742,3 +750,6 @@ wide sits in mountains, a high plateau in plain and hills.
   hour is left out while one 0.25-degree cell holds more than a third of
   its thermals (section 3). The page draws every solar hour at its half
   past, where it used to sit on the whole hour, half an hour early.
+- **24 October 2026.** A limit is added: aerotows first heard above 100 m,
+  or behind a tug that declares the glider type, are missed, a few per cent
+  of the count (Limits). No rule changes.
