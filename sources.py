@@ -1575,6 +1575,33 @@ STATION_NOTES = {
 }
 
 
+def station_census(cur, latest):
+    """The stations heard over the STATION_WINDOW_DAYS ending on `latest`: every name with a row, that is
+    with beacons, and how many of them forwarded at least one radio packet of an aircraft on any day of
+    the window. A name is counted once, under the kind of its last day. None before the first night."""
+    if not latest:
+        return None
+    cur.execute("""SELECT name, day, kind, packets_forwarded FROM daily_stations
+                   WHERE day > %s - INTERVAL %s DAY""", (latest, STATION_WINDOW_DAYS))
+    kind_of, last_day, forwarded = {}, {}, collections.Counter()
+    first = None
+    for name, day, kind, packets in cur.fetchall():
+        if name not in last_day or day > last_day[name]:
+            last_day[name], kind_of[name] = day, kind
+        forwarded[name] += int(packets or 0)
+        first = day if first is None or day < first else first
+    def counts(names):
+        with_traffic = sum(1 for n in names if forwarded[n] > 0)
+        return {"stations": len(names), "with_traffic": with_traffic, "without_traffic": len(names) - with_traffic}
+    by_kind = collections.defaultdict(list)
+    for name, kind in kind_of.items():
+        by_kind[kind].append(name)
+    out = counts(list(kind_of))
+    out.update({"window_days": STATION_WINDOW_DAYS, "first_day": first.isoformat() if first else None,
+                "last_day": latest, "by_kind": {k: counts(v) for k, v in sorted(by_kind.items())}})
+    return out
+
+
 def station_note_state(info, row):
     """"not_synchronised" for the clock note of a station whose beacon carried the placeholder offset, else None."""
     v = row.get(info["figure"])
@@ -3507,7 +3534,8 @@ class SourceTracker:
                 cur.execute("""SELECT DISTINCT name FROM daily_stations
                                WHERE day > %s - INTERVAL %s DAY ORDER BY name""", (latest, STATION_WINDOW_DAYS))
                 names = [r[0] for r in cur.fetchall()]
-            return {"days": days, "latest_day": latest, "stations_by_note": by_note,
+            census = station_census(cur, latest)
+            return {"days": days, "latest_day": latest, "census": census, "stations_by_note": by_note,
                     "stations_with_note": with_note,
                     "free_space_k": 20, "sensitivity_low_share": STATION_LOW_SHARE,
                     "notes": self.station_note_info(), "window_days": STATION_WINDOW_DAYS,
