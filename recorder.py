@@ -59,6 +59,21 @@ _speed = re.compile(r".{27}(\d{3})/(\d{3})")      # course/speed after the symbo
 _altitude = re.compile(r"/A=(-?\d{5,6})")
 FLUSH_SECONDS = 1.0
 NAME = "%Y%m%d-%H"          # one file per UTC hour: <name>.aprs, then <name>.aprs.zst
+EUROPE = (35, 72, -25, 45)  # lat min, max, lon min, max: "europe" here, EC_SCOPE=europe in nightly.py
+
+
+def outside_europe(body):
+    """True for a packet body whose position lies outside EUROPE; False inside it or with no position."""
+    p = _position.match(body)
+    if not p:
+        return False
+    lat = int(p.group(1)) + float(p.group(2)) / 60
+    lon = int(p.group(4)) + float(p.group(5)) / 60
+    if p.group(3) == "S":
+        lat = -lat
+    if p.group(6) == "W":
+        lon = -lon
+    return not (EUROPE[0] <= lat <= EUROPE[1] and EUROPE[2] <= lon <= EUROPE[3])
 
 
 def from_env(hidden):
@@ -113,17 +128,8 @@ class Recorder:
                 v, a = _speed.match(body), _altitude.search(body)
                 if a is None or int(a.group(1)) > AIRLINER_FT or (v and int(v.group(2)) > AIRLINER_KT):
                     return False
-        if self.europe:
-            p = _position.match(body)
-            if p:
-                lat = int(p.group(1)) + float(p.group(2)) / 60
-                lon = int(p.group(4)) + float(p.group(5)) / 60
-                if p.group(3) == "S":
-                    lat = -lat
-                if p.group(6) == "W":
-                    lon = -lon
-                if not (35 <= lat <= 72 and -25 <= lon <= 45):
-                    return False
+        if self.europe and outside_europe(body):
+            return False
         if self.hidden(src):
             return False
         return True
@@ -158,8 +164,13 @@ class Recorder:
             if self.pending:
                 # One write of whole lines to an O_APPEND file, so the old and
                 # the new worker can overlap during a reload without mixing lines.
-                os.write(self.fd, "".join(self.pending).encode("utf-8", "replace"))
-                self.pending = []
+                # A failed write (a full disk) drops the lines: kept, they would
+                # pile up in memory until the worker is killed for it.
+                lines, self.pending = self.pending, []
+                try:
+                    os.write(self.fd, "".join(lines).encode("utf-8", "replace"))
+                except OSError as e:
+                    logger.error("Raw feed recording: %s, %d lines lost", e, len(lines))
             if time.strftime(NAME, time.gmtime(now)) != self.hour:
                 self.rotate(now)
             self.flushed_at = now

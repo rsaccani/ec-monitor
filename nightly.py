@@ -56,6 +56,7 @@ import zlib
 import pymysql
 from dotenv import load_dotenv
 
+import recorder
 import sources
 
 logger = logging.getLogger("nightly")
@@ -236,7 +237,9 @@ ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING
 # page shows for them; the numbers of the 10.4 checks are the constants above,
 # and this makes sure the two never drift apart.
 STATION_TOCALLS = {"OGNSDR", "OGNSXR", "OGNFNT", "APRS"}   # the tocalls whose `&` beacons are stations'
-STATION_FEED_BOX = (35, 72, -25, 45)       # lat min, max, lon min, max: what the recorder keeps (recorder.py)
+# EC_SCOPE=europe (the default) measures only positions inside recorder.EUROPE, so a recording
+# of the whole world (EC_RAW_KEEP=world) gives the same rows as one of Europe; "world" measures all.
+EUROPE_ONLY = True
 # Coverage gaps (METHOD.md 10.5, "Where a new station would help most"): the probe is the free-flight
 # aircraft sending two or more radio systems that day and the gliders; the bands are of height above the ground.
 COVERAGE_FAMILY = {1: "glider", 6: "free_flight", 7: "free_flight"}
@@ -1537,6 +1540,8 @@ class Nightly:
             head, body = rest.split(":", 1)
         except ValueError:
             return
+        if EUROPE_ONLY and recorder.outside_europe(body):
+            return
         if not body.startswith("/"):
             if body.startswith(">") and self.s and self.d0 <= epoch < self.d1:
                 self.station_status(epoch, src, head.split(",")[0], body)
@@ -2793,8 +2798,8 @@ class Nightly:
             lat = -lat
         if g[9] == "W":
             lon = -lon
-        la0, la1, lo0, lo1 = STATION_FEED_BOX
-        if la0 <= lat <= la1 and lo0 <= lon <= lo1:
+        la0, la1, lo0, lo1 = recorder.EUROPE
+        if not EUROPE_ONLY or (la0 <= lat <= la1 and lo0 <= lon <= lo1):
             st.lat, st.lon = lat, lon
 
     @station_guard
@@ -4015,6 +4020,12 @@ def main():
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     load_dotenv(os.path.join(HERE, ".env"))
+    global EUROPE_ONLY
+    scope = os.getenv("EC_SCOPE") or "europe"
+    if scope not in ("europe", "world"):
+        logger.error("EC_SCOPE must be europe or world, not %r", scope)
+        return 1
+    EUROPE_ONLY = scope == "europe"
     raw_dir = os.path.expanduser(os.getenv("EC_RAW_DIR") or "")
     if not raw_dir or not os.path.isdir(raw_dir):
         logger.error("EC_RAW_DIR is not set or not a directory: nothing to read")

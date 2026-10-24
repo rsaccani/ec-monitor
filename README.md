@@ -289,7 +289,11 @@ section 9, which is off unless `EC_RAW_DIR` is set (`recorder.py` documents ever
 EC_RAW_DIR=/home/ecmon/ec-raw   # hourly files, compressed with zstd once the hour is over
 EC_RAW_DAYS=7                   # files older than this are deleted
 EC_RAW_KEEP=europe,no-airliners # or world; no-adsb drops every ADS-B packet
+EC_SCOPE=europe                 # what nightly.py measures: europe (the default) or world
 ```
+
+With `EC_SCOPE=europe` the nightly leaves out every position outside the box the recorder's `europe`
+keeps, so recording the world changes none of its rows.
 
 It needs `zstd` on the path. Hours are compressed at level 9 (`EC_RAW_ZSTD_LEVEL`; 19 until 7 October 2026, which cost about 9 minutes of CPU per busy hour). A day of Europe without airliners is roughly 0.3 to 0.9 GB once compressed.
 
