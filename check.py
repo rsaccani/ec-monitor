@@ -36,6 +36,7 @@ They are kept packed in Samples instead, 6 to 12 bytes a record.
 
 import atexit
 import logging
+import math
 import os
 import pickle
 import statistics
@@ -74,6 +75,16 @@ N_SIGNAL = 15               # per (receiver, band)
 N_SAMPLES = 20              # frequency offset, delay
 N_GAPS = 10
 N_REF = 40                  # reference samples per (receiver, system, band)
+# The reception pattern of one device (25 October 2026): the airborne receptions
+# from stations farther than PATTERN_MIN_KM (closer ones hear every side and
+# hide a shadow, METHOD.md 7), by the side of the aircraft the station sees, in
+# 12 sectors of 30 degrees centred on the nose; the signal scaled to 10 km with
+# sources.SNR_SLOPE_DB (METHOD.md 10.5). At most N_PATTERN records a system, the
+# newest kept: 7 bytes each, 2.5 kB for a system that fills it.
+PATTERN_MIN_KM = 20
+N_PATTERN = 360
+PATTERN_MIN_N = 10          # receptions a sector needs to count
+PATTERN_MIN_SECTORS = 8     # sectors with PATTERN_MIN_N each, or no pattern is shown
 STATE_VERSION = 3           # 2: samples carry their time (10 October 2026); 3: packed (24 October 2026)
 STATE_PATH = os.environ.get("EC_CHECK_STATE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "check-state.pickle"))
@@ -210,6 +221,20 @@ class Ref(Samples):
         return rec[0], rec[1].rstrip(b"\0").decode("ascii"), rec[2]
 
 
+class Pattern(Samples):
+    """(epoch, sector 0-11, dB scaled to 10 km in tenths) of one system's far receptions."""
+    __slots__ = ()
+    fmt = struct.Struct("<IBh")
+
+    @staticmethod
+    def pack(x):
+        return x[0], x[1], _int16(round(x[2] * 10))
+
+    @staticmethod
+    def unpack(rec):
+        return rec[0], rec[1], rec[2] / 10
+
+
 class System:
     """What one system of one address sent: plain attributes, so it pickles."""
     # Set by DeviceCheck.feed_break: the next fix starts again, with no interval or
@@ -234,6 +259,7 @@ class System:
         self.gaps = []          # (from, to) epochs
         self.jumps = []         # epochs of impossible jumps
         self.stations = {}      # receiver -> [packets, last epoch, min km, max km]
+        self.pattern = Pattern()  # far airborne receptions by sector (PATTERN_MIN_KM)
 
 
 class DeviceCheck:
@@ -365,6 +391,14 @@ class DeviceCheck:
                 if ref is None:
                     ref = self.ref[(station, label, b)] = Ref()
                 _push(ref, (tick, address, round(snr)), N_REF)
+                if (km > PATTERN_MIN_KM and course is not None
+                        and (speed or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT)):
+                    rel = (sources._bearing(lat, lon, *where) - course) % 360
+                    sector = int(((rel + 15) % 360) // 30)
+                    pat = getattr(s, "pattern", None)
+                    if pat is None:
+                        pat = s.pattern = Pattern()    # a System saved before 25 October 2026
+                    _push(pat, (tick, sector, snr + sources.SNR_SLOPE_DB * math.log10(km / 10)), N_PATTERN)
 
     def feed_break(self, epoch=None):
         """The feed was cut (SourceTracker.feed_break): the time between the last
@@ -392,6 +426,8 @@ class DeviceCheck:
                     s.khz = s.khz.since(cutoff)
                     s.signal = {k: v.since(cutoff) for k, v in s.signal.items()}
                     s.signal = {k: v for k, v in s.signal.items() if v}
+                    if getattr(s, "pattern", None) is not None:
+                        s.pattern = s.pattern.since(cutoff)
                     s.jumps = [j for j in s.jumps if j > cutoff]
                     s.stations = {k: v for k, v in s.stations.items() if v[1] > cutoff}
                     s.first = max(s.first, min(s.hours) if s.hours else s.last)
@@ -566,8 +602,27 @@ class DeviceCheck:
             "signal": sig,
             "gaps": [{"from": a, "to": b, "s": int(b - a)} for a, b in s.gaps if a >= cutoff],
             "jumps": len(s.jumps),
+            "pattern": self._pattern(s, cutoff),
             "last": last,
         }
+
+    def _pattern(self, s, cutoff):
+        """Per sector (0 = nose, clockwise) the median signal minus the system's
+        own median, in dB, and the receptions; None where a sector has fewer than
+        PATTERN_MIN_N, and shown at all only with PATTERN_MIN_SECTORS such sectors."""
+        recs = [(sec, v) for t, sec, v in (getattr(s, "pattern", None) or ()) if t >= cutoff]
+        by = [[] for _ in range(12)]
+        for sec, v in recs:
+            by[sec].append(v)
+        full = sum(1 for x in by if len(x) >= PATTERN_MIN_N)
+        out = {"n": len(recs), "min_km": PATTERN_MIN_KM, "min_n": PATTERN_MIN_N,
+               "min_sectors": PATTERN_MIN_SECTORS, "sectors_full": full, "sectors": None}
+        if full >= PATTERN_MIN_SECTORS:
+            mid = statistics.median(v for sec, v in recs)
+            out["sectors"] = [{"deg": i * 30, "n": len(x),
+                               "db": round(statistics.median(x) - mid, 1) if len(x) >= PATTERN_MIN_N else None}
+                              for i, x in enumerate(by)]
+        return out
 
     def _nearest(self, lat, lon, now):
         best = None

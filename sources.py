@@ -956,6 +956,31 @@ PATTERN_SQL = _upsert("monthly_reception_pattern",
 _snr = re.compile(r" (-?\d+(?:\.\d+)?)dB ")
 
 
+def typical_patterns(rows):
+    """From the circling receptions of monthly_reception_pattern, every month together, the
+    signal per sector (0 = nose, clockwise) minus the mean over the sectors, in dB, at 20 km
+    and beyond, the bands the device check compares with (25 October 2026); per (source,
+    category) and per (source, None) for all categories, where every sector has 30
+    receptions with a signal."""
+    acc = collections.defaultdict(lambda: [[0.0, 0] for _ in range(12)])
+    for r in rows:
+        if not r["centred"] or r["dist_band"] < 3 or not r["snr_n"]:
+            continue
+        i = r["sector_deg"] // PATTERN_SECTOR
+        for key in ((r["source"], r["category"]), (r["source"], None)):
+            a = acc[key][i]
+            a[0] += r["snr_sum"]
+            a[1] += r["snr_n"]
+    out = {}
+    for key, secs in acc.items():
+        if any(n < 30 for _, n in secs):
+            continue
+        means = [s / n for s, n in secs]
+        mid = sum(means) / 12
+        out[key] = [round(m - mid, 1) for m in means]
+    return out
+
+
 def _bearing(lat1, lon1, lat2, lon2):
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dl = math.radians(lon2 - lon1)
@@ -2966,9 +2991,21 @@ class SourceTracker:
                     "dist_band": int(r[3]), "centred": int(r[4]) >= PATTERN_CENTRED,
                     "sector_deg": int(r[4]) % PATTERN_CENTRED * PATTERN_SECTOR,
                     "packets": int(r[5]), "snr_sum": float(r[6]), "snr_n": int(r[7])} for r in rows]
+            self.pattern_typical = typical_patterns(out)
             out = self.keep(out)
             self.pattern_cache = (time.time(), out)
             return out
+
+    def typical_pattern(self, tocall, category):
+        """The usual pattern of a source and category for the device check (typical_patterns)."""
+        if getattr(self, "pattern_typical", None) is None:
+            try:
+                self.pattern_stats()
+            except Exception as e:
+                logger.error(f"Error reading the reception pattern: {e}")
+                return None
+        typ = self.pattern_typical or {}
+        return typ.get((tocall, category)) or typ.get((tocall, None))
 
     def prediction_stats(self):
         """Prediction errors by source, category, horizon, circling and predictor."""

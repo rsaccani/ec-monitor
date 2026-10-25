@@ -706,6 +706,19 @@ devices gets the list of those devices to choose from, and no position.
 Devices whose owners asked not to be tracked are answered as such, and
 random addresses are not kept.
 
+From 25 October 2026 the device check also shows how the signal varies around
+the aircraft, per system. Each airborne reception by a station farther than
+20 km (closer ones hear every side and hide a shadow, section 7) is filed by
+the side of the aircraft the station sees, in 12 sectors of 30 degrees centred
+on the nose, with the signal scaled to 10 km by the slope of section 10.5; at
+most the 360 newest receptions of the last 24 hours are kept per system. Each
+sector shows its median against the system's own median, only once 8 sectors
+hold 10 receptions each, and beside it the usual pattern of the same source
+and category from the circling receptions of section 7 at 20 km and beyond.
+The two differ in what they take in (every airborne reception against circling
+ones only) and in the distance correction (the fitted slope against free
+space), which matters little for a pattern read against its own median.
+
 A device address can be traced to an aircraft and its pilot, so the lists of
 addresses are kept for the current and the previous month only. Once a month
 is older than that, its lists are reduced to the counts the published figures

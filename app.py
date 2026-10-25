@@ -807,6 +807,9 @@ def get_check():
         return jsonify({"query": q, "address": address, "found": True, "unavailable": True})
     out = dict(tracker.check.report(address))
     out.update({"query": q, "found": True})
+    # The usual pattern of the same source and kind of aircraft, beside the device's own.
+    out["systems"] = [dict(s, pattern_typical=tracker.typical_pattern(s["tocall"], s["category"]))
+                      for s in out.get("systems", [])]
     return jsonify(out)
 
 
