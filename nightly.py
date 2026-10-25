@@ -2039,9 +2039,14 @@ class Nightly:
             if r0 <= r1 and c0 <= c1:
                 hi, lo = -1e9, 1e9
                 for r in range(r0, r1 + 1):
-                    a = array.array("h")
-                    a.frombytes(tr._mm[(r * tr.cols + c0) * 2:(r * tr.cols + c1 + 1) * 2])
-                    vals = [0 if v == tr.nodata or v < 0 else v for v in a]
+                    if hasattr(tr, "tile"):
+                        # The tiled model (25 October 2026) is not stored row by row:
+                        # read it cell by cell, as Terrain.elevation does.
+                        vals = [tr._cell(r, c) for c in range(c0, c1 + 1)]
+                    else:
+                        a = array.array("h")
+                        a.frombytes(tr._mm[(r * tr.cols + c0) * 2:(r * tr.cols + c1 + 1) * 2])
+                        vals = [0 if v == tr.nodata or v < 0 else v for v in a]
                     hi, lo = max(hi, max(vals)), min(lo, min(vals))
                 value = hi - lo
         cache[key] = value
