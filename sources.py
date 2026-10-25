@@ -334,6 +334,17 @@ LAYER_OF_KIND = {
 }
 
 LIVE_MIN_INTERVAL = 4  # seconds between two position parses of one device
+# The live map's box (25 October 2026). LoRa demodulates below the noise, so
+# FANET and Meshtastic report signal-to-noise ratios down to about -10 dB,
+# where the FSK systems that OGN's software radios decode stop at about 0 dB
+# (one hour of 24 October: FLARM median 10.0, minimum 0.0; FANET median 4.2,
+# 5th percentile -6.6). The generic APRS stream always writes 20.0, a
+# placeholder. FLARM's ratio is also scaled to 10 km with the slope the
+# station comparison fitted (METHOD.md 10.5: 0.72 of free space on 15 October).
+LORA_TOCALLS = {"OGNFNT", "OGMSHT"}
+NO_SNR_TOCALLS = {"APRS"}
+SNR_10KM_TOCALLS = {"OGFLR", "OGNFLR", "OGFLR6", "OGFLR7"}
+SNR_SLOPE_DB = 0.72 * 20
 LIVE_WINDOW = 15 * 60  # a device unheard for this long leaves the map
 # The main page's live count (heard_stats): aircraft heard in the last hour.
 HEARD_WINDOW = 60 * 60
@@ -2030,6 +2041,7 @@ class SourceTracker:
             "_mono": t,
             "_raw": line,
         }
+        self.live[src].update(self.live_context(tocall, via, pkt))
 
     def hear(self, address, label, category, tick):
         """Aircraft heard in the last HEARD_WINDOW, for the main page's live box
@@ -4028,6 +4040,30 @@ class SourceTracker:
                 cur.executemany(UPGRADE_CATEGORY_SQL, upgrades)
 
     # --- read side ----------------------------------------------------------
+
+    def live_context(self, tocall, via, pkt):
+        """What the live map's box adds to a position (25 October 2026): height above
+        the ground, distance from the receiving station, the scale of its
+        signal-to-noise ratio, FLARM's ratio scaled to 10 km, and the turn rate,
+        only from the systems that send one (METHOD.md 6)."""
+        out = {"agl": None, "km": None, "snr_scale": None, "snr10": None, "fl": pkt.get("fl"),
+               "khz": pkt.get("freq_offset") if via == "radio" else None,
+               "rot_sent": tocall in TURN_RATE_SOURCES,
+               "rot": pkt.get("rot") if tocall in TURN_RATE_SOURCES else None}
+        lat, lon, alt_ft = pkt["lat"], pkt["lon"], pkt.get("altitude")
+        if alt_ft is not None:
+            ground = self.terrain.elevation(lat, lon)
+            if ground is not None:
+                out["agl"] = round(alt_ft * 0.3048 - ground)
+        station = self.stations.get(pkt.get("station")) if via == "radio" else None
+        if station is not None:
+            out["km"] = round(_distance(lat, lon, station[0], station[1]) / 1000, 1)
+        snr = pkt.get("signal")
+        if via == "radio" and snr is not None and tocall not in NO_SNR_TOCALLS:
+            out["snr_scale"] = "lora" if tocall in LORA_TOCALLS else "fsk"
+            if tocall in SNR_10KM_TOCALLS and out["km"] is not None and out["km"] >= 1:
+                out["snr10"] = round(snr + SNR_SLOPE_DB * math.log10(out["km"] / 10), 1)
+        return out
 
     def live_snapshot(self, layers, bbox=None):
         out = []

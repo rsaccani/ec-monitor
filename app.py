@@ -360,9 +360,12 @@ def parse_aprs_line(line):
         id_match = re.search(r"\bid([A-F0-9]{8}|[A-F0-9]{10})\b", line)
         pkt_id = id_match.group(1) if id_match else None
 
-        # Signal quality
-        qual_match = re.search(r"!W(\d+)!", line)
-        quality = int(qual_match.group(1)) if qual_match else None
+        # Turn rate, in half-turns a minute (3 degrees a second each), and the
+        # pressure altitude, in hundreds of feet, when the packet has them
+        rot_match = re.search(r" ([+-]\d+(?:\.\d+)?)rot", line)
+        rot = float(rot_match.group(1)) if rot_match else None
+        fl_match = re.search(r"(?<!\S)FL(\d+(?:\.\d+)?)(?!\S)", line)
+        fl = round(float(fl_match.group(1)) * 100) if fl_match else None
 
         category_code, no_track = sources.id_info(line)
 
@@ -416,7 +419,8 @@ def parse_aprs_line(line):
             "pkt_id": pkt_id,
             "category_code": category_code,
             "category": AIRCRAFT_CATEGORIES.get(category_code),
-            "quality": quality,
+            "rot": rot,
+            "fl": fl,
             "timestamp": datetime.datetime.utcnow(),
             "raw": line,
         }
@@ -460,6 +464,8 @@ def ads_l_listener():
                         main_logger.debug("[RAW] %s", line)
                         main_logger.debug("[PARSED] %s", pkt)
                         if pkt and pkt["lat"] is not None and pkt["lon"] is not None:
+                            if tracker is not None:
+                                pkt.update(tracker.live_context("OGADSL", "radio" if pkt["signal"] is not None else "net", pkt))
                             ads_l_devices[pkt["device_id"]] = pkt
                             record_monthly_device(
                                 pkt["device_id"],
@@ -688,12 +694,21 @@ def index():
     return render_template("map.html")
 
 
+def ddb_card(device_id):
+    """The competition number for the live map, only for a device the OGN device
+    database lists as identified (ddb_cards holds no other); the registration is
+    already in the model string of device_type_map."""
+    c = ddb_cards.get(device_id[-6:])
+    return {"cn": c[3] if c is not None else None}
+
+
 @app.route(API + "/adsl")
 def get_ads_l():
     out = []
     for v in ads_l_devices.values():
         entry = v.copy()
         entry["timestamp"] = entry["timestamp"].isoformat()
+        entry.update(ddb_card(entry["device_id"]))
         out.append(entry)
     return jsonify(out)
 
@@ -745,7 +760,10 @@ def get_live():
         bbox = None
     if tracker is None or not layers:
         return jsonify([])
-    return jsonify(tracker.live_snapshot(layers, bbox))
+    out = tracker.live_snapshot(layers, bbox)
+    for d in out:
+        d.update(ddb_card(d["id"]))
+    return jsonify(out)
 
 
 _check_id = re.compile(r"^(?:0X|[A-Z]{3})?([0-9A-F]{6})$")
