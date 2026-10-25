@@ -1485,6 +1485,43 @@ counts are published as they are, down to one device: the OGN feed itself
 publishes every position live to anyone, so a monthly count of a region
 says less about a pilot than its source does.
 
+### 10.7 Station reception rose
+
+From 25 October 2026 each station has a rose: where around it the aircraft it
+hears are, and how far. For every station and every source (the tocall, as in
+section 7), the nightly counts the direct airborne radio receptions in 36
+sectors of 10 degrees by bearing from the station to the aircraft, north up
+and clockwise. A reception is direct when the station is the last one named
+in the packet's path; airborne is the speed test of section 1 on the packet's
+own category, the same as the device pattern of section 7. Fixes the measures
+set aside as implausible, fixes in a window excluded from the feed, and
+receptions more than 1,000 km away (a wrong position) are left out. The
+station's position is its first `&` beacon of the day inside the recorded
+area, as in section 10.5.
+
+Per sector the batch keeps the number of receptions by distance, in 16 bins
+(under 2 km, then 2 km times 1.5 for each step, the last one open from 584
+km), and the sum of the signal scaled to 10 km as in section 7
+(`snr + 14.4 * log10(km / 10)`), for receptions from 2 km out. No single
+distance and no address is kept. A station and source with no reception in a
+day get no row. Addresses that send garbage positions, jumping hundreds of km
+every few seconds at a flat signal, are left out by name until a general rule
+exists: FLR18008D, heard only by Stallikon. The page adds the last 30 days recorded and shows, per
+sector, the 95th-percentile reach, read from the histogram by interpolating
+in the logarithm of the distance, and the mean signal at 10 km. A sector
+with fewer than 20 receptions (20 with a signal, for the mean) shows no
+figure.
+
+Read the two together. A short reach with a normal signal at 10 km is
+terrain: a ridge or a building masks the sector, and the signal that does
+arrive is as strong as anywhere. A low signal at 10 km, in one sector or in
+all, is the antenna or something next to it (a metal roof, a cable, a
+mast). The reach also follows the traffic: a sector over the sea or a
+valley with no flying shows a short reach however good the station is, so a
+reach is a lower bound of what the station can hear. The first rose was
+filled from the 7 days of recording left on 25 October; the page says how
+many days it covers.
+
 ## 11. Known limits
 
 - A device never heard at all does not appear, and a pilot who carries

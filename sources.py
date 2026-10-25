@@ -38,6 +38,8 @@ import zlib
 
 import pymysql
 
+import rose
+
 logger = logging.getLogger("main")
 
 # tocall -> (label, kind). Kinds: adsl, flarm, fanet, adsb, radio (other radio
@@ -1862,6 +1864,25 @@ def station_note_figure(info, row):
     if info.get("invert") and figure is not None:
         figure = round(-figure, 2)
     return figure
+
+
+def rose_answer(name, rows):
+    """The answer of /stations/<name>/rose from the rows (day, source, payload) of its window: per source the
+    sectors added over its days, and the days covered (rose.combine). None without rows."""
+    if not rows:
+        return None
+    days = sorted({r[0] for r in rows})
+    by_source = {}
+    for _, source, payload in rows:
+        by_source.setdefault(source, []).append(payload)
+    out = []
+    for source, payloads in sorted(by_source.items()):
+        sectors = rose.combine(payloads)
+        out.append({"source": source, "label": source_info(source)[0], "n": sum(s["n"] for s in sectors),
+                    "sectors": sectors})
+    out.sort(key=lambda x: -x["n"])
+    return {"found": True, "name": name, "days": len(days), "first_day": days[0].isoformat(),
+            "last_day": days[-1].isoformat(), "min_sector_n": rose.MIN_SECTOR_N, "sources": out}
 
 
 class SourceTracker:
@@ -3887,6 +3908,26 @@ class SourceTracker:
                               "days_flagged": sum(1 for d in days if code in d["notes"]), "days": len(days)})
         return {"found": True, "name": name, "latest_day": latest.isoformat(), "last_seen": last["day"],
                 "window_days": STATION_WINDOW_DAYS, "days": days, "notes": notes}
+
+    def station_rose(self, name):
+        """One station's reception rose (METHOD.md 10.7): per source, the 36 sectors added up over the last
+        STATION_WINDOW_DAYS days that have rows, and the days covered. None when the station has no row."""
+        if not name or len(name) > 64:
+            return None
+        conn = self.connect_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT MAX(day) FROM daily_station_rose")
+                latest = cur.fetchone()[0]
+                if latest is None:
+                    return None
+                cur.execute("""SELECT day, source, payload FROM daily_station_rose
+                               WHERE station = %s AND day > %s - INTERVAL %s DAY ORDER BY day""",
+                            (name, latest, STATION_WINDOW_DAYS))
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        return rose_answer(name, rows)
 
     def coverage_gaps_stats(self):
         """The coverage-gap map: per cell, the flying time lost to missing signal in the last COVERAGE_DAYS days

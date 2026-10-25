@@ -1044,6 +1044,20 @@ def get_coverage_gaps():
         return jsonify({})
 
 
+@app.route(API + "/stations/<path:name>/rose")
+def get_station_rose(name):
+    """One station's reception rose: per source, 36 sectors of 10 degrees with the receptions, the mean signal
+    scaled to 10 km and the 95th-percentile reach, over the last 30 days recorded (METHOD.md, section 10.7)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        out = tracker.station_rose(name)
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_station_rose: {e}")
+        return jsonify({})
+    return jsonify(out if out is not None else {"found": False})
+
+
 @app.route(API + "/stations/<path:name>")
 def get_station(name):
     """One station by its exact name: the last 30 days (with its sensitivity against the neighbours) and its notes (METHOD.md, section 10.5)."""

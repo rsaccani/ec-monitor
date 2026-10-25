@@ -36,6 +36,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - `ads_l.daily_quality`: SELECT, INSERT, DELETE
 - `ads_l.daily_routes`: SELECT, INSERT, DELETE
 - `ads_l.daily_same_aircraft_pairs`: SELECT, INSERT, DELETE
+- `ads_l.daily_station_rose`: SELECT, INSERT, DELETE (from `schema/2026-10-25-station-rose.sql`, once applied)
 - `ads_l.daily_station_sensitivity`: SELECT, INSERT, DELETE
 - `ads_l.daily_stations`: SELECT, INSERT, DELETE
 - `ads_l.daily_thermal_sites`: SELECT, INSERT, DELETE
@@ -66,6 +67,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - Nightly: conspicuity family (9): [`daily_air_cells`](#daily_air_cells), [`daily_crewed_encounters`](#daily_crewed_encounters), [`daily_drone_cells`](#daily_drone_cells), [`daily_drone_classes`](#daily_drone_classes), [`daily_drone_encounters`](#daily_drone_encounters), [`daily_drone_extent`](#daily_drone_extent), [`daily_drones`](#daily_drones), [`daily_parked`](#daily_parked), [`daily_same_aircraft_pairs`](#daily_same_aircraft_pairs)
 - Nightly: data quality (1): [`daily_quality`](#daily_quality)
 - Nightly: ground stations (3): [`daily_coverage_gaps`](#daily_coverage_gaps), [`daily_station_sensitivity`](#daily_station_sensitivity), [`daily_stations`](#daily_stations)
+- Station rose (1): [`daily_station_rose`](#daily_station_rose)
 - Nightly: devices by country and region (1): [`daily_device_regions`](#daily_device_regions)
 - Nightly: patterns family (18): [`daily_agl_hours`](#daily_agl_hours), [`daily_circling`](#daily_circling), [`daily_circling_pilot`](#daily_circling_pilot), [`daily_circling_time`](#daily_circling_time), [`daily_cruise`](#daily_cruise), [`daily_flight_classes`](#daily_flight_classes), [`daily_flights`](#daily_flights), [`daily_gaggles`](#daily_gaggles), [`daily_helicopter_night`](#daily_helicopter_night), [`daily_hours_solar`](#daily_hours_solar), [`daily_launches`](#daily_launches), [`daily_mixed_thermals`](#daily_mixed_thermals), [`daily_routes`](#daily_routes), [`daily_thermal_sites`](#daily_thermal_sites), [`daily_thermals`](#daily_thermals), [`daily_tug_time`](#daily_tug_time), [`daily_tug_tows`](#daily_tug_tows), [`daily_wave`](#daily_wave)
 - Other (1): [`nightly_runs`](#nightly_runs)
@@ -850,6 +852,29 @@ One OGN or FANET ground station on a day, by exact name: availability, the last 
 - Read by: `sources.py` `SourceTracker.coverage_gaps_stats`, `SourceTracker.station_stats`, `SourceTracker.stations_stats`
 - Published through: `/conspicuity-monitor/api/coverage-gaps`, `/conspicuity-monitor/api/stations`, `/conspicuity-monitor/api/stations/<path:name>`
 - History: `schema/2026-10-17-stations.sql` (created); `schema/2026-10-17-stations-sensitivity.sql` (adds sensitivity_db, adds sensitivity_partners, adds sensitivity_fixes, adds sensitivity_low_share). Grants in `schema/2026-10-17-stations.sql`
+- Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
+
+## Station reception rose
+
+One row per day, station and source (METHOD.md 10.7), written by `tools/station_rose_backfill.py` and later by the nightly. The last 30 days are kept.
+
+### `daily_station_rose`
+
+The direct airborne receptions of a station on one source in a day, in 36 sectors of 10 degrees by bearing from the station. The payload is JSON: one entry per sector that heard anything, [sector, receptions with a signal, sum of dB scaled to 10 km, [16 counts by distance]]. No address is kept.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `station` | varchar(64) |  | 2 |
+| `source` | varchar(9) |  | 3 |
+| `n_total` | int(10) unsigned |  |  |
+| `payload` | text |  |  |
+
+- Defined in: METHOD.md 10.7
+- Written by: `tools/station_rose_backfill.py` `write`
+- Read by: `sources.py` `SourceTracker.station_rose`
+- Published through: `/api/stations/<name>/rose`
+- History: `schema/2026-10-25-station-rose.sql` (created). Grants in `schema/2026-10-25-station-rose.sql`
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
 
 ## Nightly: devices by country and region
