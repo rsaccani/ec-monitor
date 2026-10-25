@@ -2408,6 +2408,17 @@ class SourceTracker:
         totals, detail, grid, pattern, prediction, hours = taken
         if not totals and not detail and not grid and not pattern and not prediction and not hours:
             return conn
+        if conn is not None:
+            # The connection sits idle between flushes, so a MariaDB restart
+            # leaves it dead, and the first batch written on it was lost (24
+            # October 2026, 59 daily_visibility rows). A ping finds that out
+            # before anything is sent and reconnects, so no batch can be
+            # written twice.
+            try:
+                conn.ping(reconnect=True)
+            except pymysql.MySQLError as e:
+                logger.error(f"Database connection lost before a visibility flush: {e}")
+                conn = None
         flushed = datetime.datetime.utcnow().replace(microsecond=0)
         rows = [(day, tocall, via, cat, flushed, int(v[0]), int(v[1]), int(v[2]), int(v[3]), int(v[4])) +
                 tuple(round(x, 1) for x in v[5:])
