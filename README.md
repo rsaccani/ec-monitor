@@ -92,9 +92,11 @@ MariaDB every 15 minutes, counted from the worker's start, and once more when th
 deploy, a restart or a reboot keeps what accumulated since the last write. The exit write fits in
 gunicorn's 30-second graceful timeout together with the requests still in flight; a worker killed
 after that, or one that crashes, still loses up to 15 minutes. Height above ground comes from a terrain model, a raw int16 grid cut from ETOPO 2022 at
-15 arc-seconds (`data/europe_15s.i16`, with its bounds and step in the `.json` beside it, or the path in
-`ADSL_DEM`); it is about 300 MB and is not in the repository. Without it, height above ground is recorded
-as unknown.
+15 arc-seconds, with its bounds and step in the `.json` beside it: `data/europe_15s.i16` by default (35–72° N,
+25° W–45° E, about 300 MB), or the file named by `ADSL_DEM` in `.env`, such as `data/world_15s.i16`
+(60° S–90° N, all longitudes, 6.2 GB, cut the same way, so that its European part is the same grid cell for
+cell). Neither is in the repository. Outside the grid, or without one, height above ground is recorded as
+unknown.
 
 Until 3 October 2026 this project was called `ads-l-map` and only mapped ADS-L devices. The production
 service, its directory and the `ads_l` database still carry that name.
@@ -182,7 +184,11 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/stations`
 **Method:** GET
-**Description:** Ground stations (OGN receivers and FANET ground stations such as GXAirCom), METHOD.md section 10.5, from `nightly.py`. A station has an open maintenance note when one of the checks of 10.5 applies to it that day. `days` has one entry per UTC day computed: the stations judged (`judged`), those with no open note (`without_note`, `share_without_note`), the radio packets they forwarded (`packets`) and those that went through a station with an open note (`packets_through_open_note`, `share_packets_through_open_note`). Each day also has the sensitivity figures of the network: `sensitivity_k`, the slope of the reported signal per tenfold distance fitted that night (20 is free space), and `sensitivity_judged`, the stations compared with their neighbours; the response gives `free_space_k` (20) and `sensitivity_low_share` (the partner share from which a card says a station is low against nearly all its neighbours). `stations_by_note` counts the stations of `latest_day` per note code; `notes` gives each code's title, rule, threshold, unit, meaning, remedy and links to the OGN documentation; `stations_with_note` lists, per note code, the stations that carry it on `latest_day` with the figure that opened it, the packets they forwarded and the days of the window it was open, most packets first; `stations` lists the names seen in the last `window_days` (30) for a search box. `?format=csv` gives the rows of `days`.
+**Description:** Ground stations (OGN receivers and FANET ground stations such as GXAirCom), METHOD.md section 10.5, from `nightly.py`. A station has an open maintenance note when one of the checks of 10.5 applies to it that day. `days` has one entry per UTC day computed: the stations judged (`judged`), those with no open note (`without_note`, `share_without_note`), the radio packets they forwarded (`packets`) and those that went through a station with an open note (`packets_through_open_note`, `share_packets_through_open_note`). Each day also has the sensitivity figures of the network: `sensitivity_k`, the slope of the reported signal per tenfold distance fitted that night (20 is free space), and `sensitivity_judged`, the stations compared with their neighbours; the response gives `free_space_k` (20) and `sensitivity_low_share` (the partner share from which a card says a station is low against nearly all its neighbours). `stations_by_note` counts the stations of `latest_day` per note code; `notes` gives each code's title, rule, threshold, unit, meaning, remedy and links to the OGN documentation; `stations_with_note` lists, per note code, the stations that carry it on `latest_day` with the figure that opened it, the packets they forwarded and the days of the window it was open, most packets first; `stations` lists the names seen in the last `window_days` (30) for a search box. `census` counts the stations heard over the last `window_days` (from 25 October 2026): `stations`, `with_traffic` (forwarded at least one radio packet of an aircraft on any day of the window) and `without_traffic`, with `first_day` and `last_day`, the same per kind in `by_kind`, and per country in `by_country` (ISO code, null at sea), each with its `regions` (METHOD.md 10.5). `?format=csv` gives the rows of `days`.
+
+### `/conspicuity-monitor/api/station-map`
+**Method:** GET
+**Description:** The stations heard in the last 30 days that reported a position, for the map of the stations page (from 25 October 2026): `stations` holds one array per station in the order of `fields`: name, latitude and longitude rounded to 3 decimals (about 100 m), kind, country (ISO code), region, the last day heard and the last day it forwarded an aircraft (null if none in the window). `first_day` and `last_day` bound the days present. `?format=csv` gives one row per station.
 
 ### `/conspicuity-monitor/api/stations/<name>`
 **Method:** GET
@@ -326,32 +332,45 @@ them.
 
 ## Data from others
 
-`data/places-europe.tsv` names the thermal places of PATTERNS.md section 3. It is the GeoNames list of
-places with 5,000 or more inhabitants (`cities5000`, downloaded on 7 October 2026 from
-https://download.geonames.org/export/dump/), reduced to 34–72° N and 25° W–45° E and to name, country,
-latitude, longitude and population, with districts of cities and historical or abandoned places left out
-(20,263 places). GeoNames data are licensed under the
-[Creative Commons Attribution 4.0 License](https://creativecommons.org/licenses/by/4.0/), © GeoNames
-(https://www.geonames.org/).
+The four files below were first cut to Europe, 34–72° N and 25° W–45° E, and were extended to the world
+on 25 October 2026. In each, the rows inside that box are exactly those of the European file, so that no
+name in Europe changed; the rows outside it come from the world-wide extraction of that night, built with
+the same rules as far as they could be reconstructed.
+
+`data/places-world.tsv` names the thermal places of PATTERNS.md section 3. It is the GeoNames list of
+places with 5,000 or more inhabitants (`cities5000`, from https://download.geonames.org/export/dump/),
+reduced to name, country, latitude, longitude and population, with districts of cities and historical,
+abandoned or destroyed places left out (feature codes PPLX, PPLH, PPLQ, PPLW): 20,263 places in Europe,
+downloaded on 7 October 2026, and 44,299 elsewhere, downloaded on 24 October. GeoNames data are licensed
+under the [Creative Commons Attribution 4.0 License](https://creativecommons.org/licenses/by/4.0/),
+© GeoNames (https://www.geonames.org/).
 
 `data/fivl-sites.tsv`: flying sites of the FIVL windgram service, courtesy of FIVL (Federazione Italiana
 Volo Libero, https://www.fivl.it/): the 416 sites FIVL gave cumulus.it for its windgram forecasts, with
 id, name, latitude and longitude only.
 
 `data/osm-takeoffs.tsv` and `data/osm-airfields.tsv`: free-flight take-offs (`free_flying:site` naming a
-take-off or launch, or `sport=free_flying` with a name that is not a landing field's; 4,602) and aerodromes (`aeroway=aerodrome`, named,
-military ones left out; 6,634, with `icao` where present and `gliding` = 1 for the 228 tagged for gliding)
-within 34–72° N and 25° W–45° E, extracted from OpenStreetMap with one Overpass query on 7 October 2026
-(data as of 19:37 UTC). © OpenStreetMap contributors, available under the
+take-off or launch, or `sport=free_flying` with a name that is not a landing field's) and aerodromes
+(`aeroway=aerodrome`, named, military ones left out, with `icao` where present and `gliding` = 1 for those
+tagged for gliding), extracted from OpenStreetMap with Overpass: in Europe 4,602 take-offs and 6,634
+aerodromes (228 for gliding) on 7 October 2026, elsewhere 556 take-offs and 35,469 aerodromes on
+24 October. © OpenStreetMap contributors, available under the
 [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/) (https://www.openstreetmap.org/copyright).
 
-`data/landmarks-europe.tsv`: named peaks, volcanoes, saddles and mountain passes within 34–72° N and
-25° W–45° E with at least 3 Wikidata sitelinks (17,901), which name take-offs and probable wave where no
-town is close (PATTERNS.md sections 3 and 8). Names and positions © OpenStreetMap contributors, under the
-[Open Database License](https://opendatacommons.org/licenses/odbl/1-0/); sitelink counts from
-[Wikidata](https://www.wikidata.org/), [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Extracted
-on 8 October 2026 with the scripts in `tools/landmarks/`, whose README gives the yearly refresh and the
-areas still missing.
+`data/landmarks-world.tsv`: named peaks, volcanoes, saddles and mountain passes with at least 3 Wikidata
+sitelinks, which name take-offs and probable wave where no town is close (PATTERNS.md sections 3 and 8).
+In Europe they are the 17,901 OpenStreetMap features of 8 October 2026, built with the scripts in
+`tools/landmarks/`, whose README gives the yearly refresh and the areas still missing; names and positions
+© OpenStreetMap contributors, under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/).
+Elsewhere they are 24,695 Wikidata items (instances of mountain Q8502, volcano Q8072 or mountain pass
+Q133056, or of their subclasses) queried on 24 October 2026, with Wikidata's coordinates and label and no
+elevation, since Wikidata stores some in feet. Sitelink counts and these items from
+[Wikidata](https://www.wikidata.org/), [CC0](https://creativecommons.org/publicdomain/zero/1.0/).
+
+`data/admin1-world.tsv.gz`: the country and region of a ground station (METHOD.md 10.5), from the Natural
+Earth admin-1 states and provinces at 1:10 million (https://www.naturalearthdata.com/, public domain),
+merged into one shape per country and region and simplified to 0.002 degrees by
+`tools/admin1/build_admin1.py`, which says how regions are grouped; 7,894 rings, 4.8 MB compressed.
 
 Wind for the probable wave of PATTERNS.md section 8: `nightly.py` asks the Open-Meteo historical forecast
 API (https://historical-forecast-api.open-meteo.com/v1/forecast, no key) once a night for the wind and

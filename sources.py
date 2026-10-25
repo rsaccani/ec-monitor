@@ -510,8 +510,13 @@ UNKNOWN_BAND = 255
 # place (daily_drone_encounters, daily_crewed_encounters; 9 October 2026).
 NO_CELL = -32768
 CELL_DEG = 0.25
-DEM_PATH = os.environ.get("ADSL_DEM", os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                    "data", "europe_15s.i16"))
+DEM_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "europe_15s.i16")
+
+
+def dem_path():
+    """The terrain model: ADSL_DEM, read when asked so that a value in .env counts
+    (it is loaded after this module is imported), else DEM_DEFAULT."""
+    return os.environ.get("ADSL_DEM") or DEM_DEFAULT
 
 
 def flying(category, pspeed, speed):
@@ -777,7 +782,7 @@ PREFERENCE_MIN_THERMALS = (5, 10)
 THERMAL_CELL_MIN = 20     # thermals in a month before a 1-degree cell of climb rates is published
 THERMAL_CELLS_PER_DEG = 4 # daily_thermals cells are 0.25 degree (PATTERNS.md, section 3)
 THERMAL_PLACES_TOP = 15   # entries in each ranking of thermal places, per kind
-PLACES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "places-europe.tsv")
+PLACES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "places-world.tsv")
 PLACE_NEAR_M = 25000      # a cell with no place inside takes the nearest within this of its centre
 # Flying sites name a cell first (PATTERNS.md, section 3, 7 October 2026):
 # the one nearest the cell's centre, inside the cell or within 5 km of its edge.
@@ -808,10 +813,10 @@ COMPASS_WORDS = frozenset("""
 SITE_TOWN_M = 50000       # the nearest town is looked for this far
 SITE_SAME_M = 1000        # the same name this close is one site mapped twice
 # Peaks and passes name what a town does not (PATTERNS.md, sections 3 and 8,
-# 8 October 2026): data/landmarks-europe.tsv, OpenStreetMap peaks, volcanoes,
+# 8 October 2026): data/landmarks-world.tsv, OpenStreetMap peaks, volcanoes,
 # saddles and passes with at least 3 Wikidata sitelinks, so that a summit
 # known in three languages names a place and an unnamed hump does not.
-LANDMARKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "landmarks-europe.tsv")
+LANDMARKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "landmarks-world.tsv")
 # A generic or shared take-off keeps the town when it is within SITE_TOWN_NEAR_M:
 # "Startplatz (Lenggries)" says where it is. Further away, a peak or pass says
 # it better: the nearest within SITE_LANDMARK_NEAR_M (the mountain the take-off
@@ -967,7 +972,7 @@ COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 
 def _load_places():
-    """data/places-europe.tsv: GeoNames cities5000 within 34-72 N, 25 W-45 E
+    """data/places-world.tsv: GeoNames cities5000 (README, "Data from others")
     (name, country, lat, lon, population; CC BY 4.0), indexed by thermal cell."""
     global _places
     by_cell = collections.defaultdict(list)
@@ -1018,7 +1023,7 @@ def _load_sites():
 
 
 def _load_landmarks():
-    """data/landmarks-europe.tsv (README, "Data from others"), indexed by 0.25-degree cell."""
+    """data/landmarks-world.tsv (README, "Data from others"), indexed by 0.25-degree cell."""
     global _landmarks
     by_cell = collections.defaultdict(list)
     try:
@@ -1033,6 +1038,93 @@ def _load_landmarks():
     except (OSError, ValueError) as e:
         logger.error(f"No peaks and passes for place names ({e})")
     _landmarks = by_cell
+
+
+# Country and region of a point (the stations page, 25 October 2026): Natural
+# Earth admin-1 rings, built by tools/admin1/build_admin1.py, which says how
+# regions are grouped. Edges are indexed by ring and band of latitude, so a
+# ray cast reads the few edges near the point instead of a whole coastline.
+ADMIN1_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "admin1-world.tsv.gz")
+ADMIN1_BAND_DEG = 0.1
+ADMIN1_SNAP_DEG = (0.01, 0.03, 0.05)   # a point just off a simplified coast tries these offsets, up to about 5 km
+_admin1 = None                         # (rings, {(lat cell, lon cell): ring ids}); rings: (cc, region, xs, ys, bbox, bands)
+_region_cache = {}
+
+
+def _load_admin1():
+    global _admin1
+    import array
+    import gzip
+    rings, cells = [], collections.defaultdict(list)
+    try:
+        with gzip.open(ADMIN1_PATH, "rt", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                cc, region, ring = line.rstrip("\n").split("\t")
+                xs, ys = array.array("d"), array.array("d")
+                for pair in ring.split():
+                    x, y = pair.split(",")
+                    xs.append(float(x))
+                    ys.append(float(y))
+                bands = collections.defaultdict(lambda: array.array("i"))
+                for i in range(len(xs) - 1):
+                    lo, hi = sorted((ys[i], ys[i + 1]))
+                    for b in range(math.floor(lo / ADMIN1_BAND_DEG), math.floor(hi / ADMIN1_BAND_DEG) + 1):
+                        bands[b].append(i)
+                bbox = (min(xs), min(ys), max(xs), max(ys))
+                rid = len(rings)
+                rings.append((cc or None, region or None, xs, ys, bbox, dict(bands)))
+                for la in range(math.floor(bbox[1]), math.floor(bbox[3]) + 1):
+                    for lo_ in range(math.floor(bbox[0]), math.floor(bbox[2]) + 1):
+                        cells[(la, lo_)].append(rid)
+    except (OSError, ValueError) as e:
+        logger.error(f"No country boundaries for the stations ({e})")
+    _admin1 = (rings, dict(cells))
+
+
+def _inside(ring, lat, lon):
+    _, _, xs, ys, bbox, bands = ring
+    if not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
+        return False
+    inside = False
+    for i in bands.get(math.floor(lat / ADMIN1_BAND_DEG), ()):
+        y1, y2 = ys[i], ys[i + 1]
+        if (y1 > lat) != (y2 > lat):
+            x1, x2 = xs[i], xs[i + 1]
+            if lon < x1 + (lat - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+    return inside
+
+
+def region_at(lat, lon):
+    """(ISO country code, region) of a point, or (None, None) at sea. A point in two rings (an enclave
+    such as San Marino inside Italy, whose hole the file leaves out) takes the smaller."""
+    key = (round(lat, 4), round(lon, 4))
+    if key in _region_cache:
+        return _region_cache[key]
+    if _admin1 is None:
+        _load_admin1()
+    rings, cells = _admin1
+    found = (None, None)
+    for d in (0,) + ADMIN1_SNAP_DEG:
+        offsets = ((0, 0),) if d == 0 else ((d, 0), (-d, 0), (0, d), (0, -d), (d, d), (d, -d), (-d, d), (-d, -d))
+        best = None
+        for dl, dc in offsets:
+            la, lo = lat + dl, lon + dc
+            for rid in cells.get((math.floor(la), math.floor(lo)), ()):
+                r = rings[rid]
+                if _inside(r, la, lo):
+                    area = (r[4][2] - r[4][0]) * (r[4][3] - r[4][1])
+                    if best is None or area < best[0]:
+                        best = (area, r[0], r[1])
+            if best is not None:
+                break
+        if best is not None:
+            found = (best[1], best[2])
+            break
+    _region_cache[key] = found
+    return found
 
 
 _country_cache = {}
@@ -1575,31 +1667,73 @@ STATION_NOTES = {
 }
 
 
+def _station_window(cur, latest):
+    """Per station name over the STATION_WINDOW_DAYS ending on `latest`: the kind and position of its last
+    day with a position, the last day it was heard, the last day it forwarded an aircraft, and the
+    packets forwarded. Also the first day present in the window."""
+    cur.execute("""SELECT name, day, kind, lat, lon, packets_forwarded FROM daily_stations
+                   WHERE day > %s - INTERVAL %s DAY ORDER BY day""", (latest, STATION_WINDOW_DAYS))
+    st, first = {}, None
+    for name, day, kind, lat, lon, packets in cur.fetchall():
+        first = first or day
+        s = st.setdefault(name, {"kind": kind, "lat": None, "lon": None, "heard": day, "traffic": None, "packets": 0})
+        s["kind"], s["heard"] = kind, day
+        if lat is not None:
+            s["lat"], s["lon"] = float(lat), float(lon)
+        if packets:
+            s["packets"] += int(packets)
+            s["traffic"] = day
+    return st, first
+
+
+def _counts(group):
+    with_traffic = sum(1 for s in group if s["packets"] > 0)
+    return {"stations": len(group), "with_traffic": with_traffic, "without_traffic": len(group) - with_traffic}
+
+
 def station_census(cur, latest):
     """The stations heard over the STATION_WINDOW_DAYS ending on `latest`: every name with a row, that is
     with beacons, and how many of them forwarded at least one radio packet of an aircraft on any day of
-    the window. A name is counted once, under the kind of its last day. None before the first night."""
+    the window; overall, per kind, and per country and region (region_at) of their last position. A name
+    is counted once, under the kind of its last day. None before the first night."""
     if not latest:
         return None
-    cur.execute("""SELECT name, day, kind, packets_forwarded FROM daily_stations
-                   WHERE day > %s - INTERVAL %s DAY""", (latest, STATION_WINDOW_DAYS))
-    kind_of, last_day, forwarded = {}, {}, collections.Counter()
-    first = None
-    for name, day, kind, packets in cur.fetchall():
-        if name not in last_day or day > last_day[name]:
-            last_day[name], kind_of[name] = day, kind
-        forwarded[name] += int(packets or 0)
-        first = day if first is None or day < first else first
-    def counts(names):
-        with_traffic = sum(1 for n in names if forwarded[n] > 0)
-        return {"stations": len(names), "with_traffic": with_traffic, "without_traffic": len(names) - with_traffic}
-    by_kind = collections.defaultdict(list)
-    for name, kind in kind_of.items():
-        by_kind[kind].append(name)
-    out = counts(list(kind_of))
+    st, first = _station_window(cur, latest)
+    by_kind, by_place = collections.defaultdict(list), collections.defaultdict(lambda: collections.defaultdict(list))
+    for s in st.values():
+        by_kind[s["kind"]].append(s)
+        cc, region = region_at(s["lat"], s["lon"]) if s["lat"] is not None else (None, None)
+        by_place[cc or ""][region or ""].append(s)
+    countries = []
+    for cc, regions in by_place.items():
+        row = _counts([s for g in regions.values() for s in g])
+        row["country"] = cc or None
+        row["regions"] = sorted(({"region": r or None, **_counts(g)} for r, g in regions.items()),
+                                key=lambda x: (-x["stations"], x["region"] or ""))
+        countries.append(row)
+    countries.sort(key=lambda x: (-x["stations"], x["country"] or ""))
+    out = _counts(list(st.values()))
     out.update({"window_days": STATION_WINDOW_DAYS, "first_day": first.isoformat() if first else None,
-                "last_day": latest, "by_kind": {k: counts(v) for k, v in sorted(by_kind.items())}})
+                "last_day": latest, "by_kind": {k: _counts(v) for k, v in sorted(by_kind.items())},
+                "by_country": countries})
     return out
+
+
+def station_points(cur, latest):
+    """The stations of the window with a position, for the map: name, latitude, longitude (3 decimals,
+    about 100 m), kind, country, region, the last day heard and the last day with traffic (null if none)."""
+    if not latest:
+        return {"window_days": STATION_WINDOW_DAYS, "last_day": None, "stations": []}
+    st, first = _station_window(cur, latest)
+    rows = []
+    for name, s in sorted(st.items()):
+        if s["lat"] is None:
+            continue
+        cc, region = region_at(s["lat"], s["lon"])
+        rows.append([name, round(s["lat"], 3), round(s["lon"], 3), s["kind"], cc, region, s["heard"].isoformat(),
+                     s["traffic"].isoformat() if s["traffic"] else None])
+    return {"window_days": STATION_WINDOW_DAYS, "first_day": first.isoformat() if first else None, "last_day": latest,
+            "fields": ["name", "lat", "lon", "kind", "country", "region", "last_heard", "last_traffic"], "stations": rows}
 
 
 def station_note_state(info, row):
@@ -1652,7 +1786,7 @@ class SourceTracker:
         self.visibility_cache = (0, None)
         self.detail = collections.defaultdict(lambda: [0.0] * len(DETAIL_COLUMNS))
         self.grid = collections.defaultdict(lambda: [0.0] * len(GRID_COLUMNS))
-        self.terrain = Terrain(DEM_PATH)
+        self.terrain = Terrain(dem_path())
         self.stations = {}        # receiver name -> (lat, lon), from their own position reports
         self.pattern = collections.defaultdict(lambda: [0.0, 0.0, 0.0])
         self.history = {}         # (device, source, via) -> deque of recent fixes
@@ -1681,6 +1815,7 @@ class SourceTracker:
         self.drones_cache = (0, None)
         self.quality_cache = (0, None)
         self.stations_cache = (0, None)
+        self.station_map_cache = (0, None)
         self.coverage_gaps_cache = (0, None)
         self.snapshots_cache = (0, None)
         self.encounters_cache = (0, None)
@@ -2490,7 +2625,8 @@ class SourceTracker:
                                 ("pattern", self.pattern_stats), ("sources", self.monthly_stats),
                                 ("visibility", self.visibility_stats), ("patterns", self.patterns_stats),
                                 ("drones", self.drones_stats), ("quality", self.quality_stats),
-                                ("stations", self.stations_stats), ("coverage gaps", self.coverage_gaps_stats),
+                                ("stations", self.stations_stats), ("station map", self.station_map),
+                                ("coverage gaps", self.coverage_gaps_stats),
                                 ("snapshots", self.snapshots_stats), ("encounters", self.encounters_stats)):
                     try:
                         f()
@@ -3541,6 +3677,14 @@ class SourceTracker:
                     "notes": self.station_note_info(), "window_days": STATION_WINDOW_DAYS,
                     "stations": names}
         return self._cached("stations", "stations_cache", compute)
+
+    def station_map(self):
+        """The stations of the last 30 days with their position, for the map of the stations page."""
+        def compute(cur):
+            cur.execute("SELECT MAX(day) FROM daily_stations")
+            latest = cur.fetchone()[0]
+            return station_points(cur, latest.isoformat() if latest else None)
+        return self._cached("station_map", "station_map_cache", compute)
 
     def station_stats(self, name):
         """One station, by its exact name (case counts): its last 30 days and its notes.

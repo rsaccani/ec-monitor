@@ -1212,7 +1212,7 @@ class Nightly:
         self.exclusions = sources.load_exclusions()   # windows of bad feed, ignored whole (24 October 2026)
         self.pre_gen = 0                       # feed breaks met by the first pass
         self.d1 = self.d0 + 86400
-        self.terrain = sources.Terrain(sources.DEM_PATH)
+        self.terrain = sources.Terrain(sources.dem_path())
         self.lines = 0
         # stream state, as in the service
         self.last_fix = {}                     # (src, tocall, via) -> (t, lat, lon)

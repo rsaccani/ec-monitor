@@ -992,6 +992,23 @@ def get_stations():
         return jsonify({})
 
 
+@app.route(API + "/station-map")
+def get_station_map():
+    """The stations heard in the last 30 days with their position, country and region, and the last day
+    heard and with traffic, for the map of the stations page (METHOD.md, section 10.5)."""
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    try:
+        out = tracker.station_map()
+        def rows():
+            d = out.thaw() if isinstance(out, sources.Frozen) else out
+            return [dict(zip(d["fields"], r)) for r in d.get("stations", [])]
+        return respond(out, "station-map", build_rows=rows)
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading daily_stations: {e}")
+        return jsonify({})
+
+
 @app.route(API + "/coverage-gaps")
 def get_coverage_gaps():
     """Where a new station would help most: lost flying time per cell, last 28 days (METHOD.md, section 10.5)."""

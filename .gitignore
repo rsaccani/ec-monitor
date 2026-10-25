@@ -215,9 +215,10 @@ CLAUDE.md
 # site lists naming thermal cells are tracked (README, "Data from others"),
 # and so is the list of windows in which the feed is known bad.
 data/*
-!data/places-europe.tsv
+!data/places-world.tsv
 !data/fivl-sites.tsv
 !data/osm-takeoffs.tsv
 !data/osm-airfields.tsv
-!data/landmarks-europe.tsv
+!data/landmarks-world.tsv
+!data/admin1-world.tsv.gz
 !data/feed-exclusions.txt

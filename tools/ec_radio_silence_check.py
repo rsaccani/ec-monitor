@@ -34,7 +34,7 @@ def lines(paths):
 
 
 def main():
-    terr = sources.Terrain(sources.DEM_PATH)
+    terr = sources.Terrain(sources.dem_path())
     last = {}
     judged = collections.Counter()
     late_by_len = collections.Counter()

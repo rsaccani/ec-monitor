@@ -67,7 +67,7 @@ def load_ddb():
 
 
 def main():
-    terr = sources.Terrain(sources.DEM_PATH)
+    terr = sources.Terrain(sources.dem_path())
     models, notrack = load_ddb()
     drone_addr = {}                       # address -> set of tocalls declaring 13 / Remote ID
     adsb = set()
