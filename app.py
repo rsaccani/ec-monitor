@@ -17,6 +17,7 @@ from io import StringIO
 import atexit
 from dotenv import load_dotenv
 import os
+import shutil
 import subprocess
 
 import check
@@ -1201,6 +1202,70 @@ def internal_memory():
         status = {l.split(":")[0]: l.split(":")[1].strip() for l in f if l.startswith(("VmRSS", "RssAnon", "RssFile", "VmSwap"))}
     return jsonify({"status": status, "seconds": round(time.time() - t0, 1),
                     "total_mb": round(sum(r["mb"] for r in rows), 1), "rows": rows})
+
+
+WORKER_STARTED = time.time()
+
+
+def _dir_files(path):
+    """(name, bytes) of the regular files directly in path; empty if it is missing."""
+    try:
+        return [(e.name, e.stat().st_size) for e in os.scandir(path) if e.is_file()]
+    except OSError:
+        return []
+
+
+@app.route("/internal/resources")
+def internal_resources():
+    """What the monitor costs now, read in milliseconds: the worker's memory and
+    CPU, the host's memory and disk, the size of each table, the raw recording
+    and the data files, and the last nightly runs (RESOURCES.md, 25 October
+    2026). Localhost only, as /internal/memory, which is the slow breakdown by
+    structure."""
+    if request.remote_addr != "127.0.0.1" or request.headers.get("X-Real-IP") \
+            or request.headers.get("X-Forwarded-For"):
+        return "Not found", 404
+    out = {"at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"}
+    with open("/proc/self/status") as f:
+        status = {l.split(":")[0]: l.split(":")[1].strip() for l in f
+                  if l.startswith(("VmRSS", "VmHWM", "RssAnon", "RssFile", "VmSwap"))}
+    cpu = os.times()
+    out["worker"] = {"status": status, "uptime_s": round(time.time() - WORKER_STARTED),
+                     "cpu_s": round(cpu.user + cpu.system, 1)}
+    with open("/proc/meminfo") as f:
+        mem = {l.split(":")[0]: int(l.split()[1]) // 1024 for l in f
+               if l.startswith(("MemTotal", "MemAvailable", "SwapTotal", "SwapFree"))}
+    disk = shutil.disk_usage("/")
+    out["host"] = {"memory_mb": mem, "load": os.getloadavg(),
+                   "disk_gb": {"total": round(disk.total / 1e9, 1), "free": round(disk.free / 1e9, 1)}}
+    raw = _dir_files(os.path.expanduser(os.getenv("EC_RAW_DIR") or ""))
+    days = collections.Counter()
+    for name, size in raw:
+        days[name[:8]] += size
+    out["raw"] = {"files": len(raw), "mb": round(sum(s for _, s in raw) / 1e6),
+                  "mb_by_day": {d: round(s / 1e6) for d, s in sorted(days.items())[-8:]}}
+    out["data_mb"] = {n: round(s / 1e6, 1) for n, s in sorted(_dir_files(os.path.join(os.path.dirname(__file__), "data")),
+                                                                key=lambda x: -x[1]) if s >= 1e6}
+    db = None
+    try:
+        db = get_db_connection(max_retries=1)
+        with db.cursor() as cur:
+            cur.execute("""SELECT table_name, table_rows, ROUND((data_length + index_length) / 1048576, 1)
+                               FROM information_schema.tables WHERE table_schema = DATABASE()
+                           ORDER BY data_length + index_length DESC""")
+            tables = cur.fetchall()
+            cur.execute("SELECT * FROM nightly_runs ORDER BY day DESC LIMIT 10")
+            cols = [c[0] for c in cur.description]
+            runs = [dict(zip(cols, r)) for r in cur.fetchall()]
+        out["db"] = {"mb": round(sum(float(t[2] or 0) for t in tables), 1),
+                     "tables": [{"name": t[0], "rows": t[1], "mb": float(t[2] or 0)} for t in tables]}
+        out["nightly"] = [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in r.items()} for r in runs]
+    except pymysql.MySQLError as e:
+        out["db_error"] = str(e)
+    finally:
+        if db is not None:
+            db.close()
+    return jsonify(out)
 
 
 def bootstrap():

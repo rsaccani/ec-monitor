@@ -775,7 +775,10 @@ against more than three days of traffic, and a day it changes has to be
 recomputed before its files are gone. From 24 October 2026 they are kept
 for 30 days, on a server with the disk for it, so that a correction found
 within a month can still be recomputed from the recording. Nothing older
-than 30 days exists.
+than 30 days exists, and fewer days are kept when the disk runs short: from
+25 October 2026 the oldest hours are deleted whenever less than 10 GB is free,
+down to the last two days, since a summer day may hold several times the feed
+of an October one.
 
 The recording holds the lines of the OGN feed as they arrive, with their time
 of reception, limited to positions inside 35–72° N and 25° W–45° E until
@@ -1435,6 +1438,39 @@ leaves no track; a cell where the probe never flies is left blank, even with
 plenty of flying of one-radio aircraft; and the best site within a cell, a
 ridge or a hut with a view, is for the club to find, with the lowest band
 heard as the guide.
+
+### 10.6 Devices by country and region
+
+From 25 October 2026 the nightly batch notes, for each device, the countries
+and regions where it flew that day. A device is a source's address: the same
+FLARM, FANET or app address on one system. It counts in a region when at
+least one of its positions there is airborne by the speed of section 1
+("Airborne"), at the day's majority category of its system. Positions on the
+ground, rotating random addresses, devices that asked not to be tracked and
+fixes the measures set aside are left out. Country and region come from the
+Natural Earth admin-1 boundaries of section 10.5, looked up once per cell of
+0.01 degree, about a kilometre, so a position within a kilometre of a border
+can fall on the wrong side. A position at sea has no country and is not
+counted.
+
+The addresses are kept for the current and the previous month (section 9).
+At the end of that time the month is reduced to distinct devices per
+country, region, source and category, and the addresses are deleted. Each
+level is counted on its own: a country's figure is the number of distinct
+devices that flew anywhere in it, never the sum of its regions, since a flight
+from the Grappa to Trentino puts one device in both Veneto and Trentino-Alto
+Adige and still counts it once for Italy. In the same way the figure for all
+sources counts once a device heard on two systems. A device's category for
+the month is the lowest category number it had on the system, the rule of
+the monthly device counts.
+
+A device is not a pilot: one pilot can carry a FLARM and a phone app, and an
+aircraft lends its device to several pilots. The counts follow the receiver
+coverage as much as the flying, since a valley without a station, or with a
+station down for a week, shows no radio device there however many fly. Small
+counts are published as they are, down to one device: the OGN feed itself
+publishes every position live to anyone, so a monthly count of a region
+says less about a pilot than its source does.
 
 ## 11. Known limits
 

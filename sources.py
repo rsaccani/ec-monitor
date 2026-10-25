@@ -214,6 +214,34 @@ SAME_SYSTEM_SQL = ("CASE " + " ".join(f"WHEN source = '{a}' AND LEFT(device_id, 
                    + " " + " ".join(f"WHEN source = '{a}' THEN '{b}'" for a, b in SAME_SYSTEM.items())
                    + " ELSE source END")
 
+
+def _region_summary_sql():
+    """The four statements that reduce daily_device_regions to monthly_region_summary (METHOD.md 10.6).
+
+    Every level is a count of distinct devices of its own: a country's row is never the sum of its
+    regions, since a flight across a border puts a device in both, and the all-sources row (source '')
+    counts once a device heard on two systems. A device's category is the lowest it had in the month,
+    per source, or over all its sources for the all-sources rows, as in monthly_sources_summary."""
+    month = "DATE_FORMAT(day, '%%Y-%%m')"
+    where = f"day < CONCAT(%s, '-01') AND {COUNTED_SQL}"
+    out = []
+    for per_source in (True, False):
+        src = SAME_SYSTEM_SQL if per_source else "''"
+        for level in ("region", "country"):
+            region = "r.region" if level == "region" else "''"
+            out.append(f"""INSERT INTO monthly_region_summary (month, country, region, source, category, devices)
+                SELECT r.month, r.country, {region}, r.src, c.cat, COUNT(DISTINCT r.device_id)
+                    FROM (SELECT DISTINCT {month} AS month, country, region, {src} AS src, device_id
+                              FROM daily_device_regions WHERE {where}) r
+                    JOIN (SELECT {month} AS month, {src} AS src, device_id, MIN(COALESCE(category, 255)) AS cat
+                              FROM daily_device_regions WHERE {where} GROUP BY 1, 2, 3) c
+                      ON c.month = r.month AND c.src = r.src AND c.device_id = r.device_id
+                GROUP BY r.month, r.country, {"r.region, " if level == "region" else ""}r.src, c.cat""")
+    return out
+
+
+REGION_SUMMARY_SQL = _region_summary_sql()
+
 # Names of the aircraft categories carried in bits 2-5 of the first byte of
 # the OGN "idXXYYYYYY" field (bits 0-1 are the address type, 6 no-track, 7
 # stealth). Moved here from app.py on 7 October 2026 with the ADS-L monthly
@@ -2532,6 +2560,9 @@ class SourceTracker:
                 """INSERT INTO monthly_routes_summary (month, airfield_a, airfield_b, flights, aircraft)
                    SELECT DATE_FORMAT(day, '%%Y-%%m'), airfield_a, airfield_b, SUM(flights), COUNT(DISTINCT address)
                        FROM daily_routes WHERE day < CONCAT(%s, '-01') GROUP BY 1, 2, 3"""]),
+            # Devices by country and region (METHOD.md 10.6, from 25 October 2026), reduced to
+            # distinct devices per month, country, region, source and category.
+            ("daily_device_regions", "day < CONCAT(%s, '-01')", REGION_SUMMARY_SQL),
         ]
         for table, where, summaries in steps:
             conn = None

@@ -67,6 +67,7 @@ each address was heard on each system, for one hour, and leaves the service only
 | The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | 30 days (`EC_RAW_DAYS`; seven until 24 October 2026) |
 | Thermals to each side per device address and day (`daily_circling_pilot`, `nightly.py`) | the current and the previous month; then reduced to counts and deleted |
 | Routes between airfields per device address and day (`daily_routes`, `nightly.py`, PATTERNS.md section 6) | the current and the previous month; then reduced to flights and distinct aircraft per route and month, and deleted |
+| Countries and regions where each device address flew, per day and source (`daily_device_regions`, `nightly.py`, METHOD.md section 10.6) | the current and the previous month; then reduced to distinct devices per month, country, region, source and category (`monthly_region_summary`), and deleted |
 | The nightly totals (`daily_*`: hours, circling, gaggles, parked aircraft, drones, data quality, ground stations by name) | indefinitely |
 
 A device address is personal data in the sense of the GDPR, since it can be traced to an aircraft and
@@ -85,6 +86,8 @@ and sums over longer periods, which contain no position of any identifiable airc
 rule also covers aggregates of this kind is not settled in the terms.
 
 ## How it runs
+
+What each part costs in memory, CPU, database and disk is in [RESOURCES.md](RESOURCES.md); `/internal/resources` on the host returns the current figures.
 
 One gunicorn worker runs a listener thread on the OGN feed (the whole feed, about 1,200 lines a second at a busy hour)
 and the Flask endpoints that the page reads. `sources.py` keeps the totals in memory and writes them to
@@ -294,6 +297,7 @@ section 9, which is off unless `EC_RAW_DIR` is set (`recorder.py` documents ever
 ```
 EC_RAW_DIR=/home/ecmon/ec-raw   # hourly files, compressed with zstd once the hour is over
 EC_RAW_DAYS=7                   # files older than this are deleted
+EC_RAW_MIN_FREE_GB=10           # below this much free disk the oldest hours go too, down to two days
 EC_RAW_KEEP=europe,no-airliners # or world; no-adsb drops every ADS-B packet
 EC_SCOPE=europe                 # what nightly.py measures: europe (the default) or world
 ```

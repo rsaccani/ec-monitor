@@ -350,12 +350,15 @@ FAMILIES = {
     # Ground stations (METHOD.md 10.5, 17 October 2026): a family of its own, so that a station table that is
     # missing or fails costs the others nothing.
     "stations": ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"),
+    # Devices by country and region (METHOD.md 10.6, 25 October 2026): a family of its own as well, since it
+    # holds addresses and is archived apart.
+    "regions": ("daily_device_regions",),
     "patterns": ("daily_thermal_sites", "daily_flight_classes", "daily_routes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
                  "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
                  "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
                  "daily_cruise", "daily_helicopter_night"),
 }
-TABLES = FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"]
+TABLES = FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] + FAMILIES["regions"]
 # The statistics endpoints whose monthly snapshot belongs to the patterns family.
 PATTERN_SNAPSHOTS = ("patterns",)
 
@@ -1094,6 +1097,20 @@ def station_guard(f):
     return guarded
 
 
+def region_guard(f):
+    """An error in the regions costs the regions their day and nothing else (METHOD.md 10.6)."""
+    def guarded(self, *args):
+        if not self.r:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The regions failed during the pass")
+            self.failed["regions"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.r = False
+    return guarded
+
+
 def coverage_guard(f):
     """An error in the coverage gaps costs the day its coverage rows and nothing else: the station
     notes and the sensitivity are written without them, and the run notes say so."""
@@ -1169,6 +1186,9 @@ class Nightly:
         self.p = True             # PATTERNS.md; switched off if its work fails during the pass
         self.cg_ok = True         # the coverage gaps of 10.5; switched off alone if they fail
         self.s = True             # METHOD.md 10.5, the stations; switched off if its work fails during the pass
+        self.r = True             # METHOD.md 10.6, devices by region; switched off if its work fails during the pass
+        self.anon_peak = 0        # MB, the largest anonymous memory sampled (anon_mb)
+        self.regions = {}         # (device, tocall, country, region) -> category, for an airborne fix there
         self.missing_hours = ()
         self.ddb_types, self.notrack = ddb[0], ddb[1]
         self.ddb_models = ddb[2] if len(ddb) > 2 else {}
@@ -1276,8 +1296,11 @@ class Nightly:
 
     # --- the pass ---------------------------------------------------------------
 
-    def progress(self):
-        """Memory and the size of what grows, for the log."""
+    def anon_mb(self):
+        """The process's anonymous memory now, in MB, and the largest seen so far
+        (nightly_runs.peak_anon_mb, from 25 October 2026). The RSS peak of the log
+        also counts the pages of the memory-mapped terrain file, which are cache:
+        919 MB against 183 MB anonymous on a world day."""
         anon = None
         try:
             with open("/proc/self/status") as f:
@@ -1286,6 +1309,13 @@ class Nightly:
                         anon = int(line.split()[1]) // 1024
         except OSError:
             pass
+        if anon is not None:
+            self.anon_peak = max(self.anon_peak, anon)
+        return anon
+
+    def progress(self):
+        """Memory and the size of what grows, for the log."""
+        anon = self.anon_mb()
         samples = sum(len(x[7]) for tr in self.circles.values() for x in tr.thermals)
         return (f"anon {anon} MB; streams {len(self.last_fix):,}, addresses {len(self.addr_fix):,}, "
                 f"circle tracks {len(self.circles):,} with {sum(len(t.thermals) for t in self.circles.values()):,} "
@@ -1730,6 +1760,8 @@ class Nightly:
         if id_category is not None and kind != "adsb":
             self.addr_cats[address][raw_category] += 1
         crewed_airborne = category in CREWED and (kt or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT)
+        if not rnd and (kt or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT):
+            self.region_fix(src, tocall, category, lat, lon)
         if category == DRONE:
             self.drone_fix(address, t, lat, lon, alt_m, course, kt)
         elif self.c and crewed_airborne and alt_m is not None and t - self.last_drone_t <= ENCOUNTER_ACTIVE:
@@ -2779,6 +2811,15 @@ class Nightly:
 
     # --- 5. quality: receivers ------------------------------------------------------------
 
+    @region_guard
+    def region_fix(self, device, tocall, category, lat, lon):
+        """METHOD.md 10.6: the country and region of an airborne fix, looked up once per 0.01-degree cell
+        (about a kilometre; region_at keeps what it found), since the same cells come back all day."""
+        cc, region = sources.region_at(round(lat, 2), round(lon, 2))
+        if cc is None:
+            return                              # at sea
+        self.regions.setdefault((device, tocall, cc, region or "-"), category)
+
     @station_guard
     def station_position(self, epoch, name, body):
         """A `&` beacon: the station is alive, and says where it is."""
@@ -3012,9 +3053,9 @@ class Nightly:
         patterns family is computed first, since the crewed encounters report
         the tows the launches find.
         """
-        out = {"conspicuity": {}, "patterns": {}, "stations": {}}
+        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}}
         for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity),
-                                ("stations", self.rows_stations)):
+                                ("stations", self.rows_stations), ("regions", self.rows_regions)):
             if family in self.failed:
                 continue                        # already failed during the pass
             try:
@@ -3024,6 +3065,13 @@ class Nightly:
                 self.failed[family] = f"rows: {type(e).__name__}: {e}"[:200]
                 out[family] = {}
         return out
+
+    def rows_regions(self):
+        """METHOD.md 10.6: one row per device, source, country and region with an airborne fix that day."""
+        day = self.day.isoformat()
+        return {"daily_device_regions": (("day", "device_id", "source", "category", "country", "region"),
+                                         [(day, d, tc, cat, cc, reg) for (d, tc, cc, reg), cat
+                                          in sorted(self.regions.items())])}
 
     STATION_COLUMNS = ("day", "name", "kind", "version", "lat", "lon", "availability", "beacons", "status_beacons",
                        "ntp_ms_last", "ntp_ms_median", "temp_c_last", "temp_c_median", "noise_db_last",
@@ -3725,8 +3773,8 @@ def snapshot_endpoints(family):
         return tuple(PATTERN_SNAPSHOTS)
     if family == "conspicuity":
         return tuple(e for e in every if e not in PATTERN_SNAPSHOTS)
-    if family == "stations":
-        return ()                       # no endpoint of the stations is frozen monthly: the table is the record
+    if family in ("stations", "regions"):
+        return ()                       # no endpoint of these is frozen monthly: the table is the record
     return tuple(every)
 
 
@@ -3825,7 +3873,7 @@ def write_run(run_row, notes):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM nightly_runs WHERE day = %s", (run_row[0],))
             cur.execute("INSERT INTO nightly_runs (day, finished_at, hours_read, hours_missing, line_count, seconds, "
-                        "notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", run_row + (notes[:255],))
+                        "peak_anon_mb, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", run_row + (notes[:255],))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -3843,6 +3891,19 @@ def print_dry_run(tables, run_row):
         print(f"\n== {table}: {len(rows)} rows")
         if table in ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"):
             continue                    # public names, but 2,600 of them: see print_stations_dry_run
+        if table == "daily_device_regions":
+            # Addresses: distinct devices per country, and per region for the first countries, only.
+            by_cc, by_reg = collections.defaultdict(set), collections.defaultdict(set)
+            for r in rows:
+                by_cc[r[4]].add(r[1])
+                by_reg[(r[4], r[5])].add(r[1])
+            top = sorted(by_cc, key=lambda c: -len(by_cc[c]))
+            print(f"   countries {len(by_cc)}, regions {len(by_reg)}, distinct devices "
+                  f"{len({r[1] for r in rows})}")
+            for cc in top[:25]:
+                regs = sorted(((len(v), reg) for (c, reg), v in by_reg.items() if c == cc), reverse=True)
+                print(f"   {cc} {len(by_cc[cc]):6d}: " + ", ".join(f"{reg or '-'} {k}" for k, reg in regs[:6]))
+            continue
         if table == "daily_hours_solar":
             by = collections.Counter()
             for r in rows:
@@ -4059,7 +4120,7 @@ def main():
         logger.error(f"No recording for {day}")
         return 1
     families = n.rows()
-    tables = {**families["conspicuity"], **families["patterns"], **families["stations"]}
+    tables = {**families["conspicuity"], **families["patterns"], **families["stations"], **families["regions"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
@@ -4102,8 +4163,9 @@ def main():
                     f"5-minute rule), {escort_only} more by the 5-minute rule alone")
         for (kinds, name, what), c in sorted(n.crewed_summary.items()):
             logger.info(f"Crewed encounters {kinds[0]} x {kinds[1]} {name} {what}: {c}")
+    n.anon_mb()                         # the rows of every family are built by now
     run_row = (day.isoformat(), datetime.datetime.utcnow().replace(microsecond=0), read,
-               ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1))
+               ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1), n.anon_peak)
     if args.dry_run:
         print_dry_run(tables, run_row)
         if "stations" not in n.failed:
@@ -4151,7 +4213,7 @@ def main():
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     failed = dict(n.failed)
     written = []
-    for family in ("conspicuity", "patterns", "stations"):
+    for family in ("conspicuity", "patterns", "stations", "regions"):
         if family in failed:
             continue
         if args.dry_run:
@@ -4178,7 +4240,7 @@ def main():
             if snapshot_endpoints(family):
                 snapshot(day.strftime("%Y-%m"), args.dry_run, family)
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    logger.info(f"Peak memory {rss / 1024:.0f} MB")
+    logger.info(f"Peak memory {rss / 1024:.0f} MB (RSS, terrain cache included), anonymous {n.anon_peak} MB")
     return 1 if failed else 0
 
 

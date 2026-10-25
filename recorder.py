@@ -11,7 +11,10 @@ changed tracker can be replayed on them. Each line is prefixed with the epoch
 time of reception. Files are hourly, written by this process only and
 compressed by a separate `zstd` process once the hour is over, so at most an
 hour of uncompressed feed is on disk. Files older than EC_RAW_DAYS days are
-deleted.
+deleted, and so are the oldest hours whenever the disk holding the recording
+has less than EC_RAW_MIN_FREE_GB free (default 10, from 25 October 2026), down
+to the last two days: a full disk would stop MariaDB, mail and the sites, and
+a summer day may hold several times the feed of an October one.
 
 EC_RAW_KEEP is a comma-separated list:
   europe        positions inside 35-72 N, 25 W-45 E only (default); world keeps all
@@ -36,6 +39,7 @@ import glob
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -84,19 +88,21 @@ def from_env(hidden):
     if not path:
         return None
     days = float(os.getenv("EC_RAW_DAYS", "7"))
+    min_free = float(os.getenv("EC_RAW_MIN_FREE_GB", "10"))
     keep = {k.strip() for k in os.getenv("EC_RAW_KEEP", "europe,no-airliners").split(",") if k.strip()}
     unknown = keep - {"europe", "world", "no-airliners", "no-jets", "no-adsb"}
     if unknown:
         raise ValueError(f"EC_RAW_KEEP: unknown {sorted(unknown)}")
-    return Recorder(path, days, keep, hidden)
+    return Recorder(path, days, keep, hidden, min_free)
 
 
 class Recorder:
-    def __init__(self, path, days, keep, hidden):
+    def __init__(self, path, days, keep, hidden, min_free=10):
         self.dir = os.path.expanduser(path)
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         os.chmod(self.dir, 0o700)
         self.days = days
+        self.min_free = min_free * 1e9
         self.europe = "world" not in keep
         self.no_airliners = "no-airliners" in keep
         self.no_jets = "no-jets" in keep or self.no_airliners
@@ -209,3 +215,22 @@ class Recorder:
         for path in glob.glob(os.path.join(self.dir, "*.aprs*")):
             if os.path.basename(path)[:len(cutoff)] < cutoff:
                 os.remove(path)
+        self.free_space(now)
+
+    def free_space(self, now):
+        """Delete the oldest compressed hours while the disk has less than
+        min_free bytes free, keeping the last two days."""
+        floor = time.strftime(NAME, time.gmtime(now - 2 * 86400))
+        removed = 0
+        for path in sorted(glob.glob(os.path.join(self.dir, "*.aprs.zst"))):
+            if shutil.disk_usage(self.dir).free >= self.min_free:
+                break
+            if os.path.basename(path)[:len(floor)] >= floor:
+                logger.error("Raw feed recording: disk below %.0f GB free with only two days kept",
+                             self.min_free / 1e9)
+                break
+            os.remove(path)
+            removed += 1
+        if removed:
+            logger.warning("Raw feed recording: %d oldest hours deleted to keep %.0f GB free",
+                           removed, self.min_free / 1e9)

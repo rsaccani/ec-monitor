@@ -109,6 +109,16 @@ CREATE TABLE IF NOT EXISTS `daily_cruise` (
   PRIMARY KEY (`day`,`kind`,`emitter`,`altitude_ref`,`altitude_band`,`speed_band`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE IF NOT EXISTS `daily_device_regions` (
+  `day` date NOT NULL,
+  `device_id` varchar(16) NOT NULL,
+  `source` varchar(9) NOT NULL,
+  `category` tinyint(3) unsigned DEFAULT NULL,
+  `country` char(2) NOT NULL,
+  `region` varchar(64) NOT NULL DEFAULT '',
+  PRIMARY KEY (`day`,`device_id`,`source`,`country`,`region`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS `daily_drone_cells` (
   `day` date NOT NULL,
   `evidence` tinyint(3) unsigned NOT NULL DEFAULT 2,
@@ -497,6 +507,16 @@ CREATE TABLE IF NOT EXISTS `monthly_reception_pattern` (
   PRIMARY KEY (`month`,`source`,`category`,`dist_band`,`sector`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE IF NOT EXISTS `monthly_region_summary` (
+  `month` char(7) NOT NULL,
+  `country` char(2) NOT NULL,
+  `region` varchar(64) NOT NULL DEFAULT '',
+  `source` varchar(9) NOT NULL DEFAULT '',
+  `category` tinyint(3) unsigned NOT NULL,
+  `devices` int(10) unsigned NOT NULL,
+  PRIMARY KEY (`month`,`country`,`region`,`source`,`category`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS `monthly_return_summary` (
   `month` char(7) NOT NULL,
   `source` varchar(9) NOT NULL,
@@ -648,6 +668,7 @@ CREATE TABLE IF NOT EXISTS `nightly_runs` (
   `hours_missing` varchar(80) NOT NULL DEFAULT '',
   `line_count` int(10) unsigned NOT NULL,
   `seconds` double NOT NULL,
+  `peak_anon_mb` smallint(5) unsigned DEFAULT NULL,
   `notes` varchar(255) NOT NULL DEFAULT '',
   PRIMARY KEY (`day`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

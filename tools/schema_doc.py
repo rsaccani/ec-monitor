@@ -71,6 +71,10 @@ GROUPS = (
     ("stations", "Nightly: ground stations",
      "One row per station and day (METHOD.md 10.5), a family of its own in nightly.py (FAMILIES) written in a "
      "third transaction, so that a failure here leaves the other families' day written."),
+    ("regions", "Nightly: devices by country and region",
+     "One row per device, day, source, country and region with an airborne position (METHOD.md 10.6), a "
+     "family of its own in nightly.py (FAMILIES) written in a transaction of its own. Holds addresses, "
+     "reduced to `monthly_region_summary` by `archive_loop` like `daily_routes`."),
     ("patterns", "Nightly: patterns family",
      "How light aviation flies (PATTERNS.md), from the same nightly run, written in a second transaction "
      "of its own so that a failure in one family leaves the other's day written."),
@@ -146,6 +150,11 @@ DESCRIPTIONS = {
         group="archive", doc="PATTERNS.md 6; METHOD.md 9",
         row="Flights and distinct aircraft of an archived month per pair of airfields: what is left of "
             "daily_routes."),
+    "monthly_region_summary": dict(
+        group="archive", doc="METHOD.md 9, 10.6",
+        row="Distinct devices of an archived month per country, region, source and category: what is left of "
+            "daily_device_regions. region '' is the whole country and source '' every source, each counted "
+            "as distinct devices at its own level."),
     "monthly_snapshot": dict(
         group="archive", doc="METHOD.md 9 (Monthly snapshots)",
         row="What one statistics endpoint published for a month, frozen the night its last day was computed: "
@@ -190,6 +199,10 @@ DESCRIPTIONS = {
         row="One check of a day for a system or an OGN receiver: how many of how many failed it, and the measured "
             "value where there is one. Receivers have a row only when flagged, plus one row per check named '*'."),
     # Nightly, stations
+    "daily_device_regions": dict(
+        group="regions", doc="METHOD.md 10.6; METHOD.md 9",
+        row="A device on one source with at least one airborne position in a country and region on a day. "
+            "Holds addresses: reduced to monthly_region_summary and deleted once the month is archived."),
     "daily_coverage_gaps": dict(
         group="stations", doc="METHOD.md 10.5",
         row="Per cell, family and band of height above the ground on a day: the radio seconds judged for the probe "
@@ -929,7 +942,7 @@ def main():
     for t in tables:
         if t not in DESCRIPTIONS:
             warn(f"table {t} has no entry in DESCRIPTIONS")
-        elif DESCRIPTIONS[t]["group"] in ("conspicuity", "patterns", "quality", "stations") and t not in families:
+        elif DESCRIPTIONS[t]["group"] in ("conspicuity", "patterns", "quality", "stations", "regions") and t not in families:
             warn(f"{t} is described as nightly ({DESCRIPTIONS[t]['group']}) but is not in nightly.FAMILIES")
         elif t in families and DESCRIPTIONS[t]["group"] not in (families[t], "quality"):
             warn(f"{t} is in nightly family {families[t]} but described as {DESCRIPTIONS[t]['group']}")

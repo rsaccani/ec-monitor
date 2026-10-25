@@ -18,6 +18,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - `ads_l.daily_circling_time`: SELECT, INSERT, DELETE
 - `ads_l.daily_coverage_gaps`: SELECT, INSERT, DELETE
 - `ads_l.daily_crewed_encounters`: SELECT, INSERT, DELETE
+- `ads_l.daily_device_regions`: SELECT, INSERT, DELETE (from `schema/2026-10-25-device-regions.sql`, once applied)
 - `ads_l.daily_cruise`: SELECT, INSERT, DELETE
 - `ads_l.daily_drone_cells`: SELECT, INSERT, DELETE
 - `ads_l.daily_drone_classes`: SELECT, INSERT, DELETE
@@ -61,10 +62,11 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 ## Contents
 
 - Monthly live counters (8): [`daily_visibility`](#daily_visibility), [`monthly_devices`](#monthly_devices), [`monthly_hours`](#monthly_hours), [`monthly_prediction`](#monthly_prediction), [`monthly_reception_pattern`](#monthly_reception_pattern), [`monthly_sources`](#monthly_sources), [`monthly_visibility_detail`](#monthly_visibility_detail), [`monthly_visibility_grid`](#monthly_visibility_grid)
-- Monthly archives and snapshots (9): [`monthly_circling_pilot_summary`](#monthly_circling_pilot_summary), [`monthly_circling_preference`](#monthly_circling_preference), [`monthly_devices_summary`](#monthly_devices_summary), [`monthly_return_summary`](#monthly_return_summary), [`monthly_routes_summary`](#monthly_routes_summary), [`monthly_snapshot`](#monthly_snapshot), [`monthly_sources_summary`](#monthly_sources_summary), [`monthly_systems_combo_summary`](#monthly_systems_combo_summary), [`monthly_systems_summary`](#monthly_systems_summary)
+- Monthly archives and snapshots (10): [`monthly_circling_pilot_summary`](#monthly_circling_pilot_summary), [`monthly_circling_preference`](#monthly_circling_preference), [`monthly_devices_summary`](#monthly_devices_summary), [`monthly_region_summary`](#monthly_region_summary), [`monthly_return_summary`](#monthly_return_summary), [`monthly_routes_summary`](#monthly_routes_summary), [`monthly_snapshot`](#monthly_snapshot), [`monthly_sources_summary`](#monthly_sources_summary), [`monthly_systems_combo_summary`](#monthly_systems_combo_summary), [`monthly_systems_summary`](#monthly_systems_summary)
 - Nightly: conspicuity family (9): [`daily_air_cells`](#daily_air_cells), [`daily_crewed_encounters`](#daily_crewed_encounters), [`daily_drone_cells`](#daily_drone_cells), [`daily_drone_classes`](#daily_drone_classes), [`daily_drone_encounters`](#daily_drone_encounters), [`daily_drone_extent`](#daily_drone_extent), [`daily_drones`](#daily_drones), [`daily_parked`](#daily_parked), [`daily_same_aircraft_pairs`](#daily_same_aircraft_pairs)
 - Nightly: data quality (1): [`daily_quality`](#daily_quality)
 - Nightly: ground stations (3): [`daily_coverage_gaps`](#daily_coverage_gaps), [`daily_station_sensitivity`](#daily_station_sensitivity), [`daily_stations`](#daily_stations)
+- Nightly: devices by country and region (1): [`daily_device_regions`](#daily_device_regions)
 - Nightly: patterns family (18): [`daily_agl_hours`](#daily_agl_hours), [`daily_circling`](#daily_circling), [`daily_circling_pilot`](#daily_circling_pilot), [`daily_circling_time`](#daily_circling_time), [`daily_cruise`](#daily_cruise), [`daily_flight_classes`](#daily_flight_classes), [`daily_flights`](#daily_flights), [`daily_gaggles`](#daily_gaggles), [`daily_helicopter_night`](#daily_helicopter_night), [`daily_hours_solar`](#daily_hours_solar), [`daily_launches`](#daily_launches), [`daily_mixed_thermals`](#daily_mixed_thermals), [`daily_routes`](#daily_routes), [`daily_thermal_sites`](#daily_thermal_sites), [`daily_thermals`](#daily_thermals), [`daily_tug_time`](#daily_tug_time), [`daily_tug_tows`](#daily_tug_tows), [`daily_wave`](#daily_wave)
 - Other (1): [`nightly_runs`](#nightly_runs)
 
@@ -384,6 +386,26 @@ Devices of an archived month per address type prefix and category (255: none rec
 - Read by: `sources.py` `adsl_monthly_stats`
 - Published through: `/conspicuity-monitor/api/adsl/monthly`
 - History: added to the hand-written `schema.sql` in `447349e` (2026-10-03)
+- Service user's privileges: SELECT, INSERT (database-wide)
+
+### `monthly_region_summary`
+
+Distinct devices of an archived month per country, region, source and category: what is left of daily_device_regions. region '' is the whole country and source '' every source, each counted as distinct devices at its own level.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `month` | char(7) |  | 1 |
+| `country` | char(2) |  | 2 |
+| `region` | varchar(64) | '' | 3 |
+| `source` | varchar(9) | '' | 4 |
+| `category` | tinyint(3) unsigned |  | 5 |
+| `devices` | int(10) unsigned |  |  |
+
+- Defined in: METHOD.md 9, 10.6
+- Written by: the service, `sources.py` `SourceTracker.archive_once`
+- Read by: none yet
+- Published through: none yet
+- History: `schema/2026-10-25-device-regions.sql` (created). Grants in `schema/2026-10-25-device-regions.sql`
 - Service user's privileges: SELECT, INSERT (database-wide)
 
 ### `monthly_return_summary`
@@ -830,6 +852,30 @@ One OGN or FANET ground station on a day, by exact name: availability, the last 
 - History: `schema/2026-10-17-stations.sql` (created); `schema/2026-10-17-stations-sensitivity.sql` (adds sensitivity_db, adds sensitivity_partners, adds sensitivity_fixes, adds sensitivity_low_share). Grants in `schema/2026-10-17-stations.sql`
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
 
+## Nightly: devices by country and region
+
+One row per device, day, source, country and region with an airborne position (METHOD.md 10.6), a family of its own in nightly.py (FAMILIES) written in a transaction of its own. Holds addresses, reduced to `monthly_region_summary` by `archive_loop` like `daily_routes`.
+
+### `daily_device_regions`
+
+A device on one source with at least one airborne position in a country and region on a day. Holds addresses: reduced to monthly_region_summary and deleted once the month is archived.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `device_id` | varchar(16) |  | 2 |
+| `source` | varchar(9) |  | 3 |
+| `category` | tinyint(3) unsigned | NULL |  |
+| `country` | char(2) |  | 4 |
+| `region` | varchar(64) | '' | 5 |
+
+- Defined in: METHOD.md 10.6; METHOD.md 9
+- Written by: the nightly, `nightly.py` `write_family`; the service, `sources.py` `SourceTracker.archive_once` (nightly family `regions`)
+- Read by: `sources.py` `SourceTracker.archive_once`
+- Published through: none yet
+- History: `schema/2026-10-25-device-regions.sql` (created). Grants in `schema/2026-10-25-device-regions.sql`
+- Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
+
 ## Nightly: patterns family
 
 How light aviation flies (PATTERNS.md), from the same nightly run, written in a second transaction of its own so that a failure in one family leaves the other's day written.
@@ -1214,7 +1260,7 @@ Bookkeeping.
 
 ### `nightly_runs`
 
-One nightly computation of a day: when it finished, how many hourly files it read and which were missing, lines read, duration, and which family failed if one did.
+One nightly computation of a day: when it finished, how many hourly files it read and which were missing, lines read, duration, peak anonymous memory, and which family failed if one did.
 
 | Column | Type | Default | PK |
 |---|---|---|---|
@@ -1224,11 +1270,12 @@ One nightly computation of a day: when it finished, how many hourly files it rea
 | `hours_missing` | varchar(80) | '' |  |
 | `line_count` | int(10) unsigned |  |  |
 | `seconds` | double |  |  |
+| `peak_anon_mb` | smallint(5) unsigned | NULL |  |
 | `notes` | varchar(255) | '' |  |
 
 - Defined in: METHOD.md 10
 - Written by: the nightly, `nightly.py` `write_run`
-- Read by: `sources.py` `SourceTracker._nightly_days`
+- Read by: `sources.py` `SourceTracker._nightly_days`; `app.py` `/internal/resources`
 - Published through: `/conspicuity-monitor/api/drones`, `/conspicuity-monitor/api/encounters`, `/conspicuity-monitor/api/patterns`, `/conspicuity-monitor/api/quality`
-- History: `schema/2026-10-07-nightly.sql` (created); `schema/2026-10-07-nightly-families.sql` (adds notes). Grants in `schema/2026-10-07-nightly.sql`
+- History: `schema/2026-10-07-nightly.sql` (created); `schema/2026-10-07-nightly-families.sql` (adds notes); `schema/2026-10-25-nightly-runs-memory.sql` (adds peak_anon_mb). Grants in `schema/2026-10-07-nightly.sql`
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
