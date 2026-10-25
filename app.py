@@ -709,6 +709,7 @@ def get_ads_l():
         entry = v.copy()
         entry["timestamp"] = entry["timestamp"].isoformat()
         entry.update(ddb_card(entry["device_id"]))
+        entry["rx"] = tracker.rx_list(entry["device_id"], "OGADSL", entry["lat"], entry["lon"]) if tracker else []
         out.append(entry)
     return jsonify(out)
 

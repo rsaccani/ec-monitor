@@ -123,7 +123,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/adsl`
 **Method:** GET
-**Description:** The ADS-L devices heard in the last 60 minutes, with their last ten positions, as JSON.
+**Description:** The ADS-L devices heard in the last 60 minutes, with their last ten positions, as JSON. Each entry has the same added fields as `/live` (`agl`, `fl`, `khz`, `snr_scale`, `km`, `snr10`, `cn`, `rx`); ADS-L sends no turn rate, so `rot` is null and `rot_sent` false.
 
 ### `/conspicuity-monitor/api/heard`
 **Method:** GET
@@ -139,7 +139,7 @@ become `parent.child` columns), for whoever wants to redo the sums in a spreadsh
 
 ### `/conspicuity-monitor/api/live`
 **Method:** GET
-**Description:** Live positions from the other OGN sources, for the map's layer selector. `?layers=` takes a comma-separated subset of `flarm`, `fanet`, `radio` (other radio systems), `apps` (phone apps), `trackers` (hardware sending over a cellular or satellite link) and `relays` (platforms forwarding other sources, plus unknown internet sources); `&bbox=west,south,east,north` limits the answer to the visible area. ADS-L stays on `/adsl`, and ADS-B is not mapped. A device leaves the list 15 minutes after it was last heard.
+**Description:** Live positions from the other OGN sources, for the map's layer selector. `?layers=` takes a comma-separated subset of `flarm`, `fanet`, `radio` (other radio systems), `apps` (phone apps), `trackers` (hardware sending over a cellular or satellite link) and `relays` (platforms forwarding other sources, plus unknown internet sources); `&bbox=west,south,east,north` limits the answer to the visible area. ADS-L stays on `/adsl`, and ADS-B is not mapped. A device leaves the list 15 minutes after it was last heard. Each entry carries, besides the position (from 25 October 2026): `agl` (metres above the terrain model), `fl` (pressure altitude in feet, when sent), `rot` (turn rate in half-turns a minute, only from the systems that send one, `rot_sent` false otherwise), `khz` (frequency offset), `snr_scale` (`fsk` or `lora`), `km` and `snr10` for the last receiving station, `cn` (competition number of an identified device), and `rx`: every station that heard the device by radio in the last 60 seconds, strongest first, as `[station, snr, km, seconds ago, snr at 10 km or null]` (at most 20 stations a device).
 
 ### `/conspicuity-monitor/api/sources`
 **Method:** GET

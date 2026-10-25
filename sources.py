@@ -346,6 +346,10 @@ NO_SNR_TOCALLS = {"APRS"}
 SNR_10KM_TOCALLS = {"OGFLR", "OGNFLR", "OGFLR6", "OGFLR7"}
 SNR_SLOPE_DB = 0.72 * 20
 LIVE_WINDOW = 15 * 60  # a device unheard for this long leaves the map
+# Every station that heard a device by radio in the last minute, for the map's box
+# (25 October 2026): its last ratio per station, at most RX_MAX stations a device.
+RX_WINDOW = 60
+RX_MAX = 20
 # The main page's live count (heard_stats): aircraft heard in the last hour.
 HEARD_WINDOW = 60 * 60
 HEARD_CACHE_SECONDS = 5
@@ -1842,6 +1846,7 @@ class SourceTracker:
         self.connect_db = connect_db
         self.live = {}            # device_id -> compact dict
         self.live_parsed_at = {}  # device_id -> monotonic time of last parse
+        self.rx = {}              # device_id -> {station: (snr, monotonic time)}, RX_WINDOW
         self.heard = {}           # address -> [last time, {system: last time}, category]; hear()
         self.heard_cache = (0, None)
         # (month, source, via, device_id) written today -> the category queued
@@ -1970,6 +1975,10 @@ class SourceTracker:
             id_category = DRONE_CATEGORY    # whatever the id declares (from 7 October 2026)
         label, kind = source_info(tocall)
         via = "radio" if kind == "adsb" or _radio_meta.search(body) else "net"
+        if via == "radio" and kind != "adsb" and tocall not in NO_SNR_TOCALLS and len(path) > 1:
+            m = _snr.search(body)
+            if m:
+                self.reception(src, path[-1], float(m.group(1)))
 
         # The clock and the month string change once a second at most, packets
         # arrive a thousand times a second: compute them once per second.
@@ -2040,6 +2049,7 @@ class SourceTracker:
             "t": pkt["timestamp"].isoformat(),
             "_mono": t,
             "_raw": line,
+            "_tocall": tocall,
         }
         self.live[src].update(self.live_context(tocall, via, pkt))
 
@@ -3987,6 +3997,9 @@ class SourceTracker:
             cutoff = time.monotonic() - LIVE_WINDOW
             self.live = {k: v for k, v in list(self.live.items()) if v["_mono"] > cutoff}
             self.live_parsed_at = {k: v for k, v in list(self.live_parsed_at.items()) if v > cutoff}
+            rx_cutoff = time.monotonic() - RX_WINDOW
+            self.rx = {k: v for k, v in list(self.rx.items())
+                       if max((t for _, t in list(v.values())), default=0) > rx_cutoff}
             # The live count's window; a busy hour holds some 20,000 addresses.
             # Systems are left to the read side, which skips the stale ones.
             heard_cutoff = time.time() - HEARD_WINDOW
@@ -4065,6 +4078,34 @@ class SourceTracker:
                 out["snr10"] = round(snr + SNR_SLOPE_DB * math.log10(out["km"] / 10), 1)
         return out
 
+    def reception(self, device_id, station, snr):
+        """A radio packet of a device heard by a station: its last ratio there."""
+        d = self.rx.get(device_id)
+        if d is None:
+            d = self.rx[device_id] = {}
+        d[station] = (snr, time.monotonic())
+        if len(d) > RX_MAX:
+            del d[min(d, key=lambda k: d[k][1])]
+
+    def rx_list(self, device_id, tocall, lat, lon):
+        """The stations that heard the device by radio in the last RX_WINDOW seconds,
+        strongest first: [station, snr, km, seconds ago, snr scaled to 10 km or None].
+        The distance is from the device's latest position."""
+        d = self.rx.get(device_id)
+        if not d:
+            return []
+        now, out = time.monotonic(), []
+        for station, (snr, t) in list(d.items()):
+            if now - t > RX_WINDOW:
+                continue
+            pos = self.stations.get(station)
+            km = round(_distance(lat, lon, pos[0], pos[1]) / 1000, 1) if pos else None
+            snr10 = (round(snr + SNR_SLOPE_DB * math.log10(km / 10), 1)
+                     if tocall in SNR_10KM_TOCALLS and km is not None and km >= 1 else None)
+            out.append([station, snr, km, round(now - t), snr10])
+        out.sort(key=lambda r: -r[1])
+        return out
+
     def live_snapshot(self, layers, bbox=None):
         out = []
         for d in list(self.live.values()):
@@ -4074,7 +4115,11 @@ class SourceTracker:
                              (bbox[0] <= d["lon"] <= bbox[2] if bbox[0] <= bbox[2]
                               else d["lon"] >= bbox[0] or d["lon"] <= bbox[2])):
                 continue
-            out.append({k: v for k, v in d.items() if not k.startswith("_")})
+            e = {k: v for k, v in d.items() if not k.startswith("_")}
+            e["rx"] = self.rx_list(d["id"], d.get("_tocall"), d["lat"], d["lon"])
+            if e["rx"]:
+                e["snr_scale"] = "lora" if d.get("_tocall") in LORA_TOCALLS else "fsk"
+            out.append(e)
         return out
 
     def live_raw(self, device_id):
