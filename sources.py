@@ -146,6 +146,15 @@ def rebroadcast(tocall, device_id, category):
             and tocall in REBROADCAST_SOURCES)
 
 
+# Addresses that send no aircraft at all, kept off the live map by name until a
+# general rule for them exists (ec-monitor to-do 0i). FLR18008D, found 25 October
+# 2026: heard only by Stallikon, position held about 13 s then a jump of about
+# 200 km, altitude 0-65,000 m, vertical speed pinned at +/-50.8 m/s, signal flat
+# at 9-14 dB whatever distance it claims. tools/station_rose_backfill.py drops
+# the same address.
+LIVE_HIDDEN = frozenset({"FLR18008D"})
+
+
 # FLARM's random-address privacy mode (callsign prefix RND) changes address
 # about every ten seconds, so one aircraft becomes hundreds of "devices": 18,083
 # of the 33,886 OGFLR addresses of 1-10 October 2026, 89% of them heard for
@@ -4187,7 +4196,7 @@ class SourceTracker:
     def live_snapshot(self, layers, bbox=None):
         out = []
         for d in list(self.live.values()):
-            if d["layer"] not in layers:
+            if d["layer"] not in layers or d["id"] in LIVE_HIDDEN:
                 continue
             if bbox and not (bbox[1] <= d["lat"] <= bbox[3] and
                              (bbox[0] <= d["lon"] <= bbox[2] if bbox[0] <= bbox[2]
