@@ -64,7 +64,7 @@ each address was heard on each system, for one hour, and leaves the service only
 | Device addresses (`monthly_devices`, `monthly_sources`), with the first and last time each was heard in the month | the current and the previous month; then reduced to counts and deleted |
 | Counts of devices per month, address type, category, source and channel (`*_summary`) | indefinitely |
 | Totals of the measures per day, month, source, category, height band and 0.25-degree cell | indefinitely |
-| The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | seven days |
+| The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | 30 days (`EC_RAW_DAYS`; seven until 24 October 2026) |
 | Thermals to each side per device address and day (`daily_circling_pilot`, `nightly.py`) | the current and the previous month; then reduced to counts and deleted |
 | Routes between airfields per device address and day (`daily_routes`, `nightly.py`, PATTERNS.md section 6) | the current and the previous month; then reduced to flights and distinct aircraft per route and month, and deleted |
 | The nightly totals (`daily_*`: hours, circling, gaggles, parked aircraft, drones, data quality, ground stations by name) | indefinitely |

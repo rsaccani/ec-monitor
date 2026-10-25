@@ -13,6 +13,16 @@ development history of version 1 was not published.
 carries what its volunteer ground receivers hear by radio and what apps and
 platforms forward to it over the internet.
 
+**Area** (from 25 October 2026). The whole world. The service has always
+read the feed of the whole world, so the live counts of sections 2 to 8
+covered every position from the start, but until 25 October 2026 the ground
+model ended at the edges of Europe (section 3), and outside them the height
+above the ground was unknown. The raw recording (section 9) and the measures
+computed from it each night (section 10) were limited to 35–72° N and
+25° W–45° E: the recording until 21:17 UTC on 24 October 2026, the nightly
+measures up to the day of 24 October. A figure whose window includes earlier
+days counts, for those days, the European part only, and says so.
+
 **Sources.** Each packet names its source in the APRS destination field (the
 "tocall", listed in `tocalls.txt` in glidernet/ogn-aprs-protocol): FLARM,
 ADS-L, FANET, OGN trackers, PilotAware, ADS-B, and each phone app or platform.
@@ -452,7 +462,9 @@ last seen before it, which is where coverage gave way:
   ground. Corrected on 8 October 2026: until then this section read as if
   the study had recorded the loss itself. The ground is the
   NOAA ETOPO 2022 surface model at 15 arc-seconds (cells of about 460 by 310 m
-  at the latitude of the Alps) over 35–72°N and 25°W–45°E; over the sea it is
+  at the latitude of the Alps), over 35–72°N and 25°W–45°E until 24 October
+  2026 and from 60°S to 90°N at every longitude from 25 October, with the
+  same cells over Europe; over the sea it is
   the sea surface. The ground under an aircraft is interpolated between the
   centres of the four nearest cells (bilinear), which follows a slope across
   a cell; the value of the one cell containing the point would treat the
@@ -760,17 +772,21 @@ its size on disk is the price of that. It is not designed to retain data.
 From 9 October 2026 the files are kept for seven days instead of four,
 because while the measures are being set up a correction has to be tested
 against more than three days of traffic, and a day it changes has to be
-recomputed before its files are gone. Nothing older than seven days exists.
+recomputed before its files are gone. From 24 October 2026 they are kept
+for 30 days, on a server with the disk for it, so that a correction found
+within a month can still be recomputed from the recording. Nothing older
+than 30 days exists.
 
 The recording holds the lines of the OGN feed as they arrive, with their time
-of reception, limited to positions inside 35–72° N and 25° W–45° E, together
+of reception, limited to positions inside 35–72° N and 25° W–45° E until
+21:17 UTC on 24 October 2026 and from the whole world after it, together
 with the receiving stations' own reports. ADS-B packets from airliners are
 left out: those that declare a jet, fly above 15,000 ft or faster than
 200 kt, or are reported on the ground, where an airliner taxis. So is every
 packet from a device that asks not to be tracked, in its own id or in the
 OGN device database. The files stay on the server,
 readable by the service account alone; each hour is compressed once it is
-over and deleted after seven days. Apart from the live map and the device
+over and deleted after 30 days (seven until 24 October 2026). Apart from the live map and the device
 check, which show single aircraft as the OGN feed itself does, only the
 aggregates of this method leave the server.
 
@@ -1031,7 +1047,7 @@ in the bands of section 10.2, when both the drone and the other aircraft
 sent a course and a speed, and one that looks like a single aircraft under
 two addresses is left out by the rule of section 10.2. Days computed before have no cell;
 their rows stay as recorded, counted in every figure that does not ask where,
-until a day still in the raw recording (kept seven days) is computed again.
+until a day still in the raw recording (kept 30 days) is computed again.
 
 ### 10.2 Sharing the air: crewed aircraft of different kinds (experimental)
 
@@ -1111,7 +1127,7 @@ cell flown by a handful of aircraft gives a rate of chance, and the pages
 leave out cells below a minimum number of aircraft. Days computed before
 have no cell and no flying time per cell; their rows stay as recorded,
 counted in every figure that does not ask where, until a day still in the
-raw recording (kept seven days) is computed again.
+raw recording (kept 30 days) is computed again.
 
 **Flying together.** A pair that stays within 300 m at a relative speed
 under 20 km/h for at least 60 seconds (contacts at most 20 s apart) is
@@ -1276,7 +1292,8 @@ A **station** is a name that sends receiver beacons: OGN receivers, and
 FANET ground stations such as GXAirCom, which send the same beacons and
 carry traffic into OGN; the kind is told from the software version in the
 status beacon. Stations are taken in when they report a position in Europe
-(sections 3 and 9) or forward a packet of an aircraft there. Names are compared
+(sections 3 and 9) or forward a packet of an aircraft there, and from
+25 October 2026 anywhere in the world (section 1, "Area"). Names are compared
 case-sensitively, since two stations can differ only by case. Aggregators
 that appear as the last element of a path without being a station
 (SafeSky's link) are left out.
@@ -1362,7 +1379,7 @@ below the neighbouring stations by N dB", with the probable causes in
 order: cable loss or a connector, an antenna that is detuned, damaged or
 badly placed, no preamplifier where the neighbours have one, local noise.
 
-The page gives each station a card with its last 30 days, found by name, and for regulators a summary per day: the stations judged, the share with no open note, and the share of the radio packets forwarded that came through a station with an open note, which says more than the count of stations, since a station hearing three aircraft a day matters little. Stations are judged on the day when they send beacons and either report a position in Europe or forward a radio packet of an aircraft there; on 15 October 2026 that was 2,450 stations. Availability is left empty on a day with hours missing from the recording.
+The page gives each station a card with its last 30 days, found by name, and for regulators a summary per day: the stations judged, the share with no open note, and the share of the radio packets forwarded that came through a station with an open note, which says more than the count of stations, since a station hearing three aircraft a day matters little. Stations are judged on the day when they send beacons and either report a position or forward a radio packet of an aircraft, in Europe until 24 October 2026 and anywhere in the world from 25 October; on 15 October 2026 that was 2,450 stations. Availability is left empty on a day with hours missing from the recording.
 
 How many stations there are (from 25 October 2026) is counted over the last 30 days of these rows: every name with a row, that is every station that sent beacons on at least one day, and how many of them forwarded at least one radio packet of an aircraft on any day of the window, overall, per kind and per country and region. A name is counted once, under the kind of its last day. Country and region come from the station's last reported position and the Natural Earth admin-1 boundaries at 1:10 million (public domain), simplified to 0.002 degrees, about 200 m, by `tools/admin1/build_admin1.py`, which gave the same country and region as the full boundaries for all 2,839 stations of 11 to 23 October 2026; near a border the boundaries themselves can be a few hundred metres off. The region is the first administrative level, except Italy, France, Spain and Slovenia, whose provinces, departments and municipalities are grouped into their regions, and the United Kingdom, split into its four nations. A point just off a simplified coast is moved up to about 5 km to find land; one left at sea has no country. The map of the page shows the stations with a position heard in the last 1, 7 or 30 days, by whether they forwarded an aircraft in those days.
 
