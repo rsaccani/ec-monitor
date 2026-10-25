@@ -15,6 +15,7 @@ parsed, and database rows are written by a separate thread, once per device,
 source and month (plus one last_seen update per day).
 """
 
+import array
 import bisect
 import calendar
 import collections
@@ -27,6 +28,7 @@ import math
 import mmap
 import os
 import struct
+import sys
 import queue
 import re
 import statistics
@@ -724,8 +726,20 @@ def agl_band(agl_m):
     return 0 if agl_m < 300 else 1 if agl_m < 600 else 2 if agl_m < 1200 else 3 if agl_m < 2000 else 4
 
 
+TERRAIN_SEA_TILE = 0xFFFFFFFF
+
+
 class Terrain:
-    """Elevation lookups in a raw int16 grid (see the .json beside it), memory-mapped."""
+    """Elevation lookups in a raw int16 grid (see the .json beside it), memory-mapped.
+
+    Two layouts. Flat: every cell, row by row. Tiled (from 25 October 2026,
+    tools/terrain/build_tiles.py): square tiles of `tile` cells, only those
+    with some cell above sea level stored, one after the other, and an index
+    file of one uint32 per tile, row-major, giving its position among the
+    stored tiles or TERRAIN_SEA_TILE. A tile left out is sea, which _cell
+    returns as 0 anyway, so both layouts give the same elevations; the world
+    model drops from 6.2 to 2.3 GB.
+    """
 
     def __init__(self, path):
         self.ok = False
@@ -737,7 +751,18 @@ class Terrain:
             self.nodata = meta["nodata"]
             self._f = open(path, "rb")
             self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
-            self.ok = len(self._mm) == self.rows * self.cols * 2
+            if "tile" in meta:
+                self.tile, self.tile_cols = meta["tile"], meta["tile_cols"]
+                self._index = array.array("I")
+                with open(os.path.join(os.path.dirname(path), meta["index"]), "rb") as f:
+                    self._index.frombytes(f.read())
+                if sys.byteorder != "little":
+                    self._index.byteswap()
+                self._cell = self._cell_tiled
+                self.ok = (len(self._index) == meta["tile_rows"] * self.tile_cols and
+                           len(self._mm) == meta["tiles_kept"] * self.tile * self.tile * 2)
+            else:
+                self.ok = len(self._mm) == self.rows * self.cols * 2
             logger.info(f"Terrain model loaded from {path}: {self.ok}")
         except (OSError, ValueError, KeyError) as e:
             logger.info(f"No terrain model ({e}); height above ground will be unknown")
@@ -746,6 +771,16 @@ class Terrain:
         v = struct.unpack_from("<h", self._mm, (r * self.cols + c) * 2)[0]
         # ETOPO keeps sea-floor depths: over the sea the ground is the surface.
         # Clamping also lifts land below sea level to 0, a few metres at most.
+        return 0 if v == self.nodata or v < 0 else v
+
+    def _cell_tiled(self, r, c):
+        t = self.tile
+        tr, rr = divmod(r, t)
+        tc, cc = divmod(c, t)
+        k = self._index[tr * self.tile_cols + tc]
+        if k == TERRAIN_SEA_TILE:
+            return 0
+        v = struct.unpack_from("<h", self._mm, ((k * t + rr) * t + cc) * 2)[0]
         return 0 if v == self.nodata or v < 0 else v
 
     def elevation(self, lat, lon):

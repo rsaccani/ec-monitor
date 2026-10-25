@@ -98,7 +98,11 @@ after that, or one that crashes, still loses up to 15 minutes. Height above grou
 15 arc-seconds, with its bounds and step in the `.json` beside it: `data/europe_15s.i16` by default (35–72° N,
 25° W–45° E, about 300 MB), or the file named by `ADSL_DEM` in `.env`, such as `data/world_15s.i16`
 (60° S–90° N, all longitudes, 6.2 GB, cut the same way, so that its European part is the same grid cell for
-cell). Neither is in the repository. Outside the grid, or without one, height above ground is recorded as
+cell). Since 25 October 2026 the world model is used tiled, `data/world_15s_tiles.i16` (2.3 GB, with
+`world_15s_tiles.idx`): squares of one degree with no cell above sea level are left out, since the reader
+returns 0 m below sea level anyway, and `tools/terrain/build_tiles.py` makes it from the flat file, which
+`sources.Terrain` still reads; `tools/terrain/verify_tiles.py` checks the two give the same elevations.
+None of these files is in the repository. Outside the grid, or without one, height above ground is recorded as
 unknown.
 
 Until 3 October 2026 this project was called `ads-l-map` and only mapped ADS-L devices. The production

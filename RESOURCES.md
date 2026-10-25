@@ -65,7 +65,7 @@ nightly rows.
 | Part | Size |
 |---|---|
 | Raw recording, `~/ec-raw`, 30 days | 200–250 MB a day compressed, about 7 GB when full (1.4 GB on 25 October, kept 7 days until 24 October) |
-| World terrain, `data/world_15s.i16` | 6.2 GB |
+| World terrain, `data/world_15s_tiles.i16` (land tiles only, from 25 October 2026) | 2.26 GB; the flat `world_15s.i16` it was built from was 6.2 GB |
 | European terrain, `data/europe_15s.i16` | 285 MB, no longer read since 25 October |
 | Reference data in `data/` (tsv, admin-1) | about 12 MB |
 | Nightly logs | under 1 MB |
