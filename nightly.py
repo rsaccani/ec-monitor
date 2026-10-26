@@ -338,9 +338,10 @@ TABLES = (FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] 
           + FAMILIES["device_pattern"] + FAMILIES["station_rose"])
 PATTERN_KEEP_DAYS = 30                  # the days daily_device_pattern keeps, the run's day included
 ROSE_KEEP_DAYS = 30                     # the days before the run's day that daily_station_rose keeps
-# Garbage streams (METHOD.md 10.7): an address whose positions jump hundreds of km every few seconds at a
-# flat signal. Same list as tools/station_rose_backfill.py, until the generic rule exists.
-ROSE_GARBAGE = {"FLR18008D"}
+# Item 0i's agreement test of branch (b) keeps a second's fixes until packets for it can no longer arrive: a packet is
+# taken up to STALE seconds after its time stamp, or ahead of it, and neighbours lie 5 seconds either side.
+GARBAGE_JUDGE_S = STALE + sources.GARBAGE_AGREE_WINDOW_S + 1
+GARBAGE_KEEP_S = GARBAGE_JUDGE_S + sources.GARBAGE_AGREE_WINDOW_S + 1
 ROSE_WAIT_MAX = 200_000                 # receptions held for stations not yet placed; about 20 MB at most
 # The statistics endpoints whose monthly snapshot belongs to the patterns family.
 PATTERN_SNAPSHOTS = ("patterns",)
@@ -1189,6 +1190,94 @@ class Station:
         return statistics.median(v) if v else None
 
 
+_FPM = re.compile(r" ([+-]\d+)fpm")            # the vertical speed of a fix, in feet per minute
+
+
+def garbage_km(lat1, lon1, lat2, lon2):
+    """Kilometres between two points, haversine: the rule's jumps are hundreds of km, where the
+    equirectangular dist() is a few percent off."""
+    p = math.radians
+    x = math.sin(p(lat2 - lat1) / 2) ** 2 + math.cos(p(lat1)) * math.cos(p(lat2)) * math.sin(p(lon2 - lon1) / 2) ** 2
+    return 12742.0 * math.asin(min(1.0, math.sqrt(x)))
+
+
+def receiver_of(path):
+    """The receiving station of an APRS path, the name after qAS/qAR; None for a client connection (qAC) or no
+    construct, as the exploration of 0i read it."""
+    if len(path) < 3 or path[-2][:1] != "q" or path[-2] == "qAC":
+        return None
+    return path[-1]
+
+
+class GarbagePair:
+    """One (address, receiving station) pair's day for the garbage rule (item 0i, 26 October 2026).
+
+    Fed the fixes of the pair in order of arrival, each already through the stale/future filter. Holds
+    counters and the chainer's few open tracks, nothing of the fixes themselves: about 41,000 pairs a day,
+    hence __slots__. Branch (a): fixes a few seconds apart that jump over 5 km, which a greedy chainer
+    cannot join into tracks. Branch (b): altitudes or a vertical speed that lie. The thresholds are
+    sources.GARBAGE_*.
+    """
+    __slots__ = ("n", "pairs", "jumps", "created", "bad_alt", "vs", "pinned", "agree", "contra",
+                 "t", "lat", "lon", "tracks")
+
+    def __init__(self):
+        self.n = self.pairs = self.jumps = self.created = 0
+        self.bad_alt = self.vs = self.pinned = 0
+        self.agree = self.contra = 0        # fixes judged against other stations (agreement test of branch b)
+        self.t = self.lat = self.lon = None  # the previous fix
+        self.tracks = None                  # None until the first jump; then [[t, lat, lon], ...]
+
+    def add(self, t, lat, lon, alt_m, vs):
+        """False when this is the same fix as the previous one (heard twice), which counts once."""
+        if self.t == t and self.lat == lat and self.lon == lon:
+            return False
+        self.n += 1
+        if alt_m is not None and (alt_m > sources.GARBAGE_ALT_HI_M or alt_m < sources.GARBAGE_ALT_LO_M):
+            self.bad_alt += 1
+        if vs is not None:
+            self.vs += 1
+            if sources.GARBAGE_PINNED_FPM[0] <= abs(vs) <= sources.GARBAGE_PINNED_FPM[1]:
+                self.pinned += 1
+        if self.t is not None and abs(t - self.t) <= sources.GARBAGE_PAIR_GAP_S:
+            self.pairs += 1
+            if garbage_km(self.lat, self.lon, lat, lon) > sources.GARBAGE_JUMP_KM:
+                self.jumps += 1
+                if self.tracks is None:
+                    self.tracks = [[self.t, self.lat, self.lon]]
+                    self.created = 1
+        if self.tracks is not None:
+            best, nearest = None, 1e9
+            for tr in self.tracks:
+                dt = t - tr[0]
+                if dt > sources.GARBAGE_TRACK_AGE_S:
+                    continue
+                d = garbage_km(tr[1], tr[2], lat, lon)
+                if d <= sources.GARBAGE_MATCH_KM + sources.GARBAGE_GATE_KMS * abs(dt) and d < nearest:
+                    best, nearest = tr, d
+            if best:
+                best[0], best[1], best[2] = t, lat, lon
+            else:
+                self.tracks.append([t, lat, lon])
+                self.created += 1
+                self.tracks = [x for x in self.tracks if t - x[0] <= sources.GARBAGE_TRACK_AGE_S][-sources.GARBAGE_MAX_TRACKS:] \
+                    or [[t, lat, lon]]
+        self.t, self.lat, self.lon = t, lat, lon
+        return True
+
+    def traits(self):
+        """(branch a, branch b) of the day, and the shares behind them."""
+        share = self.jumps / self.pairs if self.pairs else 0.0
+        orphan = self.created / self.jumps if self.jumps else 0.0
+        bad_alt = self.bad_alt / self.n if self.n else 0.0
+        pinned = self.pinned / self.vs if self.vs >= sources.GARBAGE_MIN_VS_FIXES else 0.0
+        enough = self.n >= sources.GARBAGE_MIN_FIXES
+        a = (enough and self.pairs >= sources.GARBAGE_MIN_PAIRS and self.jumps >= sources.GARBAGE_MIN_JUMPS
+             and share > sources.GARBAGE_JUMP_SHARE and orphan > sources.GARBAGE_ORPHAN_RATIO)
+        b = enough and (bad_alt >= sources.GARBAGE_BAD_ALT_SHARE or pinned >= sources.GARBAGE_PINNED_SHARE)
+        return a, b, dict(share=share, orphan=orphan, bad_alt=bad_alt, pinned=pinned)
+
+
 class Nightly:
     def __init__(self, day, ddb=({}, set())):
         self.day = day
@@ -1260,6 +1349,20 @@ class Nightly:
         # impossible tracks: the first pass's per-stream record and its verdict
         self.streams = {}                      # (address, tocall) -> [t, lat, lon, fixes, seconds, levels, feed breaks met]
         self.dropped = set()                   # (address, tocall) set aside for the day
+        # garbage position streams (item 0i, 26 October 2026): the first pass's pairs and their verdict
+        self.gpairs = {}                       # (address, receiver) -> GarbagePair
+        self.g_first = {}                      # address -> the one receiver that heard it, or "" once two did
+        self.g_recent = {}                     # packet second -> {address: [(t, lat, lon, receiver, GarbagePair)]}, for branch (b)
+        self.g_clock = 0                       # the latest arrival seen
+        self.g_next = self.g_free = self.d0 - 400    # the next second of g_recent to judge, and to drop
+        self.g_buffered = self.g_peak = 0      # fixes in g_recent now, and the most at once
+        self.garbage = {}                      # (address, receiver) flagged -> its traits, from the first pass's end
+        self.garbage_stations = collections.Counter()   # receiver -> its flagged addresses that another receiver heard right
+        self.garbage_dropped = collections.Counter()    # (address, receiver) -> fixes ignored by the main pass
+        self.garbage_judged = 0
+        self.hour_fixes = {}                   # (receiver, UTC hour) -> [fixes seen, dropped by the stale/future filter]
+        self.clock_fault = {}                  # receiver -> [(hour, fixes, dropped)] of its hours past the rule
+        self.clock_worst = {}                  # receiver -> the highest share dropped in an hour of CLOCK_FAULT_MIN_FIXES fixes or more
         self.imp = collections.Counter()       # (label, check) -> count, for daily_quality
         self.imp_cat = collections.Counter()   # (category, what) -> fixes, streams or seconds, for the log
         self.cut = {}                          # address -> its last fix before an impossible one
@@ -1335,7 +1438,8 @@ class Nightly:
         """Memory and the size of what grows, for the log."""
         anon = self.anon_mb()
         samples = sum(len(x[7]) for tr in self.circles.values() for x in tr.thermals)
-        return (f"anon {anon} MB; streams {len(self.last_fix):,}, addresses {len(self.addr_fix):,}, "
+        return (f"anon {anon} MB; garbage dropped {sum(self.garbage_dropped.values()):,}, "
+                f"streams {len(self.last_fix):,}, addresses {len(self.addr_fix):,}, "
                 f"circle tracks {len(self.circles):,} with {sum(len(t.thermals) for t in self.circles.values()):,} "
                 f"thermals and {samples:,} samples, parked runs {len(self.parked_runs):,}, "
                 f"relay pairs {len(self.relay_pairs):,} ({sum(len(v) for v in self.relay_pairs.values()):,}), "
@@ -1416,21 +1520,22 @@ class Nightly:
                     continue
                 if not body.startswith("/") or body[26:27] in ("&", "_"):
                     continue
-                raw = head.split(",", 1)[0]
+                path = head.split(",")
+                raw = path[0]
                 if raw in sources.EXCLUDED or raw in ("OGNSDR", "OGNSXR"):
                     continue
                 cat, no_track = sources.id_info(body)
                 if no_track:
                     continue
-                tocall = sources.packet_system(head.split(","), src)
+                tocall = sources.packet_system(path, src)
                 src = self.chained(src, tocall)
                 if cat is None:
                     if tocall not in sources.AIRCRAFT_ONLY:
-                        self.prepass(epoch, src, tocall, body)
+                        self.prepass(epoch, src, tocall, body, path)
                     continue
                 if sources.rebroadcast(tocall, src, cat):
                     continue
-                self.prepass(epoch, src, tocall, body)
+                self.prepass(epoch, src, tocall, body, path)
                 if sources.UNKNOWN_YET.get(tocall) == cat:
                     continue
                 votes[(src[-6:], tocall)][cat] += 1
@@ -1442,9 +1547,10 @@ class Nightly:
         self.major13 = {a for (a, _), m in self.major.items() if m == DRONE}
         logger.info(f"Majority categories: {len(self.major):,} address-systems, {len(self.major13):,} addresses "
                     f"declaring a drone on at least one system")
+        self.judge_garbage()
         self.judge_streams()
 
-    def prepass(self, epoch, src, tocall, body):
+    def prepass(self, epoch, src, tocall, body, path):
         """First pass: one fix of a stream, for the impossible-track verdict.
 
         The same exclusions and the same packet time as the measures. Only
@@ -1452,6 +1558,10 @@ class Nightly:
         and, for each fix beyond the lowest limit of any category, how far
         beyond (as levels of SPEED_LEVELS and ALT_LEVELS), since the stream's
         category is known only once the vote is over.
+
+        The same fixes feed the garbage rule (item 0i): one GarbagePair per (address,
+        receiving station), and per station and UTC hour the fixes seen and the
+        ones the stale/future filter drops, for the clock note.
         """
         label, kind = sources.source_info(tocall)
         if kind == "adsb" or body[1:7] == "______" or "h" not in body[:8] or (body[8:10] == "00" and body[17:20] == "000"):
@@ -1468,11 +1578,14 @@ class Nightly:
         t = now - now % 86400 + sod
         if t - epoch > STALE:
             t -= 86400
+        rx = receiver_of(path)
+        if rx is not None and self.d0 <= epoch < self.d1:
+            hf = self.hour_fixes.get((rx, int(epoch - self.d0) // 3600))
+            if hf is None:
+                hf = self.hour_fixes[(rx, int(epoch - self.d0) // 3600)] = [0, 0]
+            hf[0] += 1
+            hf[1] += epoch - t > STALE
         if epoch - t > STALE or not (self.d0 <= t < self.d1):
-            return
-        key = (address, tocall)
-        st = self.streams.get(key)
-        if st is not None and t <= st[0]:
             return
         latm, lonm = float(latm), float(lonm)
         w = sources._extra_precision.search(body)
@@ -1483,6 +1596,12 @@ class Nightly:
         lon = (int(lond) + lonm / 60) * (-1 if ew == "W" else 1)
         a = sources._alt.search(body)
         alt = int(a.group(1)) * 0.3048 if a else 0.0
+        if rx is not None:
+            self.garbage_fix(epoch, address, rx, t, lat, lon, alt if a else None, body)
+        key = (address, tocall)
+        st = self.streams.get(key)
+        if st is not None and t <= st[0]:
+            return
         # The verdict rests on where the stream puts the aircraft: positions
         # and altitude. A reported speed beyond the limit drops that fix only,
         # since a speed field in the wrong unit (SafeSky's km/h sent as knots,
@@ -1506,6 +1625,110 @@ class Nightly:
             if st[5] is None:
                 st[5] = collections.Counter()
             st[5][lv] += 1
+
+    def garbage_fix(self, epoch, address, rx, t, lat, lon, alt_m, body):
+        """One fix of a (address, receiver) pair, through the stale/future filter, for the garbage rule.
+
+        Besides the pair's counters, the fix is kept for the agreement test of branch (b): whether the
+        address's other receivers heard the same second somewhere else. That needs the fixes of every
+        address for the few minutes a packet may arrive late, not the day's: a second is judged
+        GARBAGE_JUDGE_S after its latest possible arrival and dropped GARBAGE_KEEP_S after.
+        """
+        pair = self.gpairs.get((address, rx))
+        if pair is None:
+            pair = self.gpairs[(address, rx)] = GarbagePair()
+        first = self.g_first.get(address)
+        if first is None:
+            self.g_first[address] = rx
+        elif first != rx and first != "":
+            self.g_first[address] = ""
+        v = _FPM.search(body)
+        if not pair.add(t, lat, lon, alt_m, int(v.group(1)) if v else None):
+            return
+        self.g_recent.setdefault(t, {}).setdefault(address, []).append((t, lat, lon, rx, pair))
+        self.g_buffered += 1
+        if epoch > self.g_clock:
+            self.g_clock = int(epoch)
+            self.garbage_advance(self.g_clock)
+
+    def garbage_advance(self, clock):
+        """Judge the seconds whose fixes can no longer get a neighbour, and drop the oldest."""
+        while self.g_next <= clock - GARBAGE_JUDGE_S:
+            bucket = self.g_recent.get(self.g_next)
+            if bucket:
+                self.garbage_agree(self.g_next, bucket)
+            self.g_next += 1
+        while self.g_free <= clock - GARBAGE_KEEP_S:
+            bucket = self.g_recent.pop(self.g_free, None)
+            if bucket:
+                self.g_buffered -= sum(len(v) for v in bucket.values())
+            self.g_free += 1
+        self.g_peak = max(self.g_peak, self.g_buffered)
+
+    def garbage_agree(self, sec, bucket):
+        """Branch (b)'s test for the fixes of second `sec`, for each pair that has lied so far: against the
+        fixes of the same address from other receivers within GARBAGE_AGREE_WINDOW_S, it agrees when one lies
+        within 2 km, contradicts when none does and one lies over 5 km away, and is left out otherwise or
+        when no other receiver was heard in the window."""
+        w = sources.GARBAGE_AGREE_WINDOW_S
+        for address, fixes in bucket.items():
+            for t, lat, lon, rx, pair in fixes:
+                if not (pair.bad_alt or pair.pinned) or self.g_first.get(address) != "":
+                    continue                    # not suspect yet, or heard by one receiver: nobody to compare with
+                near, far = 1e9, 0.0
+                for s in range(sec - w, sec + w + 1):
+                    for t2, lat2, lon2, rx2, _ in self.g_recent.get(s, {}).get(address, ()):
+                        if rx2 != rx:
+                            d = garbage_km(lat, lon, lat2, lon2)
+                            near, far = min(near, d), max(far, d)
+                if near <= sources.GARBAGE_AGREE_GOOD_KM:
+                    pair.agree += 1
+                elif far > sources.GARBAGE_AGREE_FAR_KM and near < 1e9:
+                    pair.contra += 1
+
+    def judge_garbage(self):
+        """The garbage verdict of every pair, once the first pass has read the day (item 0i, 26 October 2026).
+
+        Branch (a) stands alone. Branch (b) counts when no other receiver heard the address that day, or when
+        the fixes judged against other receivers contradict more often than they agree. A receiver whose
+        stale/future filter dropped most of an hour's fixes is a clock fault (the hour is listed, the fixes
+        were never judged).
+        """
+        for sec in sorted(x for x in self.g_recent if x >= self.g_next):    # the seconds not yet judged
+            self.garbage_agree(sec, self.g_recent[sec])
+        self.g_recent = {}
+        self.g_buffered = 0
+        for key, pair in self.gpairs.items():
+            self.garbage_judged += 1
+            a, b, traits = pair.traits()
+            alone = self.g_first.get(key[0]) != ""
+            contra = pair.contra > pair.agree
+            if a or (b and (alone or contra)):
+                traits.update(branch=("a" if a else "") + ("b" if b else ""), n=pair.n, pairs=pair.pairs,
+                              jumps=pair.jumps, alone=alone, agree=pair.agree, contra=pair.contra)
+                self.garbage[key] = traits
+        for (rx, hour), (seen, dropped) in sorted(self.hour_fixes.items()):
+            if seen < sources.CLOCK_FAULT_MIN_FIXES:
+                continue
+            self.clock_worst[rx] = max(self.clock_worst.get(rx, 0.0), round(dropped / seen, 4))
+            if dropped > seen * sources.CLOCK_FAULT_SHARE:
+                self.clock_fault.setdefault(rx, []).append((hour, seen, dropped))
+        # The station's note counts only the addresses some other receiver heard without a verdict, an address
+        # flagged everywhere it was heard (FLRDD0C75 on 18 and 24 October 2026, on 5-7 stations) is garbage at its
+        # source, and its fixes go, but no station is to blame;
+        clean = collections.Counter(a for (a, rx), pair in self.gpairs.items()
+                                    if pair.n >= sources.GARBAGE_MIN_FIXES and (a, rx) not in self.garbage)
+        # and among the others, only those whose fixes the other receivers contradicted more often than they
+        # confirmed: F9C918 at LKSU and LKOL on 24 October 2026 (106 and 65 confirmed, 7 and 1 contradicted) is
+        # more likely two aircraft than a station at fault, while edle3's seven contradicted 10-356 times.
+        self.garbage_stations = collections.Counter(rx for (a, rx), t in self.garbage.items()
+                                                    if clean[a] and t["contra"] > t["agree"])
+        self.gpairs = {}
+        self.g_first = {}
+        logger.info(f"Garbage rule: {self.garbage_judged:,} (address, station) pairs judged, {len(self.garbage):,} flagged, "
+                    f"{sum(len(v) for v in self.clock_fault.values())} station-hours with a clock fault at "
+                    f"{len(self.clock_fault)} stations; most fixes kept for the agreement test {self.g_peak:,}; anon "
+                    f"{self.anon_mb()} MB, peak {self.anon_peak} MB")
 
     def judge_streams(self):
         """The impossible-track verdict per stream, once the categories are voted."""
@@ -1595,7 +1818,6 @@ class Nightly:
             return                              # FANET ground stations, delayed and synthetic copies
         if body[26:27] == "_":
             return                              # weather stations
-        src0 = src
         tocall = sources.packet_system(path, src)
         rnd = src.startswith(sources.RANDOM_PREFIX) and tocall in sources.RANDOM_ROTATING
         src = self.chained(src, tocall)
@@ -1659,6 +1881,11 @@ class Nightly:
         t = now - now % 86400 + sod
         if t - epoch > STALE:
             t -= 86400
+        if self.garbage and kind != "adsb" and epoch - t <= STALE and self.d0 <= t < self.d1:
+            gkey = (address, receiver_of(path))
+            if gkey in self.garbage:
+                self.garbage_dropped[gkey] += 1
+                return                          # a garbage pair-day (item 0i, 26 October 2026), as an excluded packet
         if q is not None:
             delay = (epoch % 86400) - sod
             if delay < -43200:
@@ -1708,7 +1935,7 @@ class Nightly:
         # --- the measures: fixes of this day, received in time ---------------
         if epoch - t > STALE or not (self.d0 <= t < self.d1):
             return
-        if self.ro and via == "radio" and src0 not in ROSE_GARBAGE:
+        if self.ro and via == "radio":
             # Every receiver's copy of a fix, before the drop and the vote below: the rose needs the packet's
             # own category and the receiver, and no address.
             self.rose_fix(tocall, path[-1], lat, lon, category, kt, alt_m, body)
@@ -3175,7 +3402,7 @@ class Nightly:
                        "noise_db_median", "ppm_manual_last", "ppm_manual_median", "ppm_auto_last",
                        "ppm_auto_median", "signal_10km_db_last", "signal_10km_db_median", "geoid_declared",
                        "aircraft_heard", "packets_forwarded", "moved_m", "altitude_m", "late_share", "stray_share",
-                       "relay_offset_m", "sensitivity_db", "sensitivity_partners", "sensitivity_fixes",
+                       "relay_offset_m", "clock_fault_share", "garbage_addresses", "sensitivity_db", "sensitivity_partners", "sensitivity_fixes",
                        "sensitivity_low_share", "notes")
     SENSITIVITY_COLUMNS = ("day", "k", "pairs", "observations", "stations_judged")
 
@@ -3219,6 +3446,10 @@ class Nightly:
             sd = sens.get(name)
             if sd is not None and sd[0] < -sources.STATION_SENSITIVITY_DB:
                 notes.append("signal_low")
+            if name in self.clock_fault:
+                notes.append("clock_fault")
+            if self.garbage_stations[name]:
+                notes.append("garbage_pairs")
 
             def last(f):
                 return st.lasts.get(f)
@@ -3237,6 +3468,10 @@ class Nightly:
                 "signal_10km_db_last": r(last("signal_10km"), 1), "signal_10km_db_median": r(med["signal_10km"], 1),
                 "geoid_declared": None if st.geoid is None else int(st.geoid),
                 "aircraft_heard": len(self.rx_aircraft.get(name, ())), "packets_forwarded": forwarded,
+                # item 0i: the worst UTC hour's share dropped as stale or future (hours of 100+ fixes), and the
+                # addresses whose fixes from this station the garbage rule ignored while another station heard them right
+                "clock_fault_share": self.clock_worst.get(name),
+                "garbage_addresses": self.garbage_stations[name],
                 "sensitivity_db": None if sd is None else round(sd[0], 2),
                 "sensitivity_partners": None if sd is None else sd[1],
                 "sensitivity_fixes": None if sd is None else sd[2],
@@ -4149,6 +4384,21 @@ def print_coverage_dry_run(n, tables):
               f"air {c['air_hours']:.1f} h  probe aircraft {aircraft}")
 
 
+def print_garbage_dry_run(n):
+    """Item 0i: the pairs judged and flagged, the fixes ignored, and the station-hours behind clock_fault."""
+    print(f"\n== garbage pairs (item 0i): {n.garbage_judged:,} (address, station) pairs judged, {len(n.garbage)} flagged, "
+          f"{sum(n.garbage_dropped.values()):,} fixes ignored by the main pass; "
+          f"{len(n.clock_fault)} stations with a clock fault")
+    print("   address station branch fixes jump_share orphan bad_alt pinned others_heard agree contra dropped")
+    for (address, rx), t in sorted(n.garbage.items()):
+        print(f"   {address} {rx} {t['branch']} {t['n']} {t['share']:.3f} {t['orphan']:.2f} {t['bad_alt']:.3f} "
+              f"{t['pinned']:.3f} {'none' if t['alone'] else 'yes'} {t['agree']} {t['contra']} "
+              f"{n.garbage_dropped[(address, rx)]}")
+    print("   garbage_pairs note: " + (", ".join(f"{rx} {k}" for rx, k in sorted(n.garbage_stations.items())) or "none"))
+    for rx, hours in sorted(n.clock_fault.items()):
+        print(f"   clock_fault {rx}: " + ", ".join(f"{h:02d}h {d}/{seen} dropped" for h, seen, d in hours))
+
+
 def print_stations_dry_run(n, tables):
     """The day's stations in figures, to set beside the exploration that preceded them (rx.py, 15 October)."""
     cols, rows = tables.get("daily_stations", ((), []))
@@ -4326,6 +4576,7 @@ def main():
         if "stations" not in n.failed:
             print_stations_dry_run(n, tables)
             print_coverage_dry_run(n, tables)
+        print_garbage_dry_run(n)
     if args.dry_run and "patterns" not in n.failed:
         # Flight medians per kind, for checking the rule; aggregates only.
         by = collections.defaultdict(list)

@@ -1644,6 +1644,37 @@ STATION_LOW_SHARE = 0.8             # the card says "nearly all neighbours" from
 STATION_LOW_SHOWN_DB = 3            # the card words the partner share when the station is at least this far below (nightly.SENS_LOW_DB)
 STATION_WINDOW_DAYS = 30            # a station's card
 
+# Garbage position streams (item 0i, rule agreed 26 October 2026), judged by the nightly's first pass per (address,
+# receiving station) pair over the whole UTC day, on fixes that passed the stale/future filter. Garbage is one radio
+# sending nonsense, or one station decoding wrongly: the same address heard correctly elsewhere is real (LSMD garbled
+# about forty Swiss aircraft on 23 October 2026 that 17-35 other stations heard right), so only the pair's fixes go.
+GARBAGE_MIN_FIXES = 20              # fixes of the pair (the same fix repeated back to back counts once) before any verdict
+GARBAGE_PAIR_GAP_S = 10             # (a) a "pair" of fixes is two consecutive ones at most this many seconds apart ...
+GARBAGE_JUMP_KM = 5.0               # ... and a "jump" is a pair this far apart
+GARBAGE_MIN_PAIRS = 20              # (a) pairs, jumps and shares needed: 20+ pairs, 10+ jumps, over 5% of pairs
+GARBAGE_MIN_JUMPS = 10
+GARBAGE_JUMP_SHARE = 0.05
+GARBAGE_ORPHAN_RATIO = 0.5          # (a) tracks a greedy chainer must open per jump, over this: a shared address of two
+                                    # real aircraft chains into a few tracks (0.01-0.2), garbage does not (0.6-1.4)
+GARBAGE_GATE_KMS = 0.35             # chainer gate, km per second (350 m/s), on top of GARBAGE_MATCH_KM
+GARBAGE_MATCH_KM = 0.5
+GARBAGE_TRACK_AGE_S = 120           # an open track not extended for this long is closed
+GARBAGE_MAX_TRACKS = 6              # open tracks kept
+GARBAGE_ALT_HI_M = 20000.0          # (b) altitude above this or below GARBAGE_ALT_LO_M is a lie ...
+GARBAGE_ALT_LO_M = -500.0
+GARBAGE_BAD_ALT_SHARE = 0.03        # ... when on this share of the fixes or more
+GARBAGE_PINNED_FPM = (9900, 10100)  # (b) vertical speed pinned at full scale; 32640 is the ADS-B no-value code, left out
+GARBAGE_MIN_VS_FIXES = 50           # (b) the pinned share is judged only with this many vs-carrying fixes ...
+GARBAGE_PINNED_SHARE = 0.10         # ... and counts from this share
+GARBAGE_AGREE_WINDOW_S = 5          # (b) another station's fixes of the address within this many seconds of one of the pair's
+GARBAGE_AGREE_GOOD_KM = 2.0         # (b) the fix agrees when one of them is this close, contradicts when none is and one is over
+GARBAGE_AGREE_FAR_KM = 5.0          #     GARBAGE_AGREE_FAR_KM away
+# A station whose clock is wrong stamps packets that arrive minutes off the time stamp: edle3 on 24 October 2026, 14:38-15:43
+# UTC, NTP offset 16,000 ms and packets 347-527 s late. A UTC hour with this many fixes seen from a station, over the share
+# of them dropped by the stale/future filter, puts a "clock_fault" note on it.
+CLOCK_FAULT_MIN_FIXES = 100
+CLOCK_FAULT_SHARE = 0.3                 # edle3 lost 43.6% in its worst hour; 0.3 adds 2 station-hours of 7,609 on 18 October 2026
+
 # Where a new station would help most (METHOD.md 10.5): the nightly stores, per cell, family and band of height above
 # the ground, the probe's radio seconds judged and late and the family's airborne seconds; the page adds up the last
 # COVERAGE_DAYS days, and a band counts from COVERAGE_MIN_PROBE_H hours of probe time and COVERAGE_MIN_AIRCRAFT_DAYS
@@ -1857,6 +1888,28 @@ STATION_NOTES = {
         remedy="Declare the geoid separation in the receiver configuration file. The OGN protocol defines A= as "
                "the height above the geoid.",
         links=[_LINK_CONFIG, _LINK_PROTOCOL]),
+    "clock_fault": dict(
+        title="Packets far from their time stamp", figure="clock_fault_share", unit="%", threshold=30,
+        rule="in at least one hour with 100 or more fixes forwarded, over 30% of them arrived more than 5 minutes "
+             "before or after the time stamped in the packet; the figure is the share in the worst hour",
+        meaning="The monitor ignores a position that arrives more than 5 minutes from its time stamp, so this "
+                "station's figures for those hours are missing. Two causes produce it: a clock that is wrong, which "
+                "stamps every packet minutes or hours off, and a station that held its packets during a network "
+                "outage and sent them all at once when the link came back.",
+        remedy="Check that the time service (NTP) runs and reaches a time server, and that the receiver's time zone "
+               "is UTC. If the clock is right, look for an interruption of the internet link at the hour shown.",
+        links=[_LINK_FAQ]),
+    "garbage_pairs": dict(
+        title="Aircraft positions garbled at this station", figure="garbage_addresses", unit="addresses", threshold=None,
+        rule="for at least one aircraft, the positions from this station jumped over 5 km within a few seconds too "
+             "often to be one aircraft, or carried impossible altitudes or vertical speeds, and the other stations that "
+             "heard the same aircraft at the same time placed it elsewhere more often than where this station did; the "
+             "figure is the number of such aircraft",
+        meaning="The monitor ignored this station's copies of those aircraft. Since other stations heard the same "
+                "aircraft correctly, the fault lies in the reception or the decoding here.",
+        remedy="Check the clock first: on 24 October 2026 a receiver without time synchronisation garbled seven "
+               "aircraft for an hour. Then check the frequency correction and the gain in the receiver configuration.",
+        links=[_LINK_CONFIG, _LINK_FAQ]),
     "signal_low": dict(
         title="Signal below the neighbouring stations", figure="sensitivity_db", unit="dB",
         threshold=STATION_SENSITIVITY_DB, invert=True,
