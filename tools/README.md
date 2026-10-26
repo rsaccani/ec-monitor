@@ -1,7 +1,9 @@
 # One-off tools
 
 `schema_doc.py` is the exception: it is run after every migration, and regenerates `schema.sql` and
-`SCHEMA.md` from the production database (README.md, Running it). The rest are described below.
+`SCHEMA.md` from the production database (README.md, Running it). `forecast_archive.py` and
+`sondes.py` are recurring too: they keep the weather archive (README.md, Weather archive). The rest
+are described below.
 
 Scripts that changed stored figures after the fact, or checked them, kept
 here because METHOD.md cites what they did and the code behind every figure

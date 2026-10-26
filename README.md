@@ -393,6 +393,35 @@ or that two sites of one list share is qualified with the nearest GeoNames town 
 every site of a list has a name of its own. The terrain model in `data/` is not in the
 repository (see Running it).
 
+## Weather archive (optional tools)
+
+Two stand-alone scripts in `tools/` keep the weather next to the feed, for comparing what aircraft
+measure with what the models said and the sondes saw. They share one directory, set by
+`EC_WEATHER_DIR` (default `~/ec-weather`), and need only the Python standard library.
+
+`tools/forecast_archive.py` runs once each morning (04:30 UTC suits the 00 UTC model runs). For
+ICON-EU, ECMWF IFS 0.25, ICON-D2, ICON-2I and Meteo-France AROME it saves the forecast of the current
+UTC day, hourly 06-20 UTC, as issued that morning, from Open-Meteo's forecast API (the
+historical-forecast API stitches the freshest runs and answers a different question). The points are
+a 0.75 degree grid over 41-49.25 N, 4-16.75 E plus the radiosonde stations; the variables are
+temperature, wind and geopotential height at 1000-500 hPa, wind at 10/80/120/180 m, 2 m temperature,
+boundary-layer height, surface and sea-level pressure, wherever a model has them. Output is
+`$EC_WEATHER_DIR/forecasts/YYYY-MM-DD/<model>.json.gz`, written atomically, with the request and the
+model run time; a model already saved for the day is skipped. A point a model refuses (AROME's
+real eastern edge slants well inside its published box) is remembered in
+`$EC_WEATHER_DIR/outside.json` and left out for 30 days. Open-Meteo's free tier is for
+non-commercial use under CC BY 4.0 and limits calls per minute, hour and day, counting a request as
+locations x max(1, variables / 10) calls; the script paces itself under those limits, so a full run
+takes a little over an hour and about 4,600 of the 10,000 daily calls. Cron line:
+`30 4 * * * python3 /path/to/tools/forecast_archive.py`.
+
+`tools/sondes.py` fetches radiosonde profiles. University of Wyoming (BUFR-based, full resolution,
+a few hours after launch) serves Payerne, Munich, Stuttgart, Vienna, Innsbruck, Udine/Rivolto, Graz,
+Zagreb and Ajaccio; NOAA's IGRA v2 (reported levels only, 1-2 days late, public domain) serves
+Novara/Cameri, Cuneo, San Pietro Capofiume, Pratica di Mare and Nimes, and the past of Milano Linate
+(to 2021). `sondes.py day 2026-10-24 12` saves every station that launched at that hour under
+`$EC_WEATHER_DIR/sondes/`; the file header lists the sources and formats.
+
 ## License
 
 The code is MIT, see [LICENSE](LICENSE). The data come from the
