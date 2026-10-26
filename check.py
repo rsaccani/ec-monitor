@@ -85,6 +85,7 @@ PATTERN_MIN_KM = 20
 N_PATTERN = 360
 PATTERN_MIN_N = 10          # receptions a sector needs to count
 PATTERN_MIN_SECTORS = 8     # sectors with PATTERN_MIN_N each, or no pattern is shown
+PATTERN_DAYS = 30           # the days of daily_device_pattern (nightly.PATTERN_KEEP_DAYS)
 STATE_VERSION = 3           # 2: samples carry their time (10 October 2026); 3: packed (24 October 2026)
 STATE_PATH = os.environ.get("EC_CHECK_STATE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "check-state.pickle"))
@@ -219,6 +220,28 @@ class Ref(Samples):
     @staticmethod
     def unpack(rec):
         return rec[0], rec[1].rstrip(b"\0").decode("ascii"), rec[2]
+
+
+def pattern_days(rows, days):
+    """The 30-day pattern of one system, from daily_device_pattern rows summed over the days:
+    [(sector, receptions, sum of dB scaled to 10 km)]. As DeviceCheck._pattern, with a mean
+    where it has a median, since the table holds counts and sums: per sector the mean signal
+    minus the mean of every reception of the system, and the same PATTERN_MIN_N and
+    PATTERN_MIN_SECTORS. `days` is how many of the PATTERN_DAYS days have a row."""
+    n, total = [0] * 12, [0.0] * 12
+    for sector, k, s in rows:
+        n[sector] += k
+        total[sector] += s
+    count = sum(n)
+    full = sum(1 for k in n if k >= PATTERN_MIN_N)
+    out = {"n": count, "min_km": PATTERN_MIN_KM, "min_n": PATTERN_MIN_N, "min_sectors": PATTERN_MIN_SECTORS,
+           "sectors_full": full, "sectors": None, "days": days, "window_days": PATTERN_DAYS}
+    if full >= PATTERN_MIN_SECTORS:
+        mid = sum(total) / count
+        out["sectors"] = [{"deg": i * 30, "n": n[i],
+                           "db": round(total[i] / n[i] - mid, 1) if n[i] >= PATTERN_MIN_N else None}
+                          for i in range(12)]
+    return out
 
 
 class Pattern(Samples):

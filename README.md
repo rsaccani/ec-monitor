@@ -67,6 +67,7 @@ each address was heard on each system, for one hour, and leaves the service only
 | The raw feed (`recorder.py`, METHOD.md section 9), read each night by `nightly.py` | 30 days (`EC_RAW_DAYS`; seven until 24 October 2026) |
 | Thermals to each side per device address and day (`daily_circling_pilot`, `nightly.py`) | the current and the previous month; then reduced to counts and deleted |
 | Routes between airfields per device address and day (`daily_routes`, `nightly.py`, PATTERNS.md section 6) | the current and the previous month; then reduced to flights and distinct aircraft per route and month, and deleted |
+| Far airborne receptions per device address, source, day and side of the aircraft, with their summed signal (`daily_device_pattern`, `nightly.py`, METHOD.md section 9): no position, time or station | 30 days, then deleted by the nightly |
 | Countries and regions where each device address flew, per day and source (`daily_device_regions`, `nightly.py`, METHOD.md section 10.6) | the current and the previous month; then reduced to distinct devices per month, country, region, source and category (`monthly_region_summary`), and deleted |
 | The nightly totals (`daily_*`: hours, circling, gaggles, parked aircraft, drones, data quality, ground stations by name) | indefinitely |
 

@@ -18,6 +18,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - `ads_l.daily_circling_time`: SELECT, INSERT, DELETE
 - `ads_l.daily_coverage_gaps`: SELECT, INSERT, DELETE
 - `ads_l.daily_crewed_encounters`: SELECT, INSERT, DELETE
+- `ads_l.daily_device_pattern`: SELECT, INSERT, DELETE (from `schema/2026-10-25-device-pattern.sql`, once applied)
 - `ads_l.daily_device_regions`: SELECT, INSERT, DELETE (from `schema/2026-10-25-device-regions.sql`, once applied)
 - `ads_l.daily_cruise`: SELECT, INSERT, DELETE
 - `ads_l.daily_drone_cells`: SELECT, INSERT, DELETE
@@ -68,6 +69,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - Nightly: data quality (1): [`daily_quality`](#daily_quality)
 - Nightly: ground stations (3): [`daily_coverage_gaps`](#daily_coverage_gaps), [`daily_station_sensitivity`](#daily_station_sensitivity), [`daily_stations`](#daily_stations)
 - Station rose (1): [`daily_station_rose`](#daily_station_rose)
+- Nightly: reception pattern of each device (1): [`daily_device_pattern`](#daily_device_pattern)
 - Nightly: devices by country and region (1): [`daily_device_regions`](#daily_device_regions)
 - Nightly: patterns family (18): [`daily_agl_hours`](#daily_agl_hours), [`daily_circling`](#daily_circling), [`daily_circling_pilot`](#daily_circling_pilot), [`daily_circling_time`](#daily_circling_time), [`daily_cruise`](#daily_cruise), [`daily_flight_classes`](#daily_flight_classes), [`daily_flights`](#daily_flights), [`daily_gaggles`](#daily_gaggles), [`daily_helicopter_night`](#daily_helicopter_night), [`daily_hours_solar`](#daily_hours_solar), [`daily_launches`](#daily_launches), [`daily_mixed_thermals`](#daily_mixed_thermals), [`daily_routes`](#daily_routes), [`daily_thermal_sites`](#daily_thermal_sites), [`daily_thermals`](#daily_thermals), [`daily_tug_time`](#daily_tug_time), [`daily_tug_tows`](#daily_tug_tows), [`daily_wave`](#daily_wave)
 - Other (1): [`nightly_runs`](#nightly_runs)
@@ -875,6 +877,29 @@ The direct airborne receptions of a station on one source in a day, in 36 sector
 - Read by: `sources.py` `SourceTracker.station_rose`
 - Published through: `/api/stations/<name>/rose`
 - History: `schema/2026-10-25-station-rose.sql` (created). Grants in `schema/2026-10-25-station-rose.sql`
+
+## Nightly: reception pattern of each device
+
+Far airborne receptions of each device by side of the aircraft, kept for 30 days (METHOD.md 7), a family of its own in nightly.py (FAMILIES, `device_pattern`) written in a transaction of its own. Holds addresses, so the nightly deletes the rows older than 30 days after each run.
+
+### `daily_device_pattern`
+
+One device on one source and one sector of the aircraft, with the receptions of a day from receivers farther than 20 km and the sum of their signal in dB scaled to 10 km. No position, time or receiver is kept.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `address` | char(6) |  | 2 |
+| `source` | varchar(9) |  | 3 |
+| `sector` | tinyint(3) unsigned |  | 4 |
+| `n` | int(10) unsigned |  |  |
+| `snr_sum` | float |  |  |
+
+- Defined in: METHOD.md 7
+- Written by: the nightly, `nightly.py` `write_family` and `prune_device_pattern` (nightly family `device_pattern`)
+- Read by: the service, `sources.py` `SourceTracker.device_pattern_rows`, for the device check
+- Published through: `/check`, only for a device heard in the last 24 hours (`pattern_30d`)
+- History: `schema/2026-10-25-device-pattern.sql` (created). Grants in `schema/2026-10-25-device-pattern.sql`
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
 
 ## Nightly: devices by country and region

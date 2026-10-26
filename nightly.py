@@ -56,6 +56,7 @@ import zlib
 import pymysql
 from dotenv import load_dotenv
 
+import check
 import recorder
 import sources
 
@@ -353,12 +354,17 @@ FAMILIES = {
     # Devices by country and region (METHOD.md 10.6, 25 October 2026): a family of its own as well, since it
     # holds addresses and is archived apart.
     "regions": ("daily_device_regions",),
+    # The reception pattern of each device (METHOD.md 7, 25 October 2026): its own family, since it is kept for
+    # PATTERN_KEEP_DAYS days only and pruned by the nightly.
+    "device_pattern": ("daily_device_pattern",),
     "patterns": ("daily_thermal_sites", "daily_flight_classes", "daily_routes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
                  "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
                  "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
                  "daily_cruise", "daily_helicopter_night"),
 }
-TABLES = FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] + FAMILIES["regions"]
+TABLES = (FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] + FAMILIES["regions"]
+          + FAMILIES["device_pattern"])
+PATTERN_KEEP_DAYS = 30                  # the days daily_device_pattern keeps, the run's day included
 # The statistics endpoints whose monthly snapshot belongs to the patterns family.
 PATTERN_SNAPSHOTS = ("patterns",)
 
@@ -1111,6 +1117,20 @@ def region_guard(f):
     return guarded
 
 
+def device_pattern_guard(f):
+    """An error in the device patterns costs them their day and nothing else (METHOD.md 7)."""
+    def guarded(self, *args):
+        if not self.dp:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The device patterns failed during the pass")
+            self.failed["device_pattern"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.dp = False
+    return guarded
+
+
 def coverage_guard(f):
     """An error in the coverage gaps costs the day its coverage rows and nothing else: the station
     notes and the sensitivity are written without them, and the run notes say so."""
@@ -1189,6 +1209,9 @@ class Nightly:
         self.r = True             # METHOD.md 10.6, devices by region; switched off if its work fails during the pass
         self.anon_peak = 0        # MB, the largest anonymous memory sampled (anon_mb)
         self.regions = {}         # (device, tocall, country, region) -> category, for an airborne fix there
+        self.dp = True            # METHOD.md 7, the device patterns; switched off if its work fails during the pass
+        self.dp_pos = {}          # receiver -> (lat, lon), the last position it beaconed (as SourceTracker.stations)
+        self.dpat = {}            # (address, tocall, sector) -> [receptions, sum of dB scaled to 10 km]
         self.missing_hours = ()
         self.ddb_types, self.notrack = ddb[0], ddb[1]
         self.ddb_models = ddb[2] if len(ddb) > 2 else {}
@@ -1580,6 +1603,8 @@ class Nightly:
         raw_tc = path[0]
         in_day = self.d0 <= epoch < self.d1     # quality is filed by reception
         if raw_tc == "OGNSDR" or raw_tc == "OGNSXR":
+            if self.dp and body.startswith("/"):
+                self.device_pattern_station(src, body)
             if in_day and self.s:
                 self.station_position(epoch, src, body)
             if in_day and self.c:
@@ -1587,6 +1612,8 @@ class Nightly:
             return
         if body[26:27] == "&" and raw_tc in STATION_TOCALLS and in_day and self.s and " id" not in body:
             self.station_position(epoch, src, body)     # a FANET ground station, or an old receiver as APRS
+        if body[26:27] == "&" and self.dp:
+            self.device_pattern_station(src, body)
         if body[26:27] == "&" or raw_tc in sources.EXCLUDED:
             return                              # FANET ground stations, delayed and synthetic copies
         if body[26:27] == "_":
@@ -1733,6 +1760,11 @@ class Nightly:
             self.addr_fix.pop(address, None)
             self.cg_radio.pop(address, None)
             return
+        if (self.dp and via == "radio" and not rnd and course is not None
+                and (kt or 0) >= sources.FLYING_KT.get(raw_category, sources.AIRBORNE_KT)):
+            # The live check's selection: the packet's own category and speed, and every receiver's copy
+            # of a fix, since the pattern is about the receivers (before the copy filter just below).
+            self.device_pattern_fix(address, tocall, lat, lon, course, path[-1], body)
         key = (src, tocall, via)
         prev = self.last_fix.get(key)
         if prev is not None and t <= prev[0]:
@@ -2816,6 +2848,37 @@ class Nightly:
 
     # --- 5. quality: receivers ------------------------------------------------------------
 
+    @device_pattern_guard
+    def device_pattern_station(self, name, body):
+        """The position of a receiver, kept as the live check keeps it: the last one it beaconed."""
+        m = sources._position.match(body)
+        if m and not (m.group(4) == "00" and m.group(8) == "000"):
+            g = m.groups()
+            lat = int(g[3]) + float(g[4]) / 60
+            lon = int(g[7]) + float(g[8]) / 60
+            self.dp_pos[name] = (-lat if g[5] == "S" else lat, -lon if g[9] == "W" else lon)
+
+    @device_pattern_guard
+    def device_pattern_fix(self, address, tocall, lat, lon, course, receiver, body):
+        """METHOD.md 7: a reception from a receiver farther than check.PATTERN_MIN_KM, by the side of the
+        aircraft the receiver sees (12 sectors of 30 degrees centred on the nose) and its signal scaled to
+        10 km, as check.DeviceCheck.feed does for the live 24 hours. Only counts and sums are kept."""
+        where = self.dp_pos.get(receiver)
+        if where is None:
+            return
+        km = dist(lat, lon, *where) / 1000
+        if km <= check.PATTERN_MIN_KM:
+            return
+        m = _FIX_SNR.search(body)
+        if not m:
+            return
+        sector = int(((sources._bearing(lat, lon, *where) - course + 15) % 360) // 30)
+        a = self.dpat.get((address, tocall, sector))
+        if a is None:
+            a = self.dpat[(address, tocall, sector)] = [0, 0.0]
+        a[0] += 1
+        a[1] += float(m.group(1)) + sources.SNR_SLOPE_DB * math.log10(km / 10)
+
     @region_guard
     def region_fix(self, device, tocall, category, lat, lon):
         """METHOD.md 10.6: the country and region of an airborne fix, looked up once per 0.01-degree cell
@@ -3058,9 +3121,10 @@ class Nightly:
         patterns family is computed first, since the crewed encounters report
         the tows the launches find.
         """
-        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}}
+        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}, "device_pattern": {}}
         for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity),
-                                ("stations", self.rows_stations), ("regions", self.rows_regions)):
+                                ("stations", self.rows_stations), ("regions", self.rows_regions),
+                                ("device_pattern", self.rows_device_pattern)):
             if family in self.failed:
                 continue                        # already failed during the pass
             try:
@@ -3077,6 +3141,13 @@ class Nightly:
         return {"daily_device_regions": (("day", "device_id", "source", "category", "country", "region"),
                                          [(day, d, tc, cat, cc, reg) for (d, tc, cc, reg), cat
                                           in sorted(self.regions.items())])}
+
+    def rows_device_pattern(self):
+        """METHOD.md 7: one row per device, source and sector with a far airborne reception that day."""
+        day = self.day.isoformat()
+        return {"daily_device_pattern": (("day", "address", "source", "sector", "n", "snr_sum"),
+                                         [(day, a, tc, sec, n, round(total, 1))
+                                          for (a, tc, sec), (n, total) in sorted(self.dpat.items())])}
 
     STATION_COLUMNS = ("day", "name", "kind", "version", "lat", "lon", "availability", "beacons", "status_beacons",
                        "ntp_ms_last", "ntp_ms_median", "temp_c_last", "temp_c_median", "noise_db_last",
@@ -3778,7 +3849,7 @@ def snapshot_endpoints(family):
         return tuple(PATTERN_SNAPSHOTS)
     if family == "conspicuity":
         return tuple(e for e in every if e not in PATTERN_SNAPSHOTS)
-    if family in ("stations", "regions"):
+    if family in ("stations", "regions", "device_pattern"):
         return ()                       # no endpoint of these is frozen monthly: the table is the record
     return tuple(every)
 
@@ -3870,6 +3941,22 @@ def write_family(day, family, tables):
         conn.close()
 
 
+def prune_device_pattern():
+    """Delete what daily_device_pattern keeps beyond PATTERN_KEEP_DAYS, counted from today: the table
+    holds one row per device, source and sector, and nothing may outlive the 30 days the page shows."""
+    oldest = datetime.datetime.utcnow().date() - datetime.timedelta(days=PATTERN_KEEP_DAYS - 1)
+    conn = connect_db(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM daily_device_pattern WHERE day < %s", (oldest.isoformat(),))
+            if cur.rowcount:
+                logger.info(f"Pruned daily_device_pattern: {cur.rowcount} rows before {oldest}")
+    except pymysql.MySQLError as e:
+        logger.error(f"Error pruning daily_device_pattern: {e}")
+    finally:
+        conn.close()
+
+
 def write_run(run_row, notes):
     """The day's nightly_runs row, with what failed, if anything, in notes."""
     conn = connect_db()
@@ -3908,6 +3995,23 @@ def print_dry_run(tables, run_row):
             for cc in top[:25]:
                 regs = sorted(((len(v), reg) for (c, reg), v in by_reg.items() if c == cc), reverse=True)
                 print(f"   {cc} {len(by_cc[cc]):6d}: " + ", ".join(f"{reg or '-'} {k}" for k, reg in regs[:6]))
+            continue
+        if table == "daily_device_pattern":
+            # Addresses: counts only, and the same test as the page's (check.PATTERN_MIN_N receptions in each of
+            # check.PATTERN_MIN_SECTORS sectors) on this one day, per source.
+            full = collections.defaultdict(lambda: [0, set()])
+            for r in rows:
+                if r[4] >= check.PATTERN_MIN_N:
+                    full[(r[1], r[2])][1].add(r[3])
+            print(f"   distinct devices {len({r[1] for r in rows})}, device-sources {len({(r[1], r[2]) for r in rows})}, "
+                  f"receptions {sum(r[4] for r in rows):,}")
+            judged = collections.Counter()
+            for (a, tc), (_, secs) in full.items():
+                judged[(tc, len(secs) >= check.PATTERN_MIN_SECTORS)] += 1
+            print("   device-sources with a pattern on the day alone / with any sector of "
+                  f"{check.PATTERN_MIN_N}+, by source: "
+                  + ", ".join(f"{tc} {judged[(tc, True)]}/{judged[(tc, True)] + judged[(tc, False)]}"
+                              for tc in sorted({k[0] for k in judged})))
             continue
         if table == "daily_hours_solar":
             by = collections.Counter()
@@ -4125,7 +4229,8 @@ def main():
         logger.error(f"No recording for {day}")
         return 1
     families = n.rows()
-    tables = {**families["conspicuity"], **families["patterns"], **families["stations"], **families["regions"]}
+    tables = {**families["conspicuity"], **families["patterns"], **families["stations"], **families["regions"],
+              **families["device_pattern"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
@@ -4218,7 +4323,7 @@ def main():
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     failed = dict(n.failed)
     written = []
-    for family in ("conspicuity", "patterns", "stations", "regions"):
+    for family in ("conspicuity", "patterns", "stations", "regions", "device_pattern"):
         if family in failed:
             continue
         if args.dry_run:
@@ -4227,6 +4332,8 @@ def main():
         try:
             write_family(day, family, families[family])
             written.append(family)
+            if family == "device_pattern":
+                prune_device_pattern()
         except Exception as e:
             logger.exception(f"The {family} family could not be written; its previous rows of {day} are kept")
             failed[family] = f"write: {type(e).__name__}: {e}"[:200]

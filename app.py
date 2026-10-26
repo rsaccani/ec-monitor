@@ -808,7 +808,12 @@ def get_check():
     out = dict(tracker.check.report(address))
     out.update({"query": q, "found": True})
     # The usual pattern of the same source and kind of aircraft, beside the device's own.
-    out["systems"] = [dict(s, pattern_typical=tracker.typical_pattern(s["tocall"], s["category"]))
+    # The same pattern over the last 30 days, from daily_device_pattern. out["systems"] holds only
+    # the systems heard in the last 24 hours, so a device that has gone quiet shows none (METHOD.md 7).
+    since = tracker.device_pattern_rows(address, check.PATTERN_DAYS) if out.get("systems") else {}
+    out["systems"] = [dict(s, pattern_typical=tracker.typical_pattern(s["tocall"], s["category"]),
+                           pattern_30d=check.pattern_days(since[s["system"]][1], since[s["system"]][0])
+                           if s["system"] in since else None)
                       for s in out.get("systems", [])]
     return jsonify(out)
 

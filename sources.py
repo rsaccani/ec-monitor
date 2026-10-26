@@ -3037,6 +3037,28 @@ class SourceTracker:
         typ = self.pattern_typical or {}
         return typ.get((tocall, category)) or typ.get((tocall, None))
 
+    def device_pattern_rows(self, address, days):
+        """What daily_device_pattern holds of one address for the last `days` days, per system:
+        {label: (days with a row, [(sector, receptions, dB sum)])}. Empty on a database error."""
+        first = (datetime.datetime.utcnow().date() - datetime.timedelta(days=days - 1)).isoformat()
+        out = {}
+        try:
+            conn = self.connect_db()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT source, day, sector, n, snr_sum FROM daily_device_pattern "
+                                "WHERE address = %s AND day >= %s", (address, first))
+                    for source, day, sector, n, total in cur.fetchall():
+                        seen, rows = out.setdefault(source_info(source)[0], (set(), []))
+                        seen.add(day)
+                        rows.append((int(sector), int(n), float(total)))
+            finally:
+                conn.close()
+        except pymysql.MySQLError as e:
+            logger.error(f"Error reading daily_device_pattern: {e}")
+            return {}
+        return {label: (len(seen), rows) for label, (seen, rows) in out.items()}
+
     def prediction_stats(self):
         """Prediction errors by source, category, horizon, circling and predictor."""
         # Served without waiting while fresh; only the warm thread (or a cold

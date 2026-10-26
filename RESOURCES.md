@@ -55,7 +55,13 @@ MariaDB held 582 MB RSS (buffer pool 300 MB) for the whole host, the EC database
 | Ground stations | `daily_stations` | 6.0 | about 0.4 MB a day |
 | Air cells | `daily_air_cells` | 6.5 | about 0.3 MB a day |
 | Flights | `daily_flights` | 2.5 | |
+| Device reception patterns | `daily_device_pattern` | about 35 at 30 days (estimate), 110 to 140 in summer | about 1.1 MB a day, pruned to 30 days |
 | About 25 smaller nightly tables | | about 20 | each under 0.1 MB a day |
+
+`daily_device_pattern` was estimated from a dry run of the nightly on 24 October 2026 (11.7 million
+lines, 1,198 s under the memory cap): 11,665 rows for 1,241 devices and 1.04 million receptions, held
+in a dictionary of about 3 MB. The table is not created yet, so its size is an estimate of about 100
+bytes a row with the `address` index; the first real nightly gives the figure.
 
 Growth was measured in Europe; the world adds roughly a tenth of the stations and more of the
 nightly rows.

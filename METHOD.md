@@ -693,7 +693,8 @@ aircraft that circled,
 its thermals to each side per day. Apart from the raw feed kept for seven
 days, described below, no track is stored, and the only positions kept are
 the last one of each device, for 24 hours, so that the device check can
-answer.
+answer. The only per-device figures kept beyond 24 hours are the 30-day
+reception counts described below.
 
 The device check (conspicuity.eu/check/) answers for one address, or for a
 registration or competition number that the OGN device database shows as
@@ -718,6 +719,22 @@ and category from the circling receptions of section 7 at 20 km and beyond.
 The two differ in what they take in (every airborne reception against circling
 ones only) and in the distance correction (the fitted slope against free
 space), which matters little for a pattern read against its own median.
+
+The same pattern over 30 days follows (from 25 October 2026), beside the 24-hour
+one and only for a device heard in the last 24 hours. The nightly batch
+(section 10) files, per UTC day, address, source and sector, the number of far
+airborne receptions and the sum of their signal scaled to 10 km, with the
+selection of the live pattern: radio receptions from a station farther than
+20 km, at the airborne speed of the packet's own category, the first copy of
+each fix. No position, time or station is kept, and the rows older than 30 days
+are deleted by the same run. The check sums the days and shows each sector's
+mean signal against the mean of all the system's receptions, with the same
+rule of 10 receptions in each of 8 sectors. It is a mean, since a table of
+sums cannot give a median; the live 24-hour pattern uses medians, so a few
+very weak receptions move a 30-day sector more than a 24-hour one. The page
+says how many of the 30 days have receptions. A day not yet computed, a
+reception that arrives before its station has beaconed its position, and a
+device that sends under a random address are absent from it.
 
 A device address can be traced to an aircraft and its pilot, so the lists of
 addresses are kept for the current and the previous month only. Once a month
