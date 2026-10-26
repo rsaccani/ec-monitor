@@ -1494,6 +1494,11 @@ sources counts once a device heard on two systems. A device's category for
 the month is the lowest category number it had on the system, the rule of
 the monthly device counts.
 
+The published figures are also split by the aircraft category each device
+declared (from 26 October 2026): the category its configuration sets, so a unit
+moved between aircraft and never reconfigured keeps its old kind, and the
+lowest category number of the month when it declared several.
+
 ADS-B is stored like every other source but left out of the all-sources
 figure and not published (26 October 2026): the network's receivers hear it
 mostly from airliners, 1,679 of Germany's 1,854 devices on the first day, and

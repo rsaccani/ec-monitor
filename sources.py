@@ -4068,30 +4068,34 @@ class SourceTracker:
         Months archived by archive_loop come from monthly_region_summary; the months whose addresses
         are still kept are counted from daily_device_regions in the same four levels, and listed with
         partial true. region '' is the whole country and source '' every source, each its own count of
-        distinct devices. A device has one category per month and source, so the categories of a row
-        add up exactly and are left out here.
+        distinct devices. A device has one category per month and source (the lowest it declared, over all
+        its sources for source ''), so `categories` splits `devices` exactly; 255 is no category at all.
         """
         def compute(cur):
-            cur.execute("SELECT month, country, region, source, SUM(devices) FROM monthly_region_summary "
-                        "GROUP BY 1, 2, 3, 4")
-            counts = {(r[0], r[1], r[2], r[3]): int(r[4]) for r in cur.fetchall()}
+            cur.execute("SELECT month, country, region, source, category, devices FROM monthly_region_summary")
+            counts = {}         # (month, country, region, source) -> {category: devices}
+            for m, c, r, s, cat, n in cur.fetchall():
+                cats = counts.setdefault((m, c, r, s), {})
+                cats[int(cat)] = cats.get(int(cat), 0) + int(n)
             archived = {k[0] for k in counts}
             live = {}
             for sql in REGION_LIVE_SQL:
                 cur.execute(sql, ("2000-01-01",) * sql.count("%s"))
-                for month, country, region, source, _cat, n in cur.fetchall():
+                for month, country, region, source, cat, n in cur.fetchall():
                     if month not in archived:
-                        key = (month, country, region, source)
-                        live[key] = live.get(key, 0) + int(n)
+                        cats = live.setdefault((month, country, region, source), {})
+                        cats[int(cat)] = cats.get(int(cat), 0) + int(n)
             counts.update(live)
-            counts = {k: n for k, n in counts.items() if k[3] not in REGION_HIDDEN_SOURCES}
+            counts = {k: v for k, v in counts.items() if k[3] not in REGION_HIDDEN_SOURCES}
             partial = {k[0] for k in live}
             months = sorted({k[0] for k in counts})
-            rows = [{"month": m, "country": c, "region": r, "source": s, "devices": n}
-                    for (m, c, r, s), n in sorted(counts.items())]
+            rows = [{"month": m, "country": c, "region": r, "source": s, "devices": sum(v.values()),
+                     "categories": {str(k): n for k, n in sorted(v.items())}}
+                    for (m, c, r, s), v in sorted(counts.items())]
             labels = {s: dict(zip(("label", "kind"), SOURCES.get(s, (s, "other"))))
                       for s in sorted({k[3] for k in counts if k[3]})}
             return {"months": [{"month": m, "partial": m in partial} for m in months], "sources": labels,
+                    "category_names": {**{str(k): v for k, v in CATEGORY_NAMES.items()}, "255": "Unknown"},
                     "rows": rows}
         return self._cached("regions", "regions_cache", compute)
 

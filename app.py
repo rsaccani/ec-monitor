@@ -1002,12 +1002,13 @@ def get_regions():
                 (r["country"] == country if country else r["region"] == "")]
         if csv_out:
             buf = StringIO()
-            writer = csv.DictWriter(buf, fieldnames=["month", "country", "region", "source", "devices"])
+            writer = csv.DictWriter(buf, fieldnames=["month", "country", "region", "source", "category", "devices"])
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows({**{k: r[k] for k in ("month", "country", "region", "source")}, "category": cat, "devices": n}
+                             for r in rows for cat, n in r["categories"].items())
             return buf.getvalue(), "text/csv", {"Content-Disposition": 'attachment; filename="devices-by-region.csv"'}
         out = {"months": whole["months"], "month": picked, "country": country,
-               "sources": whole["sources"], "rows": rows}
+               "sources": whole["sources"], "category_names": whole["category_names"], "rows": rows}
         return app.json.dumps(out) + "\n", "application/json", None
 
     return _cached(stat, ("devices-by-region", csv_out, month, country), build)
