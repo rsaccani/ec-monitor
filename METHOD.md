@@ -1529,7 +1529,15 @@ km), and the sum of the signal scaled to 10 km as in section 7
 distance and no address is kept. A station and source with no reception in a
 day get no row. Addresses that send garbage positions, jumping hundreds of km
 every few seconds at a flat signal, are left out by name until a general rule
-exists: FLR18008D, heard only by Stallikon. The page adds the last 30 days recorded and shows, per
+exists: FLR18008D, heard only by Stallikon. From 26 October 2026 the nightly
+writes the table itself, in a family of its own (`station_rose`) so that a
+failure in the rose costs the other tables nothing, and deletes the days older
+than 30 before the run's day; `tools/station_rose_backfill.py` is kept for
+gaps, and for the days recorded before that date. A reception heard before
+its station's first beacon of the day is held until the beacon comes. The
+nightly takes the reception before the vote of categories and before the
+per-stream drop, as the backfill does, but after the DDB's no-track list,
+which the backfill ignores. The page adds the last 30 days recorded and shows, per
 sector, the 95th-percentile reach, read from the histogram by interpolating
 in the logarithm of the distance, and the mean signal at 10 km. A sector
 with fewer than 20 receptions (20 with a signal, for the mean) shows no
@@ -1542,8 +1550,8 @@ all, is the antenna or something next to it (a metal roof, a cable, a
 mast). The reach also follows the traffic: a sector over the sea or a
 valley with no flying shows a short reach however good the station is, so a
 reach is a lower bound of what the station can hear. The first rose was
-filled from the 7 days of recording left on 25 October; the page says how
-many days it covers.
+filled from the 7 days of recording left on 25 October (by the backfill); the
+page says how many days it covers.
 
 ## 11. Known limits
 

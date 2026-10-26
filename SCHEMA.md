@@ -858,7 +858,7 @@ One OGN or FANET ground station on a day, by exact name: availability, the last 
 
 ## Station reception rose
 
-One row per day, station and source (METHOD.md 10.7), written by `tools/station_rose_backfill.py` and later by the nightly. The last 30 days are kept.
+One row per day, station and source (METHOD.md 10.7), written by the nightly from 26 October 2026 (family `station_rose`, in a transaction of its own); `tools/station_rose_backfill.py` only fills gaps. The last 30 days are kept.
 
 ### `daily_station_rose`
 
@@ -873,7 +873,7 @@ The direct airborne receptions of a station on one source in a day, in 36 sector
 | `payload` | text |  |  |
 
 - Defined in: METHOD.md 10.7
-- Written by: `tools/station_rose_backfill.py` `write`
+- Written by: the nightly, `nightly.py` `write_family` and `prune_station_rose` (nightly family `station_rose`); `tools/station_rose_backfill.py` `write` for gaps
 - Read by: `sources.py` `SourceTracker.station_rose`
 - Published through: `/api/stations/<name>/rose`
 - History: `schema/2026-10-25-station-rose.sql` (created). Grants in `schema/2026-10-25-station-rose.sql`

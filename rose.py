@@ -10,6 +10,9 @@ One (station, source) takes 36 x 16 unsigned ints and 36 x 2 doubles: 2.9 kB, wh
 traffic. A day is written as one row per station and source (`daily_station_rose`), the payload
 holding only the sectors that heard something. `combine` adds the days of a window back up.
 
+The nightly writes the table from 26 October 2026 (`nightly.Nightly.rose_fix`, family `station_rose`);
+`tools/station_rose_backfill.py` is only for gaps and for the days recorded before that.
+
 This module imports `sources` only inside `Rose.__init__`, since sources imports it for `combine`.
 """
 import array

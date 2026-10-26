@@ -58,6 +58,7 @@ from dotenv import load_dotenv
 
 import check
 import recorder
+import rose
 import sources
 
 logger = logging.getLogger("nightly")
@@ -357,14 +358,22 @@ FAMILIES = {
     # The reception pattern of each device (METHOD.md 7, 25 October 2026): its own family, since it is kept for
     # PATTERN_KEEP_DAYS days only and pruned by the nightly.
     "device_pattern": ("daily_device_pattern",),
+    # The reception rose of each ground station (METHOD.md 10.7, 26 October 2026): its own family, one row per
+    # station and source, no address; pruned to ROSE_KEEP_DAYS by the nightly.
+    "station_rose": ("daily_station_rose",),
     "patterns": ("daily_thermal_sites", "daily_flight_classes", "daily_routes", "daily_hours_solar", "daily_circling", "daily_circling_pilot", "daily_gaggles",
                  "daily_mixed_thermals", "daily_thermals", "daily_agl_hours", "daily_circling_time",
                  "daily_flights", "daily_wave", "daily_launches", "daily_tug_tows", "daily_tug_time",
                  "daily_cruise", "daily_helicopter_night"),
 }
 TABLES = (FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] + FAMILIES["regions"]
-          + FAMILIES["device_pattern"])
+          + FAMILIES["device_pattern"] + FAMILIES["station_rose"])
 PATTERN_KEEP_DAYS = 30                  # the days daily_device_pattern keeps, the run's day included
+ROSE_KEEP_DAYS = 30                     # the days before the run's day that daily_station_rose keeps
+# Garbage streams (METHOD.md 10.7): an address whose positions jump hundreds of km every few seconds at a
+# flat signal. Same list as tools/station_rose_backfill.py, until the generic rule exists.
+ROSE_GARBAGE = {"FLR18008D"}
+ROSE_WAIT_MAX = 200_000                 # receptions held for stations not yet placed; about 20 MB at most
 # The statistics endpoints whose monthly snapshot belongs to the patterns family.
 PATTERN_SNAPSHOTS = ("patterns",)
 
@@ -1131,6 +1140,20 @@ def device_pattern_guard(f):
     return guarded
 
 
+def rose_guard(f):
+    """An error in the station roses costs them their day and nothing else (METHOD.md 10.7)."""
+    def guarded(self, *args):
+        if not self.ro:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The station roses failed during the pass")
+            self.failed["station_rose"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.ro = False
+    return guarded
+
+
 def coverage_guard(f):
     """An error in the coverage gaps costs the day its coverage rows and nothing else: the station
     notes and the sensitivity are written without them, and the run notes say so."""
@@ -1212,6 +1235,10 @@ class Nightly:
         self.dp = True            # METHOD.md 7, the device patterns; switched off if its work fails during the pass
         self.dp_pos = {}          # receiver -> (lat, lon), the last position it beaconed (as SourceTracker.stations)
         self.dpat = {}            # (address, tocall, sector) -> [receptions, sum of dB scaled to 10 km]
+        self.ro = True            # METHOD.md 10.7, the station roses; switched off if its work fails during the pass
+        self.rose = rose.Rose()
+        self.rose_wait = {}       # receiver not yet placed -> its receptions so far, fed when its first beacon comes
+        self.rose_waiting = self.rose_dropped = 0
         self.missing_hours = ()
         self.ddb_types, self.notrack = ddb[0], ddb[1]
         self.ddb_models = ddb[2] if len(ddb) > 2 else {}
@@ -1618,6 +1645,7 @@ class Nightly:
             return                              # FANET ground stations, delayed and synthetic copies
         if body[26:27] == "_":
             return                              # weather stations
+        src0 = src
         tocall = sources.packet_system(path, src)
         rnd = src.startswith(sources.RANDOM_PREFIX) and tocall in sources.RANDOM_ROTATING
         src = self.chained(src, tocall)
@@ -1730,6 +1758,10 @@ class Nightly:
         # --- the measures: fixes of this day, received in time ---------------
         if epoch - t > STALE or not (self.d0 <= t < self.d1):
             return
+        if self.ro and via == "radio" and src0 not in ROSE_GARBAGE:
+            # Every receiver's copy of a fix, before the drop and the vote below: the rose needs the packet's
+            # own category and the receiver, and no address.
+            self.rose_fix(tocall, path[-1], lat, lon, category, kt, alt_m, body)
         if kind != "adsb" and (address, tocall) in self.dropped:
             return                              # an impossible stream-day (9 October 2026), counted in 10.4
         raw_category = category
@@ -2848,6 +2880,33 @@ class Nightly:
 
     # --- 5. quality: receivers ------------------------------------------------------------
 
+    @rose_guard
+    def rose_fix(self, tocall, receiver, lat, lon, category, kt, alt_m, body):
+        """METHOD.md 10.7: a direct airborne radio reception, with the tests of tools/station_rose_backfill.py
+        (the backfill's `handle` is the reference). A receiver whose first beacon has not come yet has its
+        receptions held until it does, as the backfill's seed from daily_stations gives them."""
+        if sources.implausible(category, kt, alt_m) or sources.impossible_fix(category, kt, alt_m):
+            return
+        if (kt or 0) < sources.FLYING_KT.get(category, sources.AIRBORNE_KT):
+            return                              # not airborne, by the packet's own category and speed
+        m = _FIX_SNR.search(body)
+        snr = float(m.group(1)) if m else None
+        st = self.stations.get(receiver)
+        if st is not None and st.lat is not None:
+            self.rose.feed(receiver, tocall, st.lat, st.lon, lat, lon, snr)
+        elif self.rose_waiting < ROSE_WAIT_MAX:
+            self.rose_wait.setdefault(receiver, []).append((tocall, lat, lon, snr))
+            self.rose_waiting += 1
+        else:
+            self.rose_dropped += 1
+
+    @rose_guard
+    def rose_placed(self, name, st):
+        """The station has a position: feed what it heard before its first beacon."""
+        for tocall, lat, lon, snr in self.rose_wait.pop(name, ()):
+            self.rose.feed(name, tocall, st.lat, st.lon, lat, lon, snr)
+            self.rose_waiting -= 1
+
     @device_pattern_guard
     def device_pattern_station(self, name, body):
         """The position of a receiver, kept as the live check keeps it: the last one it beaconed."""
@@ -2910,6 +2969,7 @@ class Nightly:
         la0, la1, lo0, lo1 = recorder.EUROPE
         if not EUROPE_ONLY or (la0 <= lat <= la1 and lo0 <= lon <= lo1):
             st.lat, st.lon = lat, lon
+            self.rose_placed(name, st)
 
     @station_guard
     def station_status(self, epoch, name, tocall, body):
@@ -3121,10 +3181,12 @@ class Nightly:
         patterns family is computed first, since the crewed encounters report
         the tows the launches find.
         """
-        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}, "device_pattern": {}}
+        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}, "device_pattern": {},
+               "station_rose": {}}
         for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity),
                                 ("stations", self.rows_stations), ("regions", self.rows_regions),
-                                ("device_pattern", self.rows_device_pattern)):
+                                ("device_pattern", self.rows_device_pattern),
+                                ("station_rose", self.rows_station_rose)):
             if family in self.failed:
                 continue                        # already failed during the pass
             try:
@@ -3148,6 +3210,15 @@ class Nightly:
         return {"daily_device_pattern": (("day", "address", "source", "sector", "n", "snr_sum"),
                                          [(day, a, tc, sec, n, round(total, 1))
                                           for (a, tc, sec), (n, total) in sorted(self.dpat.items())])}
+
+    def rows_station_rose(self):
+        """METHOD.md 10.7: one row per station and source with a direct airborne reception that day."""
+        if "stations" in self.failed:
+            raise RuntimeError("the station positions failed during the pass")
+        if self.rose_dropped:
+            logger.warning(f"{self.rose_dropped:,} receptions of stations not yet placed were not held")
+        return {"daily_station_rose": (("day", "station", "source", "n_total", "payload"),
+                                       self.rose.rows(self.day.isoformat()))}
 
     STATION_COLUMNS = ("day", "name", "kind", "version", "lat", "lon", "availability", "beacons", "status_beacons",
                        "ntp_ms_last", "ntp_ms_median", "temp_c_last", "temp_c_median", "noise_db_last",
@@ -3849,7 +3920,7 @@ def snapshot_endpoints(family):
         return tuple(PATTERN_SNAPSHOTS)
     if family == "conspicuity":
         return tuple(e for e in every if e not in PATTERN_SNAPSHOTS)
-    if family in ("stations", "regions", "device_pattern"):
+    if family in ("stations", "regions", "device_pattern", "station_rose"):
         return ()                       # no endpoint of these is frozen monthly: the table is the record
     return tuple(every)
 
@@ -3957,6 +4028,21 @@ def prune_device_pattern():
         conn.close()
 
 
+def prune_station_rose(day):
+    """Keep the ROSE_KEEP_DAYS days before the run's day, as tools/station_rose_backfill.py does."""
+    conn = connect_db(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM daily_station_rose WHERE day < %s",
+                        ((day - datetime.timedelta(days=ROSE_KEEP_DAYS)).isoformat(),))
+            if cur.rowcount:
+                logger.info(f"Pruned daily_station_rose: {cur.rowcount} rows")
+    except pymysql.MySQLError as e:
+        logger.error(f"Error pruning daily_station_rose: {e}")
+    finally:
+        conn.close()
+
+
 def write_run(run_row, notes):
     """The day's nightly_runs row, with what failed, if anything, in notes."""
     conn = connect_db()
@@ -3995,6 +4081,10 @@ def print_dry_run(tables, run_row):
             for cc in top[:25]:
                 regs = sorted(((len(v), reg) for (c, reg), v in by_reg.items() if c == cc), reverse=True)
                 print(f"   {cc} {len(by_cc[cc]):6d}: " + ", ".join(f"{reg or '-'} {k}" for k, reg in regs[:6]))
+            continue
+        if table == "daily_station_rose":
+            print(f"   stations {len({r[1] for r in rows})}, station-sources {len(rows)}, "
+                  f"receptions {sum(r[3] for r in rows):,}")
             continue
         if table == "daily_device_pattern":
             # Addresses: counts only, and the same test as the page's (check.PATTERN_MIN_N receptions in each of
@@ -4183,6 +4273,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--day", help="UTC day, YYYY-MM-DD (default: yesterday)")
     ap.add_argument("--dry-run", action="store_true", help="print the aggregates instead of writing them")
+    ap.add_argument("--rose-dump", help="with --dry-run, write the daily_station_rose rows to this file, as JSON lines")
     ap.add_argument("--hours", help="only these hours of the day, e.g. 12-13 (for testing)")
     ap.add_argument("--snapshot", action="store_true",
                     help="also take the monthly snapshot of the day's month, even if it is not its last day")
@@ -4230,7 +4321,7 @@ def main():
         return 1
     families = n.rows()
     tables = {**families["conspicuity"], **families["patterns"], **families["stations"], **families["regions"],
-              **families["device_pattern"]}
+              **families["device_pattern"], **families["station_rose"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
@@ -4278,6 +4369,10 @@ def main():
                ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1), n.anon_peak)
     if args.dry_run:
         print_dry_run(tables, run_row)
+        if args.rose_dump:
+            with open(args.rose_dump, "w") as out:
+                for row in tables.get("daily_station_rose", ((), []))[1]:
+                    out.write(json.dumps(row) + "\n")
         if "stations" not in n.failed:
             print_stations_dry_run(n, tables)
             print_coverage_dry_run(n, tables)
@@ -4323,7 +4418,7 @@ def main():
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     failed = dict(n.failed)
     written = []
-    for family in ("conspicuity", "patterns", "stations", "regions", "device_pattern"):
+    for family in ("conspicuity", "patterns", "stations", "regions", "device_pattern", "station_rose"):
         if family in failed:
             continue
         if args.dry_run:
@@ -4334,6 +4429,8 @@ def main():
             written.append(family)
             if family == "device_pattern":
                 prune_device_pattern()
+            if family == "station_rose":
+                prune_station_rose(day)
         except Exception as e:
             logger.exception(f"The {family} family could not be written; its previous rows of {day} are kept")
             failed[family] = f"write: {type(e).__name__}: {e}"[:200]
