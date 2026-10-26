@@ -197,6 +197,82 @@ AIRCRAFT_CATEGORIES = frozenset(range(1, 14)) - {10}     # 10 is "unknown" in th
 UNKNOWN_YET = {"OGADSB": 0}
 
 
+EPRA_TOCALLS = {"OGFLR"}        # after same_system
+EPRA_STEPS = ((1, 30), (2, 60), (3, 90))   # address updates bridged, s from one end to the next start
+EPRA_OVERLAP_S = 5              # s; a late copy of the old address may follow the new one
+EPRA_NONCES = 4                 # 2^Ne with FLARM's default Ne = 2
+
+
+def mix32(x):
+    """FTD-116's mix32: AES MixColumns on the four bytes of x."""
+    a = [(x >> s) & 0xFF for s in (0, 8, 16, 24)]
+    b = [((v << 1) & 0xFF) ^ (0x1B if v & 0x80 else 0) for v in a]
+    return ((b[0] ^ a[3] ^ a[2] ^ b[1] ^ a[1])
+            | (b[1] ^ a[0] ^ a[3] ^ b[2] ^ a[2]) << 8
+            | (b[2] ^ a[1] ^ a[0] ^ b[3] ^ a[3]) << 16
+            | (b[3] ^ a[2] ^ a[1] ^ b[0] ^ a[0]) << 24)
+
+
+def mix32_times(x, k):
+    for _ in range(k):
+        x = mix32(x)
+    return x
+
+
+def epra_keys(k):
+    """low24 of what k address updates add beyond mix32^k of the known lower
+    24 bits: the unknown top byte mixed k times, and the nonce of update j
+    mixed k - j times (mix32 is linear over XOR)."""
+    keys = {mix32_times(m << 24, k) for m in range(256)}
+    for j in range(k):
+        keys = {x ^ mix32_times(r, k - j) for x in keys for r in range(EPRA_NONCES)}
+    return frozenset(x & 0xFFFFFF for x in keys)
+
+
+EPRA_KEYS = {k: epra_keys(k) for k, _ in EPRA_STEPS}
+
+
+def epra_next(a, b, k=1):
+    """Whether the 24-bit address b can follow a after k updates under FLARM's EPRA."""
+    return ((mix32_times(a, k) & 0xFFFFFF) ^ b) in EPRA_KEYS[k]
+
+
+def epra_link(first, last, prev, nxt, plausible=None):
+    """Link each address to the one that starts within a gap of its end and can follow it.
+
+    first and last give the time each address was first and last heard; prev
+    and nxt hold the links already made and are extended in place, so a
+    caller that runs this again over a growing set (the live map) keeps its
+    chains. A link is made only when it is the only one leaving a and the
+    only one reaching b; what stays unlinked is tried again over two and
+    three updates (EPRA_STEPS). plausible(a, b), when given, may refuse a
+    link the radio rule allows (the live map's distance check). Returns the
+    links made at each step and the number left out as ambiguous.
+    """
+    starts = sorted((t, a) for a, t in first.items())
+    times = [t for t, _ in starts]
+    made, ambiguous = [], 0
+    for k, gap in EPRA_STEPS:
+        links = []
+        for a, end in last.items():
+            if a in nxt:
+                continue
+            lo = bisect.bisect_left(times, end - EPRA_OVERLAP_S)
+            hi = bisect.bisect_right(times, end + gap)
+            for t, b in starts[lo:hi]:
+                if (b != a and b not in prev and t > first[a] and epra_next(a, b, k)
+                        and (plausible is None or plausible(a, b))):
+                    links.append((a, b))
+        out = collections.Counter(a for a, _ in links)
+        into = collections.Counter(b for _, b in links)
+        kept = [(a, b) for a, b in links if out[a] == 1 and into[b] == 1]
+        for a, b in kept:
+            prev[b], nxt[a] = a, b
+        made.append(len(kept))
+        ambiguous += len(links) - len(kept)
+    return made, ambiguous
+
+
 def replaceable(tocall, stored):
     """True when a stored category gives way to a later aircraft category."""
     return stored in GROUND_CATEGORIES or (stored is not None and UNKNOWN_YET.get(tocall) == stored)
@@ -374,6 +450,9 @@ LORA_TOCALLS = {"OGNFNT", "OGMSHT"}
 NO_SNR_TOCALLS = {"APRS"}
 SNR_10KM_TOCALLS = {"OGFLR", "OGNFLR", "OGFLR6", "OGFLR7"}
 SNR_SLOPE_DB = 0.72 * 20
+RND_REVOKE_S = 30  # an address heard again within this long of its last packet, after its successor started, is not rotating
+LIVE_TRAIL_GAP = 120  # s; a trail ends where two fixes of a chain are further apart in time
+LIVE_TRAIL = 60  # addresses of a chain whose latest fixes the live map gets as its trail
 LIVE_WINDOW = 15 * 60  # a device unheard for this long leaves the map
 # Every station that heard a device by radio in the last minute, for the map's box
 # (25 October 2026): its last ratio per station, at most RX_MAX stations a device.
@@ -1919,6 +1998,14 @@ class SourceTracker:
         self.connect_db = connect_db
         self.live = {}            # device_id -> compact dict
         self.live_parsed_at = {}  # device_id -> monotonic time of last parse
+        # FLARM's random addresses chained on the live map (from 26 October 2026): per
+        # 24-bit address the first and last time heard, the links epra_link made, and the
+        # first address of the chain each belongs to. Pruned with the live window.
+        self.rnd_first, self.rnd_last = {}, {}
+        self.rnd_prev, self.rnd_next, self.rnd_root = {}, {}, {}
+        self.rnd_linked_at = 0.0
+        self.rnd_unlinked = 0       # links taken back, for the logs
+        self.rnd_lock = threading.Lock()
         self.rx = {}              # device_id -> {station: (snr, monotonic time)}, RX_WINDOW
         self.heard = {}           # address -> [last time, {system: last time}, category]; hear()
         self.heard_cache = (0, None)
@@ -2093,6 +2180,8 @@ class SourceTracker:
 
         if kind == "adsb" or kind == "adsl":
             return  # ADS-B is not mapped; ADS-L has its own, richer feed
+        if tocall in EPRA_TOCALLS and src.startswith(RANDOM_PREFIX) and len(src) == 9:
+            self.rnd_hear(src, time.time())
         t = time.monotonic()
         if t - self.live_parsed_at.get(src, 0) < LIVE_MIN_INTERVAL:
             return
@@ -4164,6 +4253,7 @@ class SourceTracker:
             cutoff = time.monotonic() - LIVE_WINDOW
             self.live = {k: v for k, v in list(self.live.items()) if v["_mono"] > cutoff}
             self.live_parsed_at = {k: v for k, v in list(self.live_parsed_at.items()) if v > cutoff}
+            self.rnd_relink(force=True)     # links first, then the addresses unheard for the window go
             rx_cutoff = time.monotonic() - RX_WINDOW
             self.rx = {k: v for k, v in list(self.rx.items())
                        if max((t for _, t in list(v.values())), default=0) > rx_cutoff}
@@ -4273,9 +4363,126 @@ class SourceTracker:
         out.sort(key=lambda r: -r[1])
         return out
 
+    def rnd_hear(self, src, now):
+        """A FLARM random address heard: the times epra_link works from."""
+        try:
+            a = int(src[3:], 16)
+        except ValueError:
+            return
+        self.rnd_first.setdefault(a, now)
+        before = self.rnd_last.get(a, now)
+        self.rnd_last[a] = now
+        # A link is made while the old address may still be heard (a late copy follows within
+        # EPRA_OVERLAP_S). An address that goes on being heard after that is not rotating:
+        # one transmitter uses one address at a time, so what looked like its successor is
+        # another aircraft. An address back after a long silence (the same helicopter was
+        # heard again under an address of 13 minutes before) keeps its links.
+        nb = self.rnd_next.get(a)
+        if nb is not None and now - before <= RND_REVOKE_S and now > self.rnd_first.get(nb, now) + EPRA_OVERLAP_S:
+            self.rnd_unlink(a)
+
+    def rnd_unlink(self, a):
+        """Take back the link from address a to its successor, and forget the chain ids of
+        what followed it."""
+        with self.rnd_lock:
+            y = self.rnd_next.pop(a, None)
+            if y is None:
+                return
+            self.rnd_prev.pop(y, None)
+            while y is not None:
+                self.rnd_root.pop(y, None)
+                y = self.rnd_next.get(y)
+            self.rnd_unlinked += 1
+
+    def rnd_plausible(self, a, b):
+        """Whether the last live fix of a and the first of b can be one aircraft: the
+        distance flown in the time between them at 100 m/s (a helicopter or a fast
+        glider), plus 2 km for the position error. Unknown positions pass."""
+        pa = self.live.get(RANDOM_PREFIX + "%06X" % a)
+        pb = self.live.get(RANDOM_PREFIX + "%06X" % b)
+        if not pa or not pb:
+            return True
+        gap = max(0.0, self.rnd_first.get(b, 0) - self.rnd_last.get(a, 0))
+        return _distance(pa["lat"], pa["lon"], pb["lat"], pb["lon"]) <= 2000 + 100 * gap
+
+    def rnd_relink(self, force=False):
+        """Chain the random addresses heard lately with the nightly's rule (epra_link),
+        at most every 2 s; the links made stay, so a chain keeps the id of its first
+        address for as long as it is heard."""
+        now = time.time()
+        if not force and now - self.rnd_linked_at < 2:
+            return
+        with self.rnd_lock:
+            self.rnd_linked_at = now
+            horizon = EPRA_STEPS[-1][1] + EPRA_OVERLAP_S + 5
+            last = {a: t for a, t in list(self.rnd_last.items())
+                    if t > now - horizon and a not in self.rnd_next}
+            first = {a: t for a, t in list(self.rnd_first.items())
+                     if t > now - 2 * horizon or a in last}
+            epra_link(first, last, self.rnd_prev, self.rnd_next, self.rnd_plausible)
+            prev = self.rnd_prev
+            for b in list(prev):
+                x, path = b, []
+                while x not in self.rnd_root and x in prev:
+                    path.append(x)
+                    x = prev[x]
+                r = self.rnd_root.get(x, x)
+                for p in path:
+                    self.rnd_root[p] = r
+            cutoff = now - LIVE_WINDOW
+            for a in [a for a, t in list(self.rnd_last.items()) if t < cutoff]:
+                for d in (self.rnd_first, self.rnd_last, self.rnd_prev, self.rnd_next, self.rnd_root):
+                    d.pop(a, None)
+
+    def rnd_chain(self, d):
+        """The chain id of a live entry that is a FLARM random address, else None."""
+        if d.get("_tocall") not in EPRA_TOCALLS or not d["id"].startswith(RANDOM_PREFIX) or len(d["id"]) != 9:
+            return None
+        try:
+            a = int(d["id"][3:], 16)
+        except ValueError:
+            return None
+        return RANDOM_PREFIX + "%06X" % self.rnd_root.get(a, a)
+
+    def live_chained(self):
+        """The live entries with each chain of random addresses made one: the id of the
+        chain (its first address), the latest position, `chain` the number of addresses
+        and `trail` their latest fixes, oldest first."""
+        self.rnd_relink()
+        out, chains = [], {}
+        for d in list(self.live.values()):
+            r = self.rnd_chain(d)
+            if r is None:
+                out.append(d)
+            else:
+                chains.setdefault(r, []).append(d)
+        for r, members in chains.items():
+            if len(members) == 1:
+                head = dict(members[0])
+                head["id"] = r
+                out.append(head)
+                continue
+            members.sort(key=lambda d: d["_mono"])
+            head = dict(members[-1])
+            head["_src"] = head["id"]       # its own address, whose receptions the box lists
+            head["id"] = r
+            head["chain"] = len(members)
+            # The trail runs back from the latest fix while the fixes follow within 2 minutes:
+            # an address heard again after a long silence holds only its latest fix, which
+            # says nothing of where it stood in the chain, and a spike across the map follows.
+            trail, t = [], members[-1]["_mono"]
+            for m in reversed(members[-LIVE_TRAIL:]):
+                if t - m["_mono"] > LIVE_TRAIL_GAP:
+                    break
+                trail.append([m["lat"], m["lon"]])
+                t = m["_mono"]
+            head["trail"] = trail[::-1]
+            out.append(head)
+        return out
+
     def live_snapshot(self, layers, bbox=None):
         out = []
-        for d in list(self.live.values()):
+        for d in self.live_chained():
             if d["layer"] not in layers or d["id"] in LIVE_HIDDEN:
                 continue
             if bbox and not (bbox[1] <= d["lat"] <= bbox[3] and
@@ -4283,7 +4490,7 @@ class SourceTracker:
                               else d["lon"] >= bbox[0] or d["lon"] <= bbox[2])):
                 continue
             e = {k: v for k, v in d.items() if not k.startswith("_")}
-            e["rx"] = self.rx_list(d["id"], d.get("_tocall"), d["lat"], d["lon"])
+            e["rx"] = self.rx_list(d.get("_src", d["id"]), d.get("_tocall"), d["lat"], d["lon"])
             if e["rx"]:
                 e["snr_scale"] = "lora" if d.get("_tocall") in LORA_TOCALLS else "fsk"
             out.append(e)
@@ -4292,6 +4499,9 @@ class SourceTracker:
     def live_raw(self, device_id):
         """The last packet kept for one device, for the map's details box."""
         d = self.live.get(device_id)
+        if d is None and device_id.startswith(RANDOM_PREFIX):
+            members = [m for m in list(self.live.values()) if self.rnd_chain(m) == device_id]
+            d = max(members, key=lambda m: m["_mono"], default=None)
         return d["_raw"] if d else None
 
     def monthly_stats(self):

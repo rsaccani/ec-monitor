@@ -232,8 +232,8 @@ ALT_LEVELS = sorted({v[1] for v in sources.CEILINGS.values()} | {sources.CEILING
 # found their successor. From 16 October 2026 a chain also bridges one or two
 # addresses never heard, at 4,096 and 16,384 candidates and with more time
 # allowed; tried only on what one step leaves unlinked, and again no distant
-# pair matched. The chain replaces the address in the nightly measures only;
-# the live map and the device check never see it.
+# pair matched. The chain replaces the address in the nightly measures and, from 26 October 2026,
+# on the live map (sources.epra_link, the same rule over the last 15 minutes); the device check never sees it.
 # Ground stations (METHOD.md 10.5, 17 October 2026). The thresholds of the
 # notes are in sources.STATION_* and STATION_NOTES, beside the text the
 # page shows for them; the numbers of the 10.4 checks are the constants above,
@@ -265,44 +265,12 @@ _STATUS_RF = re.compile(r" RF:([-+]\d+)([-+]\d+(?:\.\d+)?)ppm/([-+]?\d+(?:\.\d+)
 _STATUS_SIGNAL = re.compile(r"([-+]?\d+(?:\.\d+)?)dB@10km")
 _STATUS_GEOID = re.compile(r" EGM96:([-+]?\d+)m")
 
-EPRA_TOCALLS = {"OGFLR"}        # after sources.same_system
-EPRA_STEPS = ((1, 30), (2, 60), (3, 90))   # address updates bridged, s from one end to the next start
-EPRA_OVERLAP_S = 5              # s; a late copy of the old address may follow the new one
-EPRA_NONCES = 4                 # 2^Ne with FLARM's default Ne = 2
-
-
-def mix32(x):
-    """FTD-116's mix32: AES MixColumns on the four bytes of x."""
-    a = [(x >> s) & 0xFF for s in (0, 8, 16, 24)]
-    b = [((v << 1) & 0xFF) ^ (0x1B if v & 0x80 else 0) for v in a]
-    return ((b[0] ^ a[3] ^ a[2] ^ b[1] ^ a[1])
-            | (b[1] ^ a[0] ^ a[3] ^ b[2] ^ a[2]) << 8
-            | (b[2] ^ a[1] ^ a[0] ^ b[3] ^ a[3]) << 16
-            | (b[3] ^ a[2] ^ a[1] ^ b[0] ^ a[0]) << 24)
-
-
-def mix32_times(x, k):
-    for _ in range(k):
-        x = mix32(x)
-    return x
-
-
-def epra_keys(k):
-    """low24 of what k address updates add beyond mix32^k of the known lower
-    24 bits: the unknown top byte mixed k times, and the nonce of update j
-    mixed k - j times (mix32 is linear over XOR)."""
-    keys = {mix32_times(m << 24, k) for m in range(256)}
-    for j in range(k):
-        keys = {x ^ mix32_times(r, k - j) for x in keys for r in range(EPRA_NONCES)}
-    return frozenset(x & 0xFFFFFF for x in keys)
-
-
-EPRA_KEYS = {k: epra_keys(k) for k, _ in EPRA_STEPS}
-
-
-def epra_next(a, b, k=1):
-    """Whether the 24-bit address b can follow a after k updates under FLARM's EPRA."""
-    return ((mix32_times(a, k) & 0xFFFFFF) ^ b) in EPRA_KEYS[k]
+EPRA_TOCALLS = sources.EPRA_TOCALLS
+EPRA_STEPS = sources.EPRA_STEPS
+EPRA_OVERLAP_S = sources.EPRA_OVERLAP_S
+EPRA_NONCES = sources.EPRA_NONCES
+mix32, mix32_times, epra_keys, epra_next = sources.mix32, sources.mix32_times, sources.epra_keys, sources.epra_next
+EPRA_KEYS = sources.EPRA_KEYS
 
 
 # How a drone of the uncertain class flies (METHOD.md 10.1, from 9 October
@@ -1408,26 +1376,8 @@ class Nightly:
                     first[address] = epoch
                 if epoch > last.get(address, -math.inf):
                     last[address] = epoch
-        starts = sorted((t, a) for a, t in first.items())
-        times = [t for t, _ in starts]
-        prev, nxt, made, ambiguous = {}, {}, [], 0
-        for k, gap in EPRA_STEPS:
-            links = []
-            for a, end in last.items():
-                if a in nxt:
-                    continue
-                lo = bisect.bisect_left(times, end - EPRA_OVERLAP_S)
-                hi = bisect.bisect_right(times, end + gap)
-                for t, b in starts[lo:hi]:
-                    if b != a and b not in prev and t > first[a] and epra_next(a, b, k):
-                        links.append((a, b))
-            out = collections.Counter(a for a, _ in links)
-            into = collections.Counter(b for _, b in links)
-            kept = [(a, b) for a, b in links if out[a] == 1 and into[b] == 1]
-            for a, b in kept:
-                prev[b], nxt[a] = a, b
-            made.append(len(kept))
-            ambiguous += len(links) - len(kept)
+        prev, nxt = {}, {}
+        made, ambiguous = sources.epra_link(first, last, prev, nxt)
         self.chain = {}
         for b in prev:
             root, seen = b, set()
