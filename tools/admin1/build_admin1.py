@@ -26,9 +26,15 @@ GROUPED = {"IT", "FR", "ES", "SI"}
 SIMPLIFY_DEG = 0.002
 
 
+# Natural Earth names a few grouped regions in English or in a short form; the page shows the
+# local name, as for the other regions of the same country (26 October 2026).
+RENAMED = {("IT", "Apulia"): "Puglia", ("IT", "Sicily"): "Sicilia", ("ES", "Canary Is."): "Islas Canarias",
+           ("ES", "Foral de Navarra"): "Navarra", ("ES", "Valenciana"): "Comunidad Valenciana"}
+
+
 def region_of(row):
     if row.iso_a2 in GROUPED and row.region:
-        return row.region
+        return RENAMED.get((row.iso_a2, row.region), row.region)
     if row.iso_a2 == "GB" and row.geonunit:
         return row.geonunit
     return row["name"] or ""

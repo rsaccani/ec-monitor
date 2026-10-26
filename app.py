@@ -972,6 +972,47 @@ def get_patterns():
         return jsonify({})
 
 
+@app.route(API + "/regions")
+def get_regions():
+    """Devices per country and source, or the regions of one country (METHOD.md, section 10.6).
+
+    ?month=YYYY-MM (default: the latest month on record), ?country=XX for the regions of one country.
+    Only counts of distinct devices: no address is stored once a month is archived, nor served before.
+    """
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    month = request.args.get("month")
+    country = request.args.get("country")
+    if month is not None and not re.fullmatch(r"\d{4}-\d{2}", month):
+        return jsonify({"error": "month must be YYYY-MM"}), 400
+    if country is not None and not re.fullmatch(r"[A-Za-z]{2}", country):
+        return jsonify({"error": "country must be a two-letter ISO code"}), 400
+    country = country.upper() if country else None
+    try:
+        stat = tracker.regions_stats()
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading the devices by region: {e}")
+        return jsonify({})
+    csv_out = request.args.get("format") == "csv"
+
+    def build():
+        whole = stat.thaw() if isinstance(stat, sources.Frozen) else stat
+        picked = month or (whole["months"][-1]["month"] if whole["months"] else None)
+        rows = [r for r in whole["rows"] if r["month"] == picked and
+                (r["country"] == country if country else r["region"] == "")]
+        if csv_out:
+            buf = StringIO()
+            writer = csv.DictWriter(buf, fieldnames=["month", "country", "region", "source", "devices"])
+            writer.writeheader()
+            writer.writerows(rows)
+            return buf.getvalue(), "text/csv", {"Content-Disposition": 'attachment; filename="devices-by-region.csv"'}
+        out = {"months": whole["months"], "month": picked, "country": country,
+               "sources": whole["sources"], "rows": rows}
+        return app.json.dumps(out) + "\n", "application/json", None
+
+    return _cached(stat, ("devices-by-region", csv_out, month, country), build)
+
+
 @app.route(API + "/drones")
 def get_drones():
     """Drones by cell, height, speed, systems and extent, and their encounters (METHOD.md, section 10.1)."""

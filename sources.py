@@ -228,32 +228,50 @@ SAME_SYSTEM_SQL = ("CASE " + " ".join(f"WHEN source = '{a}' AND LEFT(device_id, 
                    + " ELSE source END")
 
 
-def _region_summary_sql():
-    """The four statements that reduce daily_device_regions to monthly_region_summary (METHOD.md 10.6).
+# Kept in daily_device_regions and in the per-source archive, left out of the all-sources figure and not
+# served: OGN receivers hear ADS-B mostly from airliners, which made up 90% of Germany's devices on the
+# first day, and the page is about the uncertified systems (Rodolfo, 26 October 2026). A way to tell the
+# light aircraft among them would bring their row back.
+REGION_HIDDEN_SOURCES = ("OGADSB",)
+
+
+def _region_select_sql(per_source, level, where):
+    """One level of METHOD.md 10.6 as a SELECT of month, country, region, source, category, devices.
 
     Every level is a count of distinct devices of its own: a country's row is never the sum of its
     regions, since a flight across a border puts a device in both, and the all-sources row (source '')
     counts once a device heard on two systems. A device's category is the lowest it had in the month,
-    per source, or over all its sources for the all-sources rows, as in monthly_sources_summary."""
+    per source, or over all its sources for the all-sources rows, as in monthly_sources_summary.
+    `where` holds two %s placeholders, filled with the same value."""
     month = "DATE_FORMAT(day, '%%Y-%%m')"
-    where = f"day < CONCAT(%s, '-01') AND {COUNTED_SQL}"
-    out = []
-    for per_source in (True, False):
-        src = SAME_SYSTEM_SQL if per_source else "''"
-        for level in ("region", "country"):
-            region = "r.region" if level == "region" else "''"
-            out.append(f"""INSERT INTO monthly_region_summary (month, country, region, source, category, devices)
-                SELECT r.month, r.country, {region}, r.src, c.cat, COUNT(DISTINCT r.device_id)
+    if not per_source:
+        where += " AND source NOT IN ({})".format(", ".join(f"'{s}'" for s in REGION_HIDDEN_SOURCES))
+    src = SAME_SYSTEM_SQL if per_source else "''"
+    region = "r.region" if level == "region" else "''"
+    return f"""SELECT r.month, r.country, {region}, r.src, c.cat, COUNT(DISTINCT r.device_id)
                     FROM (SELECT DISTINCT {month} AS month, country, region, {src} AS src, device_id
                               FROM daily_device_regions WHERE {where}) r
                     JOIN (SELECT {month} AS month, {src} AS src, device_id, MIN(COALESCE(category, 255)) AS cat
                               FROM daily_device_regions WHERE {where} GROUP BY 1, 2, 3) c
                       ON c.month = r.month AND c.src = r.src AND c.device_id = r.device_id
-                GROUP BY r.month, r.country, {"r.region, " if level == "region" else ""}r.src, c.cat""")
-    return out
+                GROUP BY r.month, r.country, {"r.region, " if level == "region" else ""}r.src, c.cat"""
+
+
+def _region_levels(where):
+    return [_region_select_sql(per_source, level, where)
+            for per_source in (True, False) for level in ("region", "country")]
+
+
+def _region_summary_sql():
+    """The four statements that reduce daily_device_regions to monthly_region_summary (METHOD.md 10.6)."""
+    where = f"day < CONCAT(%s, '-01') AND {COUNTED_SQL}"
+    return ["INSERT INTO monthly_region_summary (month, country, region, source, category, devices) " + q
+            for q in _region_levels(where)]
 
 
 REGION_SUMMARY_SQL = _region_summary_sql()
+# The same levels for the months whose addresses are still kept (every row left in the table).
+REGION_LIVE_SQL = _region_levels(f"day >= %s AND {COUNTED_SQL}")
 
 # Names of the aircraft categories carried in bits 2-5 of the first byte of
 # the OGN "idXXYYYYYY" field (bits 0-1 are the address type, 6 no-track, 7
@@ -1953,6 +1971,7 @@ class SourceTracker:
         self.coverage_gaps_cache = (0, None)
         self.snapshots_cache = (0, None)
         self.encounters_cache = (0, None)
+        self.regions_cache = (0, None)
         self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
         # Set by app.py to its JSON serialiser: the large statistics are then
         # cached as Frozen text. nightly.py leaves it unset and gets the objects.
@@ -2698,6 +2717,7 @@ class SourceTracker:
                     self.stats_cache = (0, None)
                     self.systems_cache = (0, None)
                     self.patterns_cache = (0, None)
+                    self.regions_cache = (0, None)
             except pymysql.MySQLError as e:
                 logger.error(f"Error archiving {table}: {e}")
                 if conn is not None:
@@ -2781,7 +2801,8 @@ class SourceTracker:
                                 ("drones", self.drones_stats), ("quality", self.quality_stats),
                                 ("stations", self.stations_stats), ("station map", self.station_map),
                                 ("coverage gaps", self.coverage_gaps_stats),
-                                ("snapshots", self.snapshots_stats), ("encounters", self.encounters_stats)):
+                                ("snapshots", self.snapshots_stats), ("encounters", self.encounters_stats),
+                                ("regions", self.regions_stats)):
                     try:
                         f()
                     except Exception as e:      # one failing statistic must not stop the others
@@ -4040,6 +4061,39 @@ class SourceTracker:
             return [{"month": r[0], "endpoint": r[1], "method_commit": r[2], "deployed_commit": r[3],
                      "created_at": r[4].isoformat(), "bytes": int(r[5])} for r in cur.fetchall()]
         return self._cached("snapshots", "snapshots_cache", compute)
+
+    def regions_stats(self):
+        """Devices per month, country, region and source (METHOD.md 10.6), no address.
+
+        Months archived by archive_loop come from monthly_region_summary; the months whose addresses
+        are still kept are counted from daily_device_regions in the same four levels, and listed with
+        partial true. region '' is the whole country and source '' every source, each its own count of
+        distinct devices. A device has one category per month and source, so the categories of a row
+        add up exactly and are left out here.
+        """
+        def compute(cur):
+            cur.execute("SELECT month, country, region, source, SUM(devices) FROM monthly_region_summary "
+                        "GROUP BY 1, 2, 3, 4")
+            counts = {(r[0], r[1], r[2], r[3]): int(r[4]) for r in cur.fetchall()}
+            archived = {k[0] for k in counts}
+            live = {}
+            for sql in REGION_LIVE_SQL:
+                cur.execute(sql, ("2000-01-01",) * sql.count("%s"))
+                for month, country, region, source, _cat, n in cur.fetchall():
+                    if month not in archived:
+                        key = (month, country, region, source)
+                        live[key] = live.get(key, 0) + int(n)
+            counts.update(live)
+            counts = {k: n for k, n in counts.items() if k[3] not in REGION_HIDDEN_SOURCES}
+            partial = {k[0] for k in live}
+            months = sorted({k[0] for k in counts})
+            rows = [{"month": m, "country": c, "region": r, "source": s, "devices": n}
+                    for (m, c, r, s), n in sorted(counts.items())]
+            labels = {s: dict(zip(("label", "kind"), SOURCES.get(s, (s, "other"))))
+                      for s in sorted({k[3] for k in counts if k[3]})}
+            return {"months": [{"month": m, "partial": m in partial} for m in months], "sources": labels,
+                    "rows": rows}
+        return self._cached("regions", "regions_cache", compute)
 
     def snapshot_body(self, month, endpoint):
         """One snapshot as the JSON text it was stored as, or None."""

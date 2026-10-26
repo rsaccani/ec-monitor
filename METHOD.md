@@ -1494,6 +1494,12 @@ sources counts once a device heard on two systems. A device's category for
 the month is the lowest category number it had on the system, the rule of
 the monthly device counts.
 
+ADS-B is stored like every other source but left out of the all-sources
+figure and not published (26 October 2026): the network's receivers hear it
+mostly from airliners, 1,679 of Germany's 1,854 devices on the first day, and
+the figures are about the uncertified systems light aviation carries. A way to
+tell the light aircraft among them apart would bring its row back.
+
 A device is not a pilot: one pilot can carry a FLARM and a phone app, and an
 aircraft lends its device to several pilots. The counts follow the receiver
 coverage as much as the flying, since a valley without a station, or with a
