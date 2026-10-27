@@ -81,8 +81,21 @@ class Limiter:
     events = []
 
     @classmethod
+    def free_at(cls, now, window, limit, weight):
+        """When enough of the window's weight has aged out for `weight` to fit under `limit`."""
+        events = sorted(e for e in cls.events if now - e[0] < window)
+        used, at = sum(w for _, w in events), now
+        for t, w in events:
+            if used + weight <= limit:
+                return at
+            used -= w
+            at = t + window
+        return at if used + weight <= limit else float("inf")
+
+    @classmethod
     def wait(cls, weight):
         t0 = time.time()
+        announced = False
         while True:
             now = time.time()
             cls.events = [(t, w) for t, w in cls.events if now - t < 3600]
@@ -94,6 +107,16 @@ class Limiter:
                 if now - t0 >= 30:
                     log("limiter waited", round(now - t0), "s, weight in the last hour", round(hour), "of", MAX_PER_HOUR)
                 return
+            if not announced:
+                # Said when the wait starts, too: on 27 October the log was silent for 51 minutes before the line above.
+                resume = max(cls.free_at(now, 60, MAX_PER_MINUTE, weight), cls.free_at(now, 3600, MAX_PER_HOUR, weight))
+                if resume == float("inf"):
+                    log("limiter: a request of weight", round(weight), "can never fit under the limits", MAX_PER_MINUTE, "a minute and", MAX_PER_HOUR, "an hour")
+                elif resume - now >= 30:
+                    log("limiter waiting about", round(resume - now), "s, until",
+                        time.strftime("%H:%M:%S", time.gmtime(resume)), "UTC; weight in the last hour", round(hour),
+                        "of", MAX_PER_HOUR, "and this request", round(weight))
+                announced = True
             time.sleep(5)
 
 
