@@ -1,5 +1,8 @@
 import collections
+import fcntl
 import socket
+import struct
+import termios
 import threading
 import time
 import datetime
@@ -438,8 +441,18 @@ def ads_l_listener():
             buffer = ""
             last_rx = time.time()
             last_keepalive = time.time()
+            last_queue = 0.0
 
             while True:
+                # The bytes the kernel holds for us and the worker has not read yet: they
+                # grow only while the worker is the bottleneck (27 October 2026). One ioctl
+                # every few seconds, recorded for the nightly's recording-gap rule.
+                if raw_recorder is not None and time.time() - last_queue >= recorder.QUEUE_EVERY:
+                    last_queue = time.time()
+                    try:
+                        raw_recorder.queue(struct.unpack("i", fcntl.ioctl(s, termios.FIONREAD, b"\0\0\0\0"))[0])
+                    except OSError:
+                        pass
                 data = s.recv(4096)
                 if not data:
                     raise ConnectionError("OGN closed the connection")
@@ -450,7 +463,13 @@ def ads_l_listener():
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     line = line.strip()
-                    if not line or line.startswith("#"):
+                    if line.startswith("#"):
+                        # The server's own comment lines (its name and clock) go to the
+                        # recording only, never to the tracker (27 October 2026).
+                        if raw_recorder is not None:
+                            raw_recorder.comment(line)
+                        continue
+                    if not line:
                         continue
                     if raw_recorder is not None:
                         raw_recorder.write(line)

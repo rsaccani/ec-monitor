@@ -32,6 +32,12 @@ feed (from 24 October 2026): what came before it and what came after are not
 one continuous stream, and a replay must not measure a silence across it. The
 recorder also writes one when it starts more than 30 seconds after the last
 write (from 25 October 2026), since a reboot or a crash is no reconnection.
+From 27 October 2026 the recording also holds, as lines of the same form, the
+comment lines the APRS server sends ("# aprsc <version> <date> <time> GMT <server>
+<address>", which carry its name and clock) and a sample of the receive queue of
+the feed's socket every QUEUE_EVERY seconds ("# rcvq <bytes>", bytes received by the
+kernel and not yet read by the worker). Neither is a packet: they are kept to tell
+a feed we lost from a feed that was thin. They hold no > and no packet is read from them.
 Packets whose id carries the no-track flag, and devices hidden by the OGN
 device database, are never recorded.
 """
@@ -64,6 +70,7 @@ AIRLINER_KT = 200
 _speed = re.compile(r".{27}(\d{3})/(\d{3})")      # course/speed after the symbol
 _altitude = re.compile(r"/A=(-?\d{5,6})")
 FLUSH_SECONDS = 1.0
+QUEUE_EVERY = 5             # seconds between samples of the socket's receive queue
 BREAK_AFTER = 30            # seconds since the last write: a start later than this marks a feed break
 NAME = "%Y%m%d-%H"          # one file per UTC hour: <name>.aprs, then <name>.aprs.zst
 EUROPE = (35, 72, -25, 45)  # lat min, max, lon min, max: "europe" here, EC_SCOPE=europe in nightly.py
@@ -168,6 +175,22 @@ class Recorder:
                 self.flush(now)
         except Exception as e:      # recording must never stop the listener
             logger.error("Raw feed recording: %s", e)
+
+    def comment(self, text):
+        """Record a comment line of the server or a queue sample (from 27 October 2026), stamped like a
+        packet and flushed with the packets. A > is replaced, so that no reader that splits on one
+        takes the line for a packet; the length is capped."""
+        try:
+            now = time.time()
+            self.pending.append("%.3f %s\n" % (now, text.replace(">", "}")[:200]))
+            if now - self.flushed_at >= FLUSH_SECONDS:
+                self.flush(now)
+        except Exception as e:
+            logger.error("Raw feed recording: %s", e)
+
+    def queue(self, nbytes):
+        """Record the bytes waiting in the socket's receive queue."""
+        self.comment("# rcvq %d" % nbytes)
 
     def mark(self, text):
         """Record a line that is not a packet (sources.FEED_BREAK, from 24 October 2026),

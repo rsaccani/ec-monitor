@@ -414,9 +414,12 @@ def hour_path(raw_dir, day, hour):
     return None
 
 
-def read_lines(path, stop=None, contains=None):
+def read_lines(path, stop=None, contains=None, comments=False):
     """(reception epoch, line) of one hourly file, until `stop` if given; only
-    the lines containing the bytes `contains` if given, checked before decoding."""
+    the lines containing the bytes `contains` if given, checked before decoding.
+    The server's comment lines and the queue samples the recording holds from
+    27 October 2026 (recorder.py) are left out unless `comments`; the
+    feed-break marker is always yielded."""
     cmd = ["zstdcat", "-q", path] if path.endswith(".zst") else ["cat", path]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
@@ -431,7 +434,10 @@ def read_lines(path, stop=None, contains=None):
                 continue
             if stop is not None and epoch >= stop:
                 break
-            yield epoch, line[sp + 1:].rstrip("\n")
+            line = line[sp + 1:].rstrip("\n")
+            if line[:1] == "#" and not comments and line != sources.FEED_BREAK:
+                continue
+            yield epoch, line
     finally:
         proc.kill()
         proc.wait()
