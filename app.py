@@ -1058,18 +1058,20 @@ def get_makers():
         rows = [r for r in whole["rows"] if r["month"] == picked]
         if csv_out:
             buf = StringIO()
-            writer = csv.DictWriter(buf, fieldnames=["month", "source", "maker", "firmware", "hardware", "devices"])
+            writer = csv.DictWriter(buf, fieldnames=["month", "source", "maker", "firmware", "hardware", "category", "devices"])
             writer.writeheader()
             writer.writerows(rows)
             return buf.getvalue(), "text/csv", {"Content-Disposition": 'attachment; filename="devices-by-maker.csv"'}
         total, by_maker, versions = collections.Counter(), collections.Counter(), collections.Counter()
         by_hw = collections.defaultdict(collections.Counter)      # hardware code -> firmware -> devices
+        hw_cat = collections.defaultdict(collections.Counter)     # hardware code -> category -> devices
         for r in rows:
             total[r["source"]] += r["devices"]
             by_maker[(r["source"], r["maker"])] += r["devices"]
             if r["source"] == sources.FLARM_SOURCE and r["firmware"]:
                 versions[r["firmware"]] += r["devices"]
                 by_hw[r.get("hardware") or ""][r["firmware"]] += r["devices"]
+                hw_cat[r.get("hardware") or ""][str(r.get("category", 255))] += r["devices"]
         with_firmware = sum(versions.values())
         no_expiry = sum(n for v, n in versions.items() if sources.flarm_no_expiry(v))
         out = {"months": whole["months"], "month": picked, "sources": whole["sources"],
@@ -1082,6 +1084,7 @@ def get_makers():
                             "versions": [{"firmware": v, "devices": n}
                                          for v, n in sorted(versions.items(), key=lambda kv: (-kv[1], kv[0]))],
                             "by_hardware": [{"hardware": hw or None, "devices": sum(c.values()),
+                                             "categories": dict(sorted(hw_cat[hw].items(), key=lambda kv: -kv[1])),
                                              "versions": [{"firmware": v, "devices": n}
                                                           for v, n in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))]}
                                             for hw, c in sorted(by_hw.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))]}}

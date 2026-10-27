@@ -1598,7 +1598,10 @@ changes over time. From 27 October 2026 the spread is also given per FLARM
 hardware code (`hXX`, the one sent with the device's latest firmware), which
 has no public table: a group is shown by its code, and a group with devices
 on a version published only for one line belongs to that line, an inference
-the page states as such.
+the page states as such. Each group also shows the aircraft it flies in, by the lowest
+category each of its devices declared in the month, as in the monthly device
+counts: a measured figure, with the caveat that a device reports what it was
+configured as.
 
 The addresses are kept for the current and the previous month (section 9).
 At the end of that time the month is reduced to distinct devices per source,

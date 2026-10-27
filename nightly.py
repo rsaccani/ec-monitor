@@ -1313,7 +1313,7 @@ class Nightly:
         self.anon_peak = 0        # MB, the largest anonymous memory sampled (anon_mb)
         self.regions = {}         # (device, tocall, country, region) -> category, for an airborne fix there
         self.mk_on = True         # METHOD.md 10.8, maker and firmware; switched off if its work fails during the pass
-        self.mk = {}              # (device, tocall) -> [firmware, hardware code] last sent that day, None if none
+        self.mk = {}              # (device, tocall) -> [firmware, hardware code, lowest category] of that day, None if none
         self.fanet_makers = {}    # address (6 hex digits) -> maker named by its FANET byte, for a FANET device seen
         self.dp = True            # METHOD.md 7, the device patterns; switched off if its work fails during the pass
         self.dp_pos = {}          # receiver -> (lat, lon), the last position it beaconed (as SourceTracker.stations)
@@ -1967,7 +1967,7 @@ class Nightly:
             self.rose_fix(tocall, path[-1], lat, lon, category, kt, alt_m, body)
         if kind != "adsb" and (address, tocall) in self.dropped:
             return                              # an impossible stream-day (9 October 2026), counted in 10.4
-        self.maker_fix(src, tocall, kind, rnd, body)
+        self.maker_fix(src, tocall, kind, rnd, body, id_category)
         raw_category = category
         m = self.major.get((address, tocall))
         if (m is not None and tocall != REMOTE_ID and not fanet_ground(tocall, m, category)
@@ -3143,14 +3143,15 @@ class Nightly:
         a[1] += float(m.group(1)) + sources.SNR_SLOPE_DB * math.log10(km / 10)
 
     @maker_guard
-    def maker_fix(self, device, tocall, kind, rnd, body):
+    def maker_fix(self, device, tocall, kind, rnd, body, category=None):
         """METHOD.md 10.8: a FANET, FLARM or ADS-L device heard today, with the firmware and hardware code its
-        last FLARM packet carried, and the maker its FANET address names if it sent FANET today."""
+        last FLARM packet carried, the maker its FANET address names if it sent FANET today, and the lowest
+        aircraft category it declared (from 27 October 2026), the rule of the monthly device counts."""
         if rnd or kind not in sources.MAKER_KINDS:
             return
         rec = self.mk.get((device, tocall))
         if rec is None:
-            rec = self.mk[(device, tocall)] = [None, None]
+            rec = self.mk[(device, tocall)] = [None, None, None]
             if kind == "fanet":
                 maker = sources.fanet_maker(device)
                 if maker is not None and device.startswith("FNT"):
@@ -3159,6 +3160,8 @@ class Nightly:
             v = sources.flarm_version(body)
             if v:
                 rec[0], rec[1] = v
+        if category is not None and (rec[2] is None or category < rec[2]):
+            rec[2] = category
 
     @region_guard
     def region_fix(self, device, tocall, category, lat, lon):
@@ -3431,9 +3434,9 @@ class Nightly:
         """METHOD.md 10.8: one row per FANET, FLARM or ADS-L device address heard that day. The maker is the
         one its FANET address names, applied to the other two systems under the same address, or NULL."""
         day = self.day.isoformat()
-        return {"daily_device_makers": (("day", "device_id", "source", "maker", "firmware", "hardware"),
-                                        [(day, d, tc, self.fanet_makers.get(d[-6:]), fw, hw)
-                                         for (d, tc), (fw, hw) in sorted(self.mk.items())])}
+        return {"daily_device_makers": (("day", "device_id", "source", "maker", "firmware", "hardware", "category"),
+                                        [(day, d, tc, self.fanet_makers.get(d[-6:]), fw, hw, cat)
+                                         for (d, tc), (fw, hw, cat) in sorted(self.mk.items())])}
 
     def rows_device_pattern(self):
         """METHOD.md 7: one row per device, source and sector with a far airborne reception that day."""
@@ -4425,7 +4428,7 @@ def print_makers_dry_run(rows):
     by_src = collections.defaultdict(set)
     maker = collections.defaultdict(lambda: collections.defaultdict(set))
     firmware, hardware = collections.defaultdict(set), collections.defaultdict(set)
-    for _, device, tocall, mk, fw, hw in rows:
+    for _, device, tocall, mk, fw, hw, _cat in rows:
         a = device[-6:]
         by_src[tocall].add(a)
         maker[tocall][mk].add(a)

@@ -170,7 +170,8 @@ DESCRIPTIONS = {
     "monthly_maker_summary": dict(
         group="archive", doc="METHOD.md 9, 10.8",
         row="Distinct devices of an archived month per source, maker, FLARM firmware version and FLARM hardware "
-            "code: what is left of daily_device_makers. maker '', firmware '' and hardware '' are unknown."),
+            "code and aircraft category: what is left of daily_device_makers. maker '', firmware '' and hardware '' are "
+            "unknown, category 255 none declared."),
     "monthly_snapshot": dict(
         group="archive", doc="METHOD.md 9 (Monthly snapshots)",
         row="What one statistics endpoint published for a month, frozen the night its last day was computed: "
