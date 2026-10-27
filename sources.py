@@ -4230,13 +4230,20 @@ class SourceTracker:
             counts.update(live)
             counts = {k: v for k, v in counts.items() if k[3] not in REGION_HIDDEN_SOURCES}
             partial = {k[0] for k in live}
+            # The days a partial month is counted over, so the page can say which are in it: on 27 October 2026
+            # October held 18-26 without the 19th, whose recording lacks eleven hours.
+            cur.execute("SELECT DISTINCT day FROM daily_device_regions ORDER BY day")
+            days = {}
+            for (day,) in cur.fetchall():
+                days.setdefault(day.strftime("%Y-%m"), []).append(day.isoformat())
             months = sorted({k[0] for k in counts})
             rows = [{"month": m, "country": c, "region": r, "source": s, "devices": sum(v.values()),
                      "categories": {str(k): n for k, n in sorted(v.items())}}
                     for (m, c, r, s), v in sorted(counts.items())]
             labels = {s: dict(zip(("label", "kind"), SOURCES.get(s, (s, "other"))))
                       for s in sorted({k[3] for k in counts if k[3]})}
-            return {"months": [{"month": m, "partial": m in partial} for m in months], "sources": labels,
+            return {"months": [dict({"month": m, "partial": m in partial}, **({"days": days.get(m, [])} if m in partial else {}))
+                               for m in months], "sources": labels,
                     "category_names": {**{str(k): v for k, v in CATEGORY_NAMES.items()}, "255": "Unknown"},
                     "rows": rows}
         return self._cached("regions", "regions_cache", compute)
