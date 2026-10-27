@@ -314,7 +314,7 @@ DF_FIXED_EXTENT_M, DF_FIXED_S = 5000, 120
 # while the day is read stops both, since both are computed from it.
 FAMILIES = {
     "conspicuity": ("daily_drone_classes", "daily_drones", "daily_drone_cells", "daily_drone_extent",
-                    "daily_drone_encounters", "daily_crewed_encounters", "daily_air_cells", "daily_same_aircraft_pairs",
+                    "daily_drone_encounters", "daily_crewed_encounters", "daily_encounter_events", "daily_air_cells", "daily_same_aircraft_pairs",
                     "daily_parked",
                     "daily_quality"),
     # Ground stations (METHOD.md 10.5, 17 October 2026): a family of its own, so that a station table that is
@@ -934,6 +934,8 @@ class CrewedEncounters:
     # packets arrive out of order across receivers, and the instant it is placed at
     # must still lie in its history.
     HIST_SLACK_S = 30
+    # A run of contacts within the wide threshold ends after this many seconds without one.
+    WIDE_GAP_S = 60
     # Longest gap in seconds between the two fixes around the instant, per OGN category
     # (close, wide), for an encounter to be judged by the projection; beyond it the
     # encounter is kept and marked uncertain. Measured on 22 and 24 October 2026 by
@@ -966,6 +968,9 @@ class CrewedEncounters:
         self.slow = {}                          # pair -> [first t, last t]
         self.near = {}                          # pair -> [first t, lat, lon, last t]
         self.formation, self.escort = set(), set()
+        # pair -> [first T, last T] of the current run of contacts within the wide threshold (events:
+        # the time from 1 km to the closest approach)
+        self.wide = {}
         self.open = {}                          # (pair, threshold) -> [t0, d, closing, kinds, lat, lon, geometry]
         self.done = []
         # (kind, lat_idx, lon_idx) at THERMAL_CELLS_PER_DEG -> [seconds, addresses]
@@ -1026,6 +1031,17 @@ class CrewedEncounters:
         if i > 0 and e[4] is not None and h[i - 1][4] is not None and e[0] > h[i - 1][0]:
             return (((e[4] - h[i - 1][4] + 540) % 360) - 180) / (e[0] - h[i - 1][0])
         return 0.0
+
+    @staticmethod
+    def _turn(h, T):
+        """Degrees per second, unsigned, the aircraft turns at the last of its fixes h up to T; None
+        when that fix has no course."""
+        i = len(h) - 1
+        while i >= 0 and h[i][0] > T:
+            i -= 1
+        if i < 0 or h[i][4] is None:
+            return None
+        return abs(CrewedEncounters._rate(h, i))
 
     @staticmethod
     def miss(ref):
@@ -1147,6 +1163,12 @@ class CrewedEncounters:
                         if okind == kind and kind in self.SAME_KIND_SKIP:
                             continue
                         kinds = tuple(sorted((kind, okind)))
+                        w = self.wide.get(pair)
+                        if w is None or T - w[1] > self.WIDE_GAP_S:
+                            w = self.wide[pair] = [T, T]
+                        else:
+                            w[1] = max(w[1], T)
+                        ev = (T, address, oaddr, w[0], dalt, h, ho)
                         for name, (hm, vm) in self.THRESHOLDS.items():
                             if d > hm or dalt > vm:
                                 continue
@@ -1162,12 +1184,12 @@ class CrewedEncounters:
                                     enc[1], enc[2] = d, rel
                                     enc[4], enc[5] = mlat, mlon
                                     enc[6] = geometry(vel, ovel)
-                                    self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat)
+                                    self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat, ev)
                                 continue
                             if enc is not None:
                                 self.done.append((key,) + tuple(enc))
                             info = {"first": t, "last": t, "secs": {int(t)}}
-                            self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat)
+                            self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat, ev)
                             self.open[key] = [start, d, rel, kinds, mlat, mlon, geometry(vel, ovel), info]
         k = (cl, co, tb)
         if k not in self.index:
@@ -1177,10 +1199,15 @@ class CrewedEncounters:
         while self.order and self.order[0][2] * self.BUCKET < self.max_t - self.WINDOW:
             self.index.pop(self.order.popleft(), None)
 
-    def _closest(self, info, vel, ovel, kt, okt, pa, pb, name, cat, ocat):
+    def _closest(self, info, vel, ovel, kt, okt, pa, pb, name, cat, ocat, ev):
         """What the closest approach of an encounter looked like: the speeds and the angle between
         the tracks, the largest gap of the fix pairs the two positions were interpolated from
         and, when that gap is SPARSE_S or more, the largest miss of their projections."""
+        T, address, oaddr, t1km, dalt, h, ho = ev
+        # For the event table (METHOD.md 10.2): the instant, the placed positions of the two addresses
+        # (pa is `address`, pb is `oaddr`), the vertical distance, when the pair came within 1 km, and
+        # how fast each was turning at that instant.
+        info["event"] = (T, address, oaddr, pa, pb, dalt, t1km, self._turn(h, T), self._turn(ho, T))
         info["spd"] = (None if kt is None else kt * 1.852, None if okt is None else okt * 1.852)
         ang = None
         if vel is not None and ovel is not None:
@@ -1243,6 +1270,7 @@ class CrewedEncounters:
         if its run was long enough; a reconnect leaves them open."""
         self.last.clear()
         self.hist.clear()
+        self.wide.clear()
         if not full:
             return
         for f in self.slow.values():
@@ -3954,6 +3982,8 @@ class Nightly:
                                            "distance_band", "closing_band", "geometry", "systems_a", "systems_b",
                                            "shares_radio", "shares_any", "reliability", "drone_evidence", "encounters"),
                                           self.crewed_rows(day))
+        # One row per kept encounter, beside the aggregate and from the same pass (METHOD.md 10.2).
+        out["daily_encounter_events"] = (self.EVENT_COLUMNS, self.event_rows(day))
         out["daily_same_aircraft_pairs"] = (("day", "kind_a", "kind_b", "threshold", "pairs", "encounters"),
                                             [(day,) + k + (len(v[0]), v[1])
                                              for k, v in sorted(self.same_aircraft.items())])
@@ -4104,6 +4134,7 @@ class Nightly:
         radio = {label for tc, (label, kind) in sources.SOURCES.items()
                  if kind in ("adsl", "flarm", "fanet", "adsb", "radio")}
         rows = collections.Counter()
+        self.crewed_events = []
         self.crewed_summary = collections.Counter()
         self.sparse_counts = collections.Counter()
         ev = self.evidence() if any("drone" in k for (_, _), _, _, _, k, *_ in ce.done) else {}
@@ -4144,13 +4175,57 @@ class Nightly:
             sa, sb = self.addr_systems.get(a, set()), self.addr_systems.get(b, set())
             dband = band(d, CrewedEncounters.DISTANCE_EDGES[name])
             cband = band(rel, CrewedEncounters.CLOSING_EDGES)
+            evidence = next((EVIDENCE_NAMES.get(ev.get(x, UNCERTAIN), "") for x in pair
+                             if self.addr_major.get(x) == DRONE), "")
             rows[(kinds[0], kinds[1], name, math.floor(la * THERMAL_CELLS_PER_DEG),
                   math.floor(lo * THERMAL_CELLS_PER_DEG), dband, cband, geom, self.systems_of(a), self.systems_of(b),
-                  int(bool(sa & sb & radio)), int(bool(sa & sb)), sp or "dense",
-                  next((EVIDENCE_NAMES.get(ev.get(x, UNCERTAIN), "") for x in pair if self.addr_major.get(x) == DRONE),
-                       ""))] += 1
+                  int(bool(sa & sb & radio)), int(bool(sa & sb)), sp or "dense", evidence)] += 1
+            self.crewed_events.append(self.event(name, d, rel, geom, info, a, b, kinds, self.systems_of(a),
+                                                 self.systems_of(b), int(bool(sa & sb & radio)), int(bool(sa & sb)),
+                                                 sp or "dense", evidence))
         self.crewed_pairs = (len(ce.formation), len(ce.escort - ce.formation), len(ce.formation - ce.escort))
         return [(day,) + k + (n,) for k, n in sorted(rows.items())]
+
+    EVENT_COLUMNS = ("day", "closest_at", "threshold", "lat_a", "lon_a", "lat_b", "lon_b", "dup", "kind_a", "kind_b",
+                     "systems_a", "systems_b", "alt_a_m", "alt_b_m", "agl_a_m", "agl_b_m", "distance_m", "vertical_m",
+                     "approach_s", "under_s", "crossing_deg", "relative_kmh", "geometry", "circling_a", "circling_b",
+                     "above", "gap_a_s", "gap_b_s", "reliability", "miss_m", "drone_evidence", "shares_radio",
+                     "shares_any")
+
+    def event(self, name, d, rel, geom, info, a, b, kinds, sys_a, sys_b, radio, any_, reliability, evidence):
+        """One kept encounter as a row of daily_encounter_events, without a day and without a sequence
+        number (event_rows adds them): no address, only what finds the scene again in the raw feed."""
+        T, addr, oaddr, pa, pb, dalt, t1km, turn_x, turn_y = info["event"]
+        if a != addr:                           # the placed positions follow the side the table files them under
+            pa, pb, turn_x, turn_y = pb, pa, turn_y, turn_x
+        gaps = (pa[3], pb[3])                   # the fix interval around the instant, of each side's own placement
+        grounds = []
+        for p in (pa, pb):
+            g = self.terrain.elevation(p[0], p[1])
+            grounds.append(None if g is None else int(round(p[2] - g)))
+        alt_a, alt_b = int(round(pa[2])), int(round(pb[2]))
+        above = "a" if pa[2] - pb[2] > 0.5 else "b" if pb[2] - pa[2] > 0.5 else ""
+        stamp = datetime.datetime.fromtimestamp(int(T), datetime.timezone.utc).replace(tzinfo=None)
+        circ = lambda x: None if x is None else int(x >= CrewedEncounters.STRAIGHT_DEG_S)
+        ang = info["ang"]
+        miss = info["miss"]
+        return (stamp, name, round(pa[0], 5), round(pa[1], 5), round(pb[0], 5), round(pb[1], 5),
+                kinds[0], kinds[1], sys_a, sys_b, alt_a, alt_b, grounds[0], grounds[1], round(d, 1), round(dalt, 1),
+                max(0, int(T - t1km)), info["last"] - info["first"], None if ang is None else int(round(ang)),
+                None if rel is None else int(round(rel)), geom, circ(turn_x), circ(turn_y), above,
+                int(gaps[0]), int(gaps[1]), reliability, None if miss is None else int(round(miss)), evidence,
+                radio, any_)
+
+    def event_rows(self, day):
+        """The rows of daily_encounter_events, in the order of the columns; a sequence number tells apart
+        two events that share the instant, the threshold and both placed positions."""
+        seen = collections.Counter()
+        out = []
+        for e in sorted(self.crewed_events, key=lambda r: r[:6]):
+            k = e[:6]
+            out.append((day,) + e[:6] + (seen[k],) + e[6:])
+            seen[k] += 1
+        return out
 
     def gaggles(self, day, thermals):
         """Pairs of thermals of two aircraft flown together, same side or opposite."""

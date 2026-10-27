@@ -203,6 +203,44 @@ CREATE TABLE IF NOT EXISTS `daily_drones` (
   PRIMARY KEY (`day`,`evidence`,`flight_class`,`lat_idx`,`lon_idx`,`height_band`,`speed_band`,`systems`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE IF NOT EXISTS `daily_encounter_events` (
+  `day` date NOT NULL,
+  `closest_at` datetime NOT NULL,
+  `threshold` varchar(5) NOT NULL,
+  `lat_a` decimal(7,5) NOT NULL,
+  `lon_a` decimal(8,5) NOT NULL,
+  `lat_b` decimal(7,5) NOT NULL,
+  `lon_b` decimal(8,5) NOT NULL,
+  `dup` tinyint(3) unsigned NOT NULL DEFAULT 0,
+  `kind_a` varchar(12) NOT NULL,
+  `kind_b` varchar(12) NOT NULL,
+  `systems_a` varchar(255) NOT NULL,
+  `systems_b` varchar(255) NOT NULL,
+  `alt_a_m` smallint(6) NOT NULL,
+  `alt_b_m` smallint(6) NOT NULL,
+  `agl_a_m` smallint(6) DEFAULT NULL,
+  `agl_b_m` smallint(6) DEFAULT NULL,
+  `distance_m` decimal(5,1) NOT NULL,
+  `vertical_m` decimal(5,1) NOT NULL,
+  `approach_s` smallint(5) unsigned NOT NULL,
+  `under_s` smallint(5) unsigned NOT NULL,
+  `crossing_deg` smallint(5) unsigned DEFAULT NULL,
+  `relative_kmh` smallint(5) unsigned DEFAULT NULL,
+  `geometry` tinyint(3) unsigned NOT NULL DEFAULT 255,
+  `circling_a` tinyint(1) DEFAULT NULL,
+  `circling_b` tinyint(1) DEFAULT NULL,
+  `above` char(1) NOT NULL DEFAULT '',
+  `gap_a_s` smallint(5) unsigned NOT NULL,
+  `gap_b_s` smallint(5) unsigned NOT NULL,
+  `reliability` varchar(9) NOT NULL DEFAULT 'dense',
+  `miss_m` int(10) unsigned DEFAULT NULL,
+  `drone_evidence` varchar(12) NOT NULL DEFAULT '',
+  `shares_radio` tinyint(1) NOT NULL,
+  `shares_any` tinyint(1) NOT NULL,
+  PRIMARY KEY (`day`,`closest_at`,`threshold`,`lat_a`,`lon_a`,`lat_b`,`lon_b`,`dup`),
+  KEY `kinds` (`day`,`kind_a`,`kind_b`,`threshold`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS `daily_flight_classes` (
   `day` date NOT NULL,
   `kind` varchar(16) NOT NULL,

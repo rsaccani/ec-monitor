@@ -201,6 +201,12 @@ DESCRIPTIONS = {
             "27 October 2026), per pair of kinds, threshold (wide or close), cell, distance band, closing band, "
             "geometry, the systems of each side, how the placement of the pair was judged (reliability: dense, "
             "reliable or uncertain) and, for a drone, its evidence (drone_evidence)."),
+    "daily_encounter_events": dict(
+        group="conspicuity", doc="METHOD.md 10.2",
+        row="One row per kept encounter of crewed aircraft, or of a drone against a crewed aircraft, from 27 October "
+            "2026: the instant of the closest approach, the placed position and altitude of each aircraft, the kinds "
+            "and systems, and the values of the encounter (distance, closing, geometry, turning, fix interval, "
+            "reliability). No address, hash or registration. Private: no endpoint serves it."),
     "daily_air_cells": dict(
         group="conspicuity", doc="METHOD.md 10.2",
         row="Flying time and distinct aircraft of a day per kind and 0.25-degree cell over the fixes encounters "

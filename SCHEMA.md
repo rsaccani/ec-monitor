@@ -27,6 +27,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 - `ads_l.daily_drone_encounters`: SELECT, INSERT, DELETE
 - `ads_l.daily_drone_extent`: SELECT, INSERT, DELETE
 - `ads_l.daily_drones`: SELECT, INSERT, DELETE
+- `ads_l.daily_encounter_events`: SELECT, INSERT, DELETE
 - `ads_l.daily_flight_classes`: SELECT, INSERT, DELETE
 - `ads_l.daily_flights`: SELECT, INSERT, DELETE
 - `ads_l.daily_gaggles`: SELECT, INSERT, DELETE
@@ -68,7 +69,7 @@ As `SHOW GRANTS FOR CURRENT_USER` returned them for 'ads_user'@'localhost', the 
 
 - Monthly live counters (8): [`daily_visibility`](#daily_visibility), [`monthly_devices`](#monthly_devices), [`monthly_hours`](#monthly_hours), [`monthly_prediction`](#monthly_prediction), [`monthly_reception_pattern`](#monthly_reception_pattern), [`monthly_sources`](#monthly_sources), [`monthly_visibility_detail`](#monthly_visibility_detail), [`monthly_visibility_grid`](#monthly_visibility_grid)
 - Monthly archives and snapshots (11): [`monthly_circling_pilot_summary`](#monthly_circling_pilot_summary), [`monthly_circling_preference`](#monthly_circling_preference), [`monthly_devices_summary`](#monthly_devices_summary), [`monthly_maker_summary`](#monthly_maker_summary), [`monthly_region_summary`](#monthly_region_summary), [`monthly_return_summary`](#monthly_return_summary), [`monthly_routes_summary`](#monthly_routes_summary), [`monthly_snapshot`](#monthly_snapshot), [`monthly_sources_summary`](#monthly_sources_summary), [`monthly_systems_combo_summary`](#monthly_systems_combo_summary), [`monthly_systems_summary`](#monthly_systems_summary)
-- Nightly: conspicuity family (9): [`daily_air_cells`](#daily_air_cells), [`daily_crewed_encounters`](#daily_crewed_encounters), [`daily_drone_cells`](#daily_drone_cells), [`daily_drone_classes`](#daily_drone_classes), [`daily_drone_encounters`](#daily_drone_encounters), [`daily_drone_extent`](#daily_drone_extent), [`daily_drones`](#daily_drones), [`daily_parked`](#daily_parked), [`daily_same_aircraft_pairs`](#daily_same_aircraft_pairs)
+- Nightly: conspicuity family (10): [`daily_air_cells`](#daily_air_cells), [`daily_crewed_encounters`](#daily_crewed_encounters), [`daily_drone_cells`](#daily_drone_cells), [`daily_drone_classes`](#daily_drone_classes), [`daily_drone_encounters`](#daily_drone_encounters), [`daily_drone_extent`](#daily_drone_extent), [`daily_drones`](#daily_drones), [`daily_encounter_events`](#daily_encounter_events), [`daily_parked`](#daily_parked), [`daily_same_aircraft_pairs`](#daily_same_aircraft_pairs)
 - Nightly: data quality (1): [`daily_quality`](#daily_quality)
 - Nightly: ground stations (3): [`daily_coverage_gaps`](#daily_coverage_gaps), [`daily_station_sensitivity`](#daily_station_sensitivity), [`daily_stations`](#daily_stations)
 - Nightly: devices by country and region (1): [`daily_device_regions`](#daily_device_regions)
@@ -721,6 +722,42 @@ Drone flying time and aircraft on a day per evidence and flight class, 1-degree 
 - Read by: `sources.py` `SourceTracker.drones_stats`
 - Published through: `/conspicuity-monitor/api/drones`
 - History: `schema/2026-10-07-nightly.sql` (created); `schema/2026-10-07-drone-evidence.sql` (adds evidence, new primary key); `schema/2026-10-09-drone-flight-class.sql` (adds flight_class, new primary key). Grants in `schema/2026-10-07-nightly.sql`
+- Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
+
+### `daily_encounter_events`
+
+One row per kept encounter of crewed aircraft, or of a drone against a crewed aircraft, from 27 October 2026: the instant of the closest approach, the placed position and altitude of each aircraft, the kinds and systems, and the values of the encounter (distance, closing, geometry, turning, fix interval, reliability). No address, hash or registration. Private: no endpoint serves it.
+
+| Column | Type | Default | PK |
+|---|---|---|---|
+| `day` | date |  | 1 |
+| `closest_at` | datetime |  | 2 |
+| `threshold` | varchar(5) |  | 3 |
+| `lat_a` | decimal(7,5) |  | 4 |
+| `lon_a` | decimal(8,5) |  | 5 |
+| `lat_b` | decimal(7,5) |  | 6 |
+| `lon_b` | decimal(8,5) |  | 7 |
+| `kind_a` | varchar(12) |  |  |
+| `kind_b` | varchar(12) |  |  |
+| `systems_a` | varchar(255) |  |  |
+| `systems_b` | varchar(255) |  |  |
+| `alt_a_m` | smallint(6) |  |  |
+| `alt_b_m` | smallint(6) |  |  |
+| `agl_a_m` | smallint(6) |  |  |
+| `agl_b_m` | smallint(6) |  |  |
+| `distance_m` | decimal(5,1) |  |  |
+| `vertical_m` | decimal(5,1) |  |  |
+| `circling_a` | tinyint(1) |  |  |
+| `circling_b` | tinyint(1) |  |  |
+| `above` | char(1) |  |  |
+| `reliability` | varchar(9) | dense |  |
+| `drone_evidence` | varchar(12) |  |  |
+| `shares_radio` | tinyint(1) |  |  |
+| `shares_any` | tinyint(1) |  |  |
+
+- Defined in: METHOD.md 10.2
+- Written by: the nightly, `nightly.py` `write_family` (nightly family `conspicuity`)
+- History: `schema/2026-10-27-encounter-events.sql` (created, with grants)
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
 
 ### `daily_parked`

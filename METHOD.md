@@ -1275,6 +1275,26 @@ be read from them. The cells carry the number of aircraft that flew there
 for that reason as well: a month's encounters in a cell flown by two or
 three aircraft would name them to anyone who knows the place.
 
+From 27 October 2026 the nightly also writes one row per kept encounter to
+`daily_encounter_events`, from the same encounter objects as the aggregate, so
+that the events of a day, summed per threshold and pair of kinds, equal its
+`encounters` exactly. A row carries the instant of the closest approach to the
+second (UTC), the kind and systems of each aircraft, its placed position
+(five decimals) and altitude, its height above the terrain model, and the
+values of the encounter: horizontal and vertical distance, seconds from 1 km
+to the closest approach and under the threshold, crossing angle and relative
+speed, geometry, whether each aircraft was turning at 3 degrees a second or
+more, which was above, the interval of the fixes each position was placed
+from, reliability and the projection miss of sparse fixes, drone evidence and
+the shared-system flags. It carries no address, hash or registration, and
+nothing links two events of one aircraft. The instant and the two placed
+points are what a private tool uses to find the scene again in the raw feed
+while that exists (30 days): it looks for a pair of aircraft of the right
+kinds at that instant within 30 m of the points. Once the raw feed is gone
+this monitor can no longer link the row to an aircraft. No public endpoint serves this
+table, so the paragraph above about publishing encounters only as aggregates
+still holds. The table has no retention step, since it holds no identifier.
+
 ### 10.3 Parked aircraft transmitting
 
 The question: how much of each system's traffic comes from aircraft sitting
