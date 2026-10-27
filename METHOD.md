@@ -1452,6 +1452,10 @@ families whose probe passes the floors in that band and given only when every
 counting band above it is heard as well (the popup says when the bands below
 it were too thin to measure), and the stations of the latest day within 30 km
 of the cell's centre, with a PilotAware twin at the same spot shown as one.
+A station that sends its own beacon but forwarded no aircraft in the last
+30 days is listed apart, as heard but forwarding nothing, and is left out of
+the count: it adds nothing to coverage, and listed among the receivers it made
+the Grappa cell look served by two FANET bases 11 km away (27 October 2026).
 
 On 15 October 2026 alone, with those floors applied to one day, 41 cells had
 a band that counted, and they lost 173 hours. One cell, on the south side of

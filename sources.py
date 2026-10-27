@@ -4223,18 +4223,30 @@ class SourceTracker:
             cells = coverage_gaps_summary([r[:8] for r in rows])
             cur.execute("SELECT MAX(day) FROM daily_stations")
             station_day = cur.fetchone()[0]
-            stations = []
+            stations, silent = [], []
             if station_day is not None:
                 cur.execute("""SELECT name, lat, lon FROM daily_stations
                                WHERE day = %s AND lat IS NOT NULL AND lon IS NOT NULL""", (station_day,))
-                stations = collapse_twins([(n, float(a), float(b)) for n, a, b in cur.fetchall()])
-            for c in cells:
+                heard = [(n, float(a), float(b)) for n, a, b in cur.fetchall()]
+                # A station that sends its own beacon but forwarded no aircraft in the station window adds
+                # nothing to coverage (the FANET bases at Monte Grappa's launch and landing, 27 October), so
+                # it is listed apart instead of reading as a receiver near the cell.
+                window, _ = _station_window(cur, station_day)
+                forwards = {n for n, s in window.items() if s["packets"] > 0}
+                stations = collapse_twins([s for s in heard if s[0] in forwards])
+                silent = collapse_twins([s for s in heard if s[0] not in forwards])
+
+            def near_cell(c, group):
                 dlon = min(180.0, 0.5 / max(0.05, math.cos(math.radians(c["lat"]))))
-                near = sorted((_distance(c["lat"], c["lon"], a, b) / 1000, n) for n, a, b in stations
+                near = sorted((_distance(c["lat"], c["lon"], a, b) / 1000, n) for n, a, b in group
                               if abs(a - c["lat"]) < 0.5 and abs(b - c["lon"]) < dlon)
-                near = [(km, n) for km, n in near if km <= COVERAGE_STATION_KM]
+                return [(km, n) for km, n in near if km <= COVERAGE_STATION_KM]
+            for c in cells:
+                near = near_cell(c, stations)
                 c["stations_within_km"] = len(near)
                 c["stations"] = [{"name": n, "km": round(km, 1)} for km, n in near[:COVERAGE_STATIONS_SHOWN]]
+                quiet = near_cell(c, silent)
+                c["silent_stations"] = [{"name": n, "km": round(km, 1)} for km, n in quiet[:COVERAGE_STATIONS_SHOWN]]
             cells.sort(key=lambda c: -c["lost_hours"])
             return {"latest_day": latest.isoformat(), "days": days, "window_days": COVERAGE_DAYS,
                     "cell_degrees": CELL_DEG, "band_labels": list(COVERAGE_BAND_LABELS),
