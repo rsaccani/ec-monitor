@@ -193,7 +193,8 @@ DESCRIPTIONS = {
         row="Drones of a day by how far they went from the first fix of their largest session."),
     "daily_drone_encounters": dict(
         group="conspicuity", doc="METHOD.md 10.1, 10.2",
-        row="Encounters of a day between a drone and a crewed aircraft (within 10 s, 1 km and 150 m), per "
+        row="History up to 26 October 2026 (`DRONE_ENCOUNTERS_UNIFIED_FROM`): from 27 October the drone encounters are rows of `daily_crewed_encounters` with kind `drone`, and this table is no longer written. "
+            "Encounters of a day between a drone and a crewed aircraft (within 10 s, 1 km and 150 m), per "
             "evidence and flight class, cell, systems of each side, distance, closing speed and geometry."),
     "daily_crewed_encounters": dict(
         group="conspicuity", doc="METHOD.md 10.2",
