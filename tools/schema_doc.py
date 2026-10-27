@@ -75,6 +75,10 @@ GROUPS = (
      "One row per device, day, source, country and region with an airborne position (METHOD.md 10.6), a "
      "family of its own in nightly.py (FAMILIES) written in a transaction of its own. Holds addresses, "
      "reduced to `monthly_region_summary` by `archive_loop` like `daily_routes`."),
+    ("makers", "Nightly: maker and firmware of each device",
+     "One row per device, day and source (FANET, FLARM or ADS-L) heard (METHOD.md 10.8), a family of its own in "
+     "nightly.py (FAMILIES) written in a transaction of its own. Holds addresses, reduced to "
+     "`monthly_maker_summary` by `archive_loop` like the regions."),
     ("device_pattern", "Nightly: reception pattern of each device",
      "Far airborne receptions of each device by side of the aircraft, kept for 30 days (METHOD.md 7), a family "
      "of its own in nightly.py (FAMILIES, `device_pattern`) written in a transaction of its own. Holds "
@@ -163,6 +167,10 @@ DESCRIPTIONS = {
         row="Distinct devices of an archived month per country, region, source and category: what is left of "
             "daily_device_regions. region '' is the whole country and source '' every source, each counted "
             "as distinct devices at its own level."),
+    "monthly_maker_summary": dict(
+        group="archive", doc="METHOD.md 9, 10.8",
+        row="Distinct devices of an archived month per source, maker and FLARM firmware version: what is left of "
+            "daily_device_makers. maker '' and firmware '' are unknown."),
     "monthly_snapshot": dict(
         group="archive", doc="METHOD.md 9 (Monthly snapshots)",
         row="What one statistics endpoint published for a month, frozen the night its last day was computed: "
@@ -211,6 +219,11 @@ DESCRIPTIONS = {
         group="regions", doc="METHOD.md 10.6; METHOD.md 9",
         row="A device on one source with at least one airborne position in a country and region on a day. "
             "Holds addresses: reduced to monthly_region_summary and deleted once the month is archived."),
+    "daily_device_makers": dict(
+        group="makers", doc="METHOD.md 10.8; METHOD.md 9",
+        row="A FANET, FLARM or ADS-L device address heard on a day, with its maker (from its FANET address), and "
+            "the firmware and hardware code of its last FLARM packet. Holds addresses: reduced to "
+            "monthly_maker_summary and deleted once the month is archived."),
     "daily_coverage_gaps": dict(
         group="stations", doc="METHOD.md 10.5",
         row="Per cell, family and band of height above the ground on a day: the radio seconds judged for the probe "
@@ -960,7 +973,7 @@ def main():
     for t in tables:
         if t not in DESCRIPTIONS:
             warn(f"table {t} has no entry in DESCRIPTIONS")
-        elif DESCRIPTIONS[t]["group"] in ("conspicuity", "patterns", "quality", "stations", "regions") and t not in families:
+        elif DESCRIPTIONS[t]["group"] in ("conspicuity", "patterns", "quality", "stations", "regions", "makers") and t not in families:
             warn(f"{t} is described as nightly ({DESCRIPTIONS[t]['group']}) but is not in nightly.FAMILIES")
         elif t in families and DESCRIPTIONS[t]["group"] not in (families[t], "quality"):
             warn(f"{t} is in nightly family {families[t]} but described as {DESCRIPTIONS[t]['group']}")

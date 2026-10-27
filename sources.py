@@ -349,6 +349,67 @@ REGION_SUMMARY_SQL = _region_summary_sql()
 # The same levels for the months whose addresses are still kept (every row left in the table).
 REGION_LIVE_SQL = _region_levels(f"day >= %s AND {COUNTED_SQL}")
 
+# Maker and firmware per device (METHOD.md 10.8, from 27 October 2026). The first byte of a FANET address is
+# the manufacturer, per the registry in the FANET specification (protocol.txt of github.com/3s1d/fanet-stm32,
+# "Manufacturer IDs"). The two Burnair entries are one maker. 0x0A is FLARM itself, and an instrument of any
+# make may carry a plain FLARM address, so it names no maker and is counted as unknown with the unregistered
+# (0xFC, 0xFD), reserved and multicast bytes and every byte the registry does not list.
+FANET_MAKERS = {
+    0x01: "Skytraxx", 0x03: "BitBroker", 0x04: "AirWhere", 0x05: "Windline", 0x06: "Burnair",
+    0x07: "SoftRF", 0x08: "GXAircom", 0x09: "Airtribune", 0x0B: "FlyBeeper", 0x0C: "Leaf Vario",
+    0x0D: "LYNKX", 0x0E: "Syride", 0x0F: "FlyBrief", 0x10: "alfapilot", 0x11: "FANET+",
+    0x20: "XC Tracer", 0xBA: "Burnair", 0xCB: "Cloudbuddy", 0xE0: "OGN Tracker", 0xE4: "4aviation",
+    0xFA: "Various", 0xFB: "Espressif base station",
+}
+# The systems whose devices get a row in daily_device_makers: FANET, FLARM and ADS-L (kinds of SOURCES), the
+# three an instrument can send under one address. The FANET maker is applied to the other two.
+MAKER_KINDS = ("fanet", "flarm", "adsl")
+FANET_SOURCE = "OGNFNT"
+# The FLARM firmware current at the time of writing (release notes of 6 February 2026). Read by the maker
+# endpoint for the share of devices on it: change it here, and only here, when FLARM releases another.
+FLARM_CURRENT_FIRMWARE = "7.43"
+FLARM_SOURCE = "OGFLR"          # the tocall FLARM's variants are one source under (SAME_SYSTEM)
+# FLARM's comment ends with "sX.YY hXX": firmware version and hardware code. The hardware code has no public
+# table, so it is kept and never named. FANET's own " sF1" has no dot and does not match.
+_flarm_version = re.compile(r" s(\d{1,2}\.\d{2}) h([0-9A-Fa-f]{2})(?=\s|$)")
+
+
+def fanet_maker(address):
+    """The maker a FANET address (six hex digits, or the device id with its prefix) names, or None."""
+    try:
+        return FANET_MAKERS.get(int(address[-6:-4], 16))
+    except ValueError:
+        return None
+
+
+def flarm_version(text):
+    """(firmware, hardware code) from a FLARM comment, or None."""
+    m = _flarm_version.search(text)
+    return (m.group(1), m.group(2).upper()) if m else None
+
+
+def _maker_select_sql(where, per_source=True):
+    """monthly_maker_summary's rows for the days `where` selects: per month, source, maker and firmware, the
+    distinct addresses (a device sent under two prefixes counts once). A device has the one maker it was
+    given on any day of the month, and the firmware of the last day it sent one; '' is none. One device is
+    in one row of its source, so the rows add up to the source's devices, per maker or per firmware. Without
+    per_source the rows are source '': one device per bare address over all the systems, with the maker any
+    of them gave and the latest firmware."""
+    src = SAME_SYSTEM_SQL if per_source else "''"
+    return f"""SELECT month, source, maker, firmware, COUNT(*)
+                    FROM (SELECT DATE_FORMAT(day, '%%Y-%%m') AS month, {src} AS source, RIGHT(device_id, 6) AS address,
+                                 COALESCE(MAX(maker), '') AS maker,
+                                 COALESCE(SUBSTRING_INDEX(GROUP_CONCAT(firmware ORDER BY day DESC SEPARATOR ','), ',', 1),
+                                          '') AS firmware
+                              FROM daily_device_makers WHERE {where} GROUP BY 1, 2, 3) d
+                GROUP BY month, source, maker, firmware"""
+
+
+MAKER_SUMMARY_SQL = ["INSERT INTO monthly_maker_summary (month, source, maker, firmware, devices) "
+                     + _maker_select_sql("day < CONCAT(%s, '-01')", per_source)
+                     for per_source in (True, False)]
+MAKER_LIVE_SQL = [_maker_select_sql("day >= %s", per_source) for per_source in (True, False)]
+
 # Names of the aircraft categories carried in bits 2-5 of the first byte of
 # the OGN "idXXYYYYYY" field (bits 0-1 are the address type, 6 no-track, 7
 # stealth). Moved here from app.py on 7 October 2026 with the ADS-L monthly
@@ -2112,6 +2173,7 @@ class SourceTracker:
         self.snapshots_cache = (0, None)
         self.encounters_cache = (0, None)
         self.regions_cache = (0, None)
+        self.makers_cache = (0, None)
         self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
         # Set by app.py to its JSON serialiser: the large statistics are then
         # cached as Frozen text. nightly.py leaves it unset and gets the objects.
@@ -2836,6 +2898,9 @@ class SourceTracker:
             # Devices by country and region (METHOD.md 10.6, from 25 October 2026), reduced to
             # distinct devices per month, country, region, source and category.
             ("daily_device_regions", "day < CONCAT(%s, '-01')", REGION_SUMMARY_SQL),
+            # Maker and firmware per device (METHOD.md 10.8, from 27 October 2026), reduced to distinct
+            # devices per month, source, maker and firmware.
+            ("daily_device_makers", "day < CONCAT(%s, '-01')", MAKER_SUMMARY_SQL),
         ]
         for table, where, summaries in steps:
             conn = None
@@ -2860,6 +2925,7 @@ class SourceTracker:
                     self.systems_cache = (0, None)
                     self.patterns_cache = (0, None)
                     self.regions_cache = (0, None)
+                    self.makers_cache = (0, None)
             except pymysql.MySQLError as e:
                 logger.error(f"Error archiving {table}: {e}")
                 if conn is not None:
@@ -2944,7 +3010,7 @@ class SourceTracker:
                                 ("stations", self.stations_stats), ("station map", self.station_map),
                                 ("coverage gaps", self.coverage_gaps_stats),
                                 ("snapshots", self.snapshots_stats), ("encounters", self.encounters_stats),
-                                ("regions", self.regions_stats)):
+                                ("regions", self.regions_stats), ("makers", self.makers_stats)):
                     try:
                         f()
                     except Exception as e:      # one failing statistic must not stop the others
@@ -4247,6 +4313,41 @@ class SourceTracker:
                     "category_names": {**{str(k): v for k, v in CATEGORY_NAMES.items()}, "255": "Unknown"},
                     "rows": rows}
         return self._cached("regions", "regions_cache", compute)
+
+    def makers_stats(self):
+        """Devices per month, source, maker and firmware (METHOD.md 10.8), no address.
+
+        Months archived by archive_loop come from monthly_maker_summary; the months whose addresses are
+        still kept are counted from daily_device_makers in the same way, and listed with partial true.
+        maker and firmware '' are unknown. Every device is in exactly one row of its source and month, so
+        any total over the rows of a source is that source's distinct devices.
+        """
+        def compute(cur):
+            cur.execute("SELECT month, source, maker, firmware, devices FROM monthly_maker_summary")
+            counts = {}         # (month, source, maker, firmware) -> devices
+            for m, s, mk, fw, n in cur.fetchall():
+                counts[(m, s, mk, fw)] = int(n)
+            archived = {k[0] for k in counts}
+            live = {}
+            for sql in MAKER_LIVE_SQL:
+                cur.execute(sql, ("2000-01-01",))
+                for m, s, mk, fw, n in cur.fetchall():
+                    if m not in archived:
+                        live[(m, s, mk, fw)] = int(n)
+            counts.update(live)
+            partial = {k[0] for k in live}
+            cur.execute("SELECT DISTINCT day FROM daily_device_makers ORDER BY day")
+            days = {}
+            for (day,) in cur.fetchall():
+                days.setdefault(day.strftime("%Y-%m"), []).append(day.isoformat())
+            months = sorted({k[0] for k in counts})
+            labels = {s: dict(zip(("label", "kind"), SOURCES.get(s, (s, "other")))) if s else {"label": "All systems", "kind": "all"}
+                      for s in sorted({k[1] for k in counts})}
+            return {"months": [dict({"month": m, "partial": m in partial}, **({"days": days.get(m, [])} if m in partial else {}))
+                               for m in months], "sources": labels,
+                    "rows": [{"month": m, "source": s, "maker": mk, "firmware": fw, "devices": n}
+                             for (m, s, mk, fw), n in sorted(counts.items())]}
+        return self._cached("makers", "makers_cache", compute)
 
     def snapshot_body(self, month, endpoint):
         """One snapshot as the JSON text it was stored as, or None."""

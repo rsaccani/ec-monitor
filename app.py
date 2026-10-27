@@ -1033,6 +1033,58 @@ def get_regions():
     return _cached(stat, ("devices-by-region", csv_out, month, country), build)
 
 
+@app.route(API + "/makers")
+def get_makers():
+    """Devices per maker and source, and the spread of FLARM firmware, for one month (METHOD.md, section 10.8).
+
+    ?month=YYYY-MM (default: the latest month on record). Only counts of distinct devices: no address is
+    served, and none is stored once a month is archived.
+    """
+    if tracker is None or SKIP_STATS_DATABASE:
+        return jsonify({})
+    month = request.args.get("month")
+    if month is not None and not re.fullmatch(r"\d{4}-\d{2}", month):
+        return jsonify({"error": "month must be YYYY-MM"}), 400
+    try:
+        stat = tracker.makers_stats()
+    except pymysql.MySQLError as e:
+        main_logger.error(f"Error reading the makers: {e}")
+        return jsonify({})
+    csv_out = request.args.get("format") == "csv"
+
+    def build():
+        whole = stat.thaw() if isinstance(stat, sources.Frozen) else stat
+        picked = month or (whole["months"][-1]["month"] if whole["months"] else None)
+        rows = [r for r in whole["rows"] if r["month"] == picked]
+        if csv_out:
+            buf = StringIO()
+            writer = csv.DictWriter(buf, fieldnames=["month", "source", "maker", "firmware", "devices"])
+            writer.writeheader()
+            writer.writerows(rows)
+            return buf.getvalue(), "text/csv", {"Content-Disposition": 'attachment; filename="devices-by-maker.csv"'}
+        total, by_maker, versions = collections.Counter(), collections.Counter(), collections.Counter()
+        for r in rows:
+            total[r["source"]] += r["devices"]
+            by_maker[(r["source"], r["maker"])] += r["devices"]
+            if r["source"] == sources.FLARM_SOURCE and r["firmware"]:
+                versions[r["firmware"]] += r["devices"]
+        with_firmware = sum(versions.values())
+        on_current = versions.get(sources.FLARM_CURRENT_FIRMWARE, 0)
+        out = {"months": whole["months"], "month": picked, "sources": whole["sources"],
+               "devices": dict(sorted(total.items())),
+               "makers": [{"source": s, "maker": m or None, "devices": n}
+                          for (s, m), n in sorted(by_maker.items(), key=lambda kv: (kv[0][0], -kv[1], kv[0][1]))],
+               "firmware": {"source": sources.FLARM_SOURCE, "current": sources.FLARM_CURRENT_FIRMWARE,
+                            "devices": total.get(sources.FLARM_SOURCE, 0), "with_firmware": with_firmware,
+                            "on_current": on_current,
+                            "share_on_current": round(on_current / with_firmware, 4) if with_firmware else None,
+                            "versions": [{"firmware": v, "devices": n}
+                                         for v, n in sorted(versions.items(), key=lambda kv: (-kv[1], kv[0]))]}}
+        return app.json.dumps(out) + "\n", "application/json", None
+
+    return _cached(stat, ("devices-by-maker", csv_out, month), build)
+
+
 @app.route(API + "/drones")
 def get_drones():
     """Drones by cell, height, speed, systems and extent, and their encounters (METHOD.md, section 10.1)."""

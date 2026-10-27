@@ -1558,6 +1558,56 @@ reach is a lower bound of what the station can hear. The first rose was
 filled from the 7 days of recording left on 25 October (by the backfill); the
 page says how many days it covers.
 
+### 10.8 Maker and firmware of each device
+
+From 27 October 2026 the nightly batch notes, for each FANET, FLARM and
+ADS-L device heard that day, who made it and which FLARM firmware it last
+sent. A device is a source's address, as in 10.6, and it counts when it
+sent a position that day, airborne or not; rotating random addresses and
+devices that asked not to be tracked are left out.
+
+The maker is the first byte of a FANET address, which the FANET
+specification (protocol.txt of the fanet-stm32 project, "Manufacturer IDs")
+assigns to makers: 0x11 FANET+ (the Skytraxx, Naviter and Skybean
+instruments), 0x06 and 0xBA Burnair, 0x20 XC Tracer, 0x08 GXAircom, and so
+on. An instrument often sends FLARM, FANET and ADS-L under one address, so
+the maker a device's FANET address names is also given to its FLARM and
+ADS-L rows, when the same address sent FANET the same day. On 25 October
+that reached 174 of 2,033 FLARM devices and 50 of 103 ADS-L devices, with
+no collision of two instruments at different places under one address. A
+FLARM or ADS-L device that never sends FANET has no maker, so the
+maker figures of those systems are lower bounds. Byte 0x0A is FLARM's own
+and may sit on any plain FLARM address, so it names no maker and counts as
+unknown, with the unregistered bytes (0xFC, 0xFD) and those the registry
+does not list. FLARM's `hXX` hardware code has no public table: it is kept
+and never turned into a maker.
+FANET weather stations and ground stations are not devices here: their
+positions are set aside as in 10.5, and they are the bulk of the makers that
+make base stations. On 25 October, of the 79 Burnair and 34 GXAircom FANET
+addresses heard in Europe sent weather reports, and none sent an aircraft position.
+
+The firmware is the `sX.YY` of the device's last FLARM packet of the day,
+which about a third of FLARM devices send; a device that sends none has none
+and is not counted in the firmware figures. The page's share on the current
+version is the devices on it among those that send a version, and the
+current version, 7.43 of 6 February 2026, is one constant in the code. FLARM
+firmware expires, and a device left on an old version stops working, so the
+spread shows how many pilots are close to that. A version newer than the
+release notes list (7.44 on 25 October, probably a beta) is counted as it is.
+
+The addresses are kept for the current and the previous month (section 9).
+At the end of that time the month is reduced to distinct devices per source,
+maker and firmware, and the addresses are deleted. A device is counted once
+per source and month under the one maker it was given on any day and the
+firmware of the last day it sent one, so each source's rows add up to its
+devices whichever way they are summed. Source '' ("All systems") counts a device once across
+FANET, FLARM and ADS-L by its bare six-digit address, with the maker any of them gave. A month's makers and the uptake of
+a firmware can be followed over time. A device with two prefixes on one
+system (a FLARM address also heard as an ICAO one) counts once. The counts
+follow the receiver coverage as in 10.6, and a maker's count is a count of
+devices on the air, which says nothing about how many of its instruments are
+sold.
+
 ## 11. Known limits
 
 - A device never heard at all does not appear, and a pilot who carries

@@ -323,6 +323,9 @@ FAMILIES = {
     # Devices by country and region (METHOD.md 10.6, 25 October 2026): a family of its own as well, since it
     # holds addresses and is archived apart.
     "regions": ("daily_device_regions",),
+    # Maker and firmware per device address (METHOD.md 10.8, 27 October 2026): its own family too, kept and
+    # archived like the regions.
+    "makers": ("daily_device_makers",),
     # The reception pattern of each device (METHOD.md 7, 25 October 2026): its own family, since it is kept for
     # PATTERN_KEEP_DAYS days only and pruned by the nightly.
     "device_pattern": ("daily_device_pattern",),
@@ -335,7 +338,7 @@ FAMILIES = {
                  "daily_cruise", "daily_helicopter_night"),
 }
 TABLES = (FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] + FAMILIES["regions"]
-          + FAMILIES["device_pattern"] + FAMILIES["station_rose"])
+          + FAMILIES["makers"] + FAMILIES["device_pattern"] + FAMILIES["station_rose"])
 PATTERN_KEEP_DAYS = 30                  # the days daily_device_pattern keeps, the run's day included
 ROSE_KEEP_DAYS = 30                     # the days before the run's day that daily_station_rose keeps
 # Item 0i's agreement test of branch (b) keeps a second's fixes until packets for it can no longer arrive: a packet is
@@ -1087,6 +1090,20 @@ def station_guard(f):
     return guarded
 
 
+def maker_guard(f):
+    """An error in the makers costs the makers their day and nothing else (METHOD.md 10.8)."""
+    def guarded(self, *args):
+        if not self.mk_on:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The makers failed during the pass")
+            self.failed["makers"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.mk_on = False
+    return guarded
+
+
 def region_guard(f):
     """An error in the regions costs the regions their day and nothing else (METHOD.md 10.6)."""
     def guarded(self, *args):
@@ -1295,6 +1312,9 @@ class Nightly:
         self.r = True             # METHOD.md 10.6, devices by region; switched off if its work fails during the pass
         self.anon_peak = 0        # MB, the largest anonymous memory sampled (anon_mb)
         self.regions = {}         # (device, tocall, country, region) -> category, for an airborne fix there
+        self.mk_on = True         # METHOD.md 10.8, maker and firmware; switched off if its work fails during the pass
+        self.mk = {}              # (device, tocall) -> [firmware, hardware code] last sent that day, None if none
+        self.fanet_makers = {}    # address (6 hex digits) -> maker named by its FANET byte, for a FANET device seen
         self.dp = True            # METHOD.md 7, the device patterns; switched off if its work fails during the pass
         self.dp_pos = {}          # receiver -> (lat, lon), the last position it beaconed (as SourceTracker.stations)
         self.dpat = {}            # (address, tocall, sector) -> [receptions, sum of dB scaled to 10 km]
@@ -1947,6 +1967,7 @@ class Nightly:
             self.rose_fix(tocall, path[-1], lat, lon, category, kt, alt_m, body)
         if kind != "adsb" and (address, tocall) in self.dropped:
             return                              # an impossible stream-day (9 October 2026), counted in 10.4
+        self.maker_fix(src, tocall, kind, rnd, body)
         raw_category = category
         m = self.major.get((address, tocall))
         if (m is not None and tocall != REMOTE_ID and not fanet_ground(tocall, m, category)
@@ -3121,6 +3142,24 @@ class Nightly:
         a[0] += 1
         a[1] += float(m.group(1)) + sources.SNR_SLOPE_DB * math.log10(km / 10)
 
+    @maker_guard
+    def maker_fix(self, device, tocall, kind, rnd, body):
+        """METHOD.md 10.8: a FANET, FLARM or ADS-L device heard today, with the firmware and hardware code its
+        last FLARM packet carried, and the maker its FANET address names if it sent FANET today."""
+        if rnd or kind not in sources.MAKER_KINDS:
+            return
+        rec = self.mk.get((device, tocall))
+        if rec is None:
+            rec = self.mk[(device, tocall)] = [None, None]
+            if kind == "fanet":
+                maker = sources.fanet_maker(device)
+                if maker is not None and device.startswith("FNT"):
+                    self.fanet_makers[device[-6:]] = maker
+        if kind == "flarm":
+            v = sources.flarm_version(body)
+            if v:
+                rec[0], rec[1] = v
+
     @region_guard
     def region_fix(self, device, tocall, category, lat, lon):
         """METHOD.md 10.6: the country and region of an airborne fix, looked up once per 0.01-degree cell
@@ -3364,10 +3403,11 @@ class Nightly:
         patterns family is computed first, since the crewed encounters report
         the tows the launches find.
         """
-        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}, "device_pattern": {},
+        out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}, "makers": {}, "device_pattern": {},
                "station_rose": {}}
         for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity),
                                 ("stations", self.rows_stations), ("regions", self.rows_regions),
+                                ("makers", self.rows_makers),
                                 ("device_pattern", self.rows_device_pattern),
                                 ("station_rose", self.rows_station_rose)):
             if family in self.failed:
@@ -3386,6 +3426,14 @@ class Nightly:
         return {"daily_device_regions": (("day", "device_id", "source", "category", "country", "region"),
                                          [(day, d, tc, cat, cc, reg) for (d, tc, cc, reg), cat
                                           in sorted(self.regions.items())])}
+
+    def rows_makers(self):
+        """METHOD.md 10.8: one row per FANET, FLARM or ADS-L device address heard that day. The maker is the
+        one its FANET address names, applied to the other two systems under the same address, or NULL."""
+        day = self.day.isoformat()
+        return {"daily_device_makers": (("day", "device_id", "source", "maker", "firmware", "hardware"),
+                                        [(day, d, tc, self.fanet_makers.get(d[-6:]), fw, hw)
+                                         for (d, tc), (fw, hw) in sorted(self.mk.items())])}
 
     def rows_device_pattern(self):
         """METHOD.md 7: one row per device, source and sector with a far airborne reception that day."""
@@ -4111,7 +4159,7 @@ def snapshot_endpoints(family):
         return tuple(PATTERN_SNAPSHOTS)
     if family == "conspicuity":
         return tuple(e for e in every if e not in PATTERN_SNAPSHOTS)
-    if family in ("stations", "regions", "device_pattern", "station_rose"):
+    if family in ("stations", "regions", "makers", "device_pattern", "station_rose"):
         return ()                       # no endpoint of these is frozen monthly: the table is the record
     return tuple(every)
 
@@ -4273,6 +4321,9 @@ def print_dry_run(tables, run_row):
                 regs = sorted(((len(v), reg) for (c, reg), v in by_reg.items() if c == cc), reverse=True)
                 print(f"   {cc} {len(by_cc[cc]):6d}: " + ", ".join(f"{reg or '-'} {k}" for k, reg in regs[:6]))
             continue
+        if table == "daily_device_makers":
+            print_makers_dry_run(rows)
+            continue
         if table == "daily_station_rose":
             print(f"   stations {len({r[1] for r in rows})}, station-sources {len(rows)}, "
                   f"receptions {sum(r[3] for r in rows):,}")
@@ -4367,6 +4418,31 @@ def print_dry_run(tables, run_row):
             print("   " + " | ".join(str(x) for x in r[1:]))
         if len(shown) < len(rows):
             print(f"   ... {len(rows) - len(shown)} more")
+
+
+def print_makers_dry_run(rows):
+    """daily_device_makers holds addresses: counts of distinct addresses per source, maker and firmware only."""
+    by_src = collections.defaultdict(set)
+    maker = collections.defaultdict(lambda: collections.defaultdict(set))
+    firmware, hardware = collections.defaultdict(set), collections.defaultdict(set)
+    for _, device, tocall, mk, fw, hw in rows:
+        a = device[-6:]
+        by_src[tocall].add(a)
+        maker[tocall][mk].add(a)
+        if fw:
+            firmware[fw].add(a)
+        if hw:
+            hardware[hw].add(a)
+    for tocall in sorted(by_src, key=lambda t: -len(by_src[t])):
+        named = sum(len(v) for k, v in maker[tocall].items() if k)
+        print(f"   {tocall}: {len(by_src[tocall])} addresses, {named} with a maker")
+        for mk, v in sorted(maker[tocall].items(), key=lambda kv: -len(kv[1]))[:10]:
+            print(f"      {mk or 'unknown'}: {len(v)}")
+    with_fw = set().union(*firmware.values()) if firmware else set()
+    print(f"   firmware sent by {len(with_fw)} addresses: "
+          + ", ".join(f"{fw} {len(v)}" for fw, v in sorted(firmware.items(), key=lambda kv: -len(kv[1]))[:12]))
+    print(f"   hardware codes {len(hardware)}: "
+          + ", ".join(f"{hw} {len(v)}" for hw, v in sorted(hardware.items(), key=lambda kv: -len(kv[1]))[:8]))
 
 
 def print_coverage_dry_run(n, tables):
@@ -4527,7 +4603,7 @@ def main():
         return 1
     families = n.rows()
     tables = {**families["conspicuity"], **families["patterns"], **families["stations"], **families["regions"],
-              **families["device_pattern"], **families["station_rose"]}
+              **families["makers"], **families["device_pattern"], **families["station_rose"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
@@ -4625,7 +4701,7 @@ def main():
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     failed = dict(n.failed)
     written = []
-    for family in ("conspicuity", "patterns", "stations", "regions", "device_pattern", "station_rose"):
+    for family in ("conspicuity", "patterns", "stations", "regions", "makers", "device_pattern", "station_rose"):
         if family in failed:
             continue
         if args.dry_run:
