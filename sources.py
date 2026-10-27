@@ -365,9 +365,19 @@ FANET_MAKERS = {
 # three an instrument can send under one address. The FANET maker is applied to the other two.
 MAKER_KINDS = ("fanet", "flarm", "adsl")
 FANET_SOURCE = "OGNFNT"
-# The FLARM firmware current at the time of writing (release notes of 6 February 2026). Read by the maker
-# endpoint for the share of devices on it: change it here, and only here, when FLARM releases another.
-FLARM_CURRENT_FIRMWARE = "7.43"
+# From 7.40 (19 December 2024 for PowerFLARM and Classic, 28 April 2025 for Atom) FLARM firmware no longer
+# expires; earlier versions stopped working at a set date. The latest version differs by device line (7.44 of
+# 9 June 2026 for PowerFLARM, Atom and Aurora, 7.43 of 6 February 2026 for Classic), so none is called current.
+FLARM_NO_EXPIRY_FROM = (7, 40)
+
+
+def flarm_no_expiry(version):
+    """Whether a FLARM firmware version such as '7.44' is one that no longer expires."""
+    try:
+        major, minor = (int(x) for x in version.split(".")[:2])
+    except ValueError:
+        return False
+    return (major, minor) >= FLARM_NO_EXPIRY_FROM
 FLARM_SOURCE = "OGFLR"          # the tocall FLARM's variants are one source under (SAME_SYSTEM)
 # FLARM's comment ends with "sX.YY hXX": firmware version and hardware code. The hardware code has no public
 # table, so it is kept and never named. FANET's own " sF1" has no dot and does not match.
@@ -394,18 +404,21 @@ def _maker_select_sql(where, per_source=True):
     given on any day of the month, and the firmware of the last day it sent one; '' is none. One device is
     in one row of its source, so the rows add up to the source's devices, per maker or per firmware. Without
     per_source the rows are source '': one device per bare address over all the systems, with the maker any
-    of them gave and the latest firmware."""
+    of them gave and the latest firmware. The hardware code (FLARM's hXX, from 27 October 2026) is the one
+    sent with that latest firmware, '' if none, so the firmware of each hardware group can be read apart."""
     src = SAME_SYSTEM_SQL if per_source else "''"
-    return f"""SELECT month, source, maker, firmware, COUNT(*)
+    return f"""SELECT month, source, maker, firmware, hardware, COUNT(*)
                     FROM (SELECT DATE_FORMAT(day, '%%Y-%%m') AS month, {src} AS source, RIGHT(device_id, 6) AS address,
                                  COALESCE(MAX(maker), '') AS maker,
                                  COALESCE(SUBSTRING_INDEX(GROUP_CONCAT(firmware ORDER BY day DESC SEPARATOR ','), ',', 1),
-                                          '') AS firmware
+                                          '') AS firmware,
+                                 COALESCE(SUBSTRING_INDEX(GROUP_CONCAT(hardware ORDER BY day DESC SEPARATOR ','), ',', 1),
+                                          '') AS hardware
                               FROM daily_device_makers WHERE {where} GROUP BY 1, 2, 3) d
-                GROUP BY month, source, maker, firmware"""
+                GROUP BY month, source, maker, firmware, hardware"""
 
 
-MAKER_SUMMARY_SQL = ["INSERT INTO monthly_maker_summary (month, source, maker, firmware, devices) "
+MAKER_SUMMARY_SQL = ["INSERT INTO monthly_maker_summary (month, source, maker, firmware, hardware, devices) "
                      + _maker_select_sql("day < CONCAT(%s, '-01')", per_source)
                      for per_source in (True, False)]
 MAKER_LIVE_SQL = [_maker_select_sql("day >= %s", per_source) for per_source in (True, False)]
@@ -4323,17 +4336,17 @@ class SourceTracker:
         any total over the rows of a source is that source's distinct devices.
         """
         def compute(cur):
-            cur.execute("SELECT month, source, maker, firmware, devices FROM monthly_maker_summary")
-            counts = {}         # (month, source, maker, firmware) -> devices
-            for m, s, mk, fw, n in cur.fetchall():
-                counts[(m, s, mk, fw)] = int(n)
+            cur.execute("SELECT month, source, maker, firmware, hardware, devices FROM monthly_maker_summary")
+            counts = {}         # (month, source, maker, firmware, hardware) -> devices
+            for m, s, mk, fw, hw, n in cur.fetchall():
+                counts[(m, s, mk, fw, hw)] = int(n)
             archived = {k[0] for k in counts}
             live = {}
             for sql in MAKER_LIVE_SQL:
                 cur.execute(sql, ("2000-01-01",))
-                for m, s, mk, fw, n in cur.fetchall():
+                for m, s, mk, fw, hw, n in cur.fetchall():
                     if m not in archived:
-                        live[(m, s, mk, fw)] = int(n)
+                        live[(m, s, mk, fw, hw)] = int(n)
             counts.update(live)
             partial = {k[0] for k in live}
             cur.execute("SELECT DISTINCT day FROM daily_device_makers ORDER BY day")
@@ -4345,8 +4358,8 @@ class SourceTracker:
                       for s in sorted({k[1] for k in counts})}
             return {"months": [dict({"month": m, "partial": m in partial}, **({"days": days.get(m, [])} if m in partial else {}))
                                for m in months], "sources": labels,
-                    "rows": [{"month": m, "source": s, "maker": mk, "firmware": fw, "devices": n}
-                             for (m, s, mk, fw), n in sorted(counts.items())]}
+                    "rows": [{"month": m, "source": s, "maker": mk, "firmware": fw, "hardware": hw, "devices": n}
+                             for (m, s, mk, fw, hw), n in sorted(counts.items())]}
         return self._cached("makers", "makers_cache", compute)
 
     def snapshot_body(self, month, endpoint):

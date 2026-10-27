@@ -1058,28 +1058,33 @@ def get_makers():
         rows = [r for r in whole["rows"] if r["month"] == picked]
         if csv_out:
             buf = StringIO()
-            writer = csv.DictWriter(buf, fieldnames=["month", "source", "maker", "firmware", "devices"])
+            writer = csv.DictWriter(buf, fieldnames=["month", "source", "maker", "firmware", "hardware", "devices"])
             writer.writeheader()
             writer.writerows(rows)
             return buf.getvalue(), "text/csv", {"Content-Disposition": 'attachment; filename="devices-by-maker.csv"'}
         total, by_maker, versions = collections.Counter(), collections.Counter(), collections.Counter()
+        by_hw = collections.defaultdict(collections.Counter)      # hardware code -> firmware -> devices
         for r in rows:
             total[r["source"]] += r["devices"]
             by_maker[(r["source"], r["maker"])] += r["devices"]
             if r["source"] == sources.FLARM_SOURCE and r["firmware"]:
                 versions[r["firmware"]] += r["devices"]
+                by_hw[r.get("hardware") or ""][r["firmware"]] += r["devices"]
         with_firmware = sum(versions.values())
-        on_current = versions.get(sources.FLARM_CURRENT_FIRMWARE, 0)
+        no_expiry = sum(n for v, n in versions.items() if sources.flarm_no_expiry(v))
         out = {"months": whole["months"], "month": picked, "sources": whole["sources"],
                "devices": dict(sorted(total.items())),
                "makers": [{"source": s, "maker": m or None, "devices": n}
                           for (s, m), n in sorted(by_maker.items(), key=lambda kv: (kv[0][0], -kv[1], kv[0][1]))],
-               "firmware": {"source": sources.FLARM_SOURCE, "current": sources.FLARM_CURRENT_FIRMWARE,
+               "firmware": {"source": sources.FLARM_SOURCE,
                             "devices": total.get(sources.FLARM_SOURCE, 0), "with_firmware": with_firmware,
-                            "on_current": on_current,
-                            "share_on_current": round(on_current / with_firmware, 4) if with_firmware else None,
+                            "no_expiry": no_expiry,
                             "versions": [{"firmware": v, "devices": n}
-                                         for v, n in sorted(versions.items(), key=lambda kv: (-kv[1], kv[0]))]}}
+                                         for v, n in sorted(versions.items(), key=lambda kv: (-kv[1], kv[0]))],
+                            "by_hardware": [{"hardware": hw or None, "devices": sum(c.values()),
+                                             "versions": [{"firmware": v, "devices": n}
+                                                          for v, n in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))]}
+                                            for hw, c in sorted(by_hw.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))]}}
         return app.json.dumps(out) + "\n", "application/json", None
 
     return _cached(stat, ("devices-by-maker", csv_out, month), build)

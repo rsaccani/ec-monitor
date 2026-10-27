@@ -1588,12 +1588,17 @@ addresses heard in Europe sent weather reports, and none sent an aircraft positi
 
 The firmware is the `sX.YY` of the device's last FLARM packet of the day,
 which about a third of FLARM devices send; a device that sends none has none
-and is not counted in the firmware figures. The page's share on the current
-version is the devices on it among those that send a version, and the
-current version, 7.43 of 6 February 2026, is one constant in the code. FLARM
-firmware expires, and a device left on an old version stops working, so the
-spread shows how many pilots are close to that. A version newer than the
-release notes list (7.44 on 25 October, probably a beta) is counted as it is.
+and is not counted in the firmware figures. From 7.40 (19 December 2024 for
+PowerFLARM and Classic, 28 April 2025 for Atom) FLARM firmware no longer
+expires, while earlier versions stopped working at a set date, so the figure
+that matters is how many devices are on 7.40 or later. No version is called
+current: the latest differs by device line (7.44 of 9 June 2026 for
+PowerFLARM, Atom and Aurora, 7.43 of 6 February 2026 for Classic FLARM) and
+changes over time. From 27 October 2026 the spread is also given per FLARM
+hardware code (`hXX`, the one sent with the device's latest firmware), which
+has no public table: a group is shown by its code, and a group with devices
+on a version published only for one line belongs to that line, an inference
+the page states as such.
 
 The addresses are kept for the current and the previous month (section 9).
 At the end of that time the month is reduced to distinct devices per source,
