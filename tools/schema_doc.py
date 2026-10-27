@@ -75,6 +75,14 @@ GROUPS = (
      "One row per device, day, source, country and region with an airborne position (METHOD.md 10.6), a "
      "family of its own in nightly.py (FAMILIES) written in a transaction of its own. Holds addresses, "
      "reduced to `monthly_region_summary` by `archive_loop` like `daily_routes`."),
+    ("device_pattern", "Nightly: reception pattern of each device",
+     "Far airborne receptions of each device by side of the aircraft, kept for 30 days (METHOD.md 7), a family "
+     "of its own in nightly.py (FAMILIES, `device_pattern`) written in a transaction of its own. Holds "
+     "addresses, so the nightly deletes the rows older than 30 days after each run."),
+    ("station_rose", "Station reception rose",
+     "One row per day, station and source (METHOD.md 10.7), written by the nightly from 26 October 2026 "
+     "(family `station_rose`, in a transaction of its own); `tools/station_rose_backfill.py` only fills gaps. "
+     "The last 30 days are kept."),
     ("patterns", "Nightly: patterns family",
      "How light aviation flies (PATTERNS.md), from the same nightly run, written in a second transaction "
      "of its own so that a failure in one family leaves the other's day written."),
@@ -211,12 +219,22 @@ DESCRIPTIONS = {
         group="stations", doc="METHOD.md 10.5",
         row="The network's figures of a day for station sensitivity: the fitted slope k, the station pairs and "
             "observations it came from, and the stations judged. One row per day."),
+    "daily_station_rose": dict(
+        group="station_rose", doc="METHOD.md 10.7",
+        row="The direct airborne receptions of a station on one source in a day, in 36 sectors of 10 degrees by "
+            "bearing from the station. The payload is JSON: one entry per sector that heard anything, [sector, "
+            "receptions with a signal, sum of dB scaled to 10 km, [16 counts by distance]]. No address is kept."),
     "daily_stations": dict(
         group="stations", doc="METHOD.md 10.5",
         row="One OGN or FANET ground station on a day, by exact name: availability, the last and median figures of "
             "its status beacon, aircraft heard and packets forwarded, the five receiver checks of 10.4 with their "
             "values, its sensitivity against the neighbouring stations, and the codes of the open notes."),
     # Nightly, patterns
+    "daily_device_pattern": dict(
+        group="device_pattern", doc="METHOD.md 7",
+        row="One device on one source and one sector of the aircraft, with the receptions of a day from receivers "
+            "farther than 20 km and the sum of their signal in dB scaled to 10 km. No position, time or receiver "
+            "is kept."),
     "daily_hours_solar": dict(
         group="patterns", doc="PATTERNS.md 1",
         row="Flying time and distinct aircraft of a UTC day per local date, category and local solar hour."),
@@ -285,7 +303,7 @@ DESCRIPTIONS = {
     "nightly_runs": dict(
         group="other", doc="METHOD.md 10",
         row="One nightly computation of a day: when it finished, how many hourly files it read and which were "
-            "missing, lines read, duration, and which family failed if one did."),
+            "missing, lines read, duration, peak anonymous memory, and which family failed if one did."),
 }
 
 # ---------------------------------------------------------------------------
@@ -644,13 +662,13 @@ def parse_migration(sql):
     for m in re.finditer(r"ALTER TABLE `(\w+)`(.*?);", body, re.S):
         t, clause = m.group(1), m.group(2)
         what = []
-        for a in re.finditer(r"ADD COLUMN `(\w+)` ([^,;]+?)(?:\s+AFTER `\w+`)?\s*(?:,|$)", clause):
+        for a in re.finditer(r"ADD COLUMN(?: IF NOT EXISTS)? `(\w+)` ([^,;]+?)(?:\s+AFTER `\w+`)?\s*(?:,|$)", clause):
             changes.append((t, "add", a.group(1), column_type(a.group(2))))
             what.append(f"adds {a.group(1)}")
-        for a in re.finditer(r"MODIFY(?: COLUMN)? `(\w+)` ([^,;]+?)\s*(?:,|$)", clause):
+        for a in re.finditer(r"MODIFY(?: COLUMN)?(?: IF EXISTS)? `(\w+)` ([^,;]+?)\s*(?:,|$)", clause):
             changes.append((t, "modify", a.group(1), column_type(a.group(2))))
             what.append(f"changes {a.group(1)} to {column_type(a.group(2))}")
-        for a in re.finditer(r"DROP COLUMN `(\w+)`", clause):
+        for a in re.finditer(r"DROP COLUMN(?: IF EXISTS)? `(\w+)`", clause):
             changes.append((t, "drop", a.group(1), None))
             what.append(f"drops {a.group(1)}")
         if re.search(r"ADD PRIMARY KEY", clause):
