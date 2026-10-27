@@ -739,6 +739,10 @@ UNKNOWN_BAND = 255
 # The lat_idx and lon_idx of an encounter recorded before encounters had a
 # place (daily_drone_encounters, daily_crewed_encounters; 9 October 2026).
 NO_CELL = -32768
+# From this day the encounters of drones with crewed aircraft are found by the crewed-encounter
+# detector (nightly.CrewedEncounters, kind "drone") and filed in daily_crewed_encounters;
+# daily_drone_encounters holds the days before it (METHOD.md 10.1, 10.2).
+DRONE_ENCOUNTERS_UNIFIED_FROM = datetime.date(2026, 10, 27)
 CELL_DEG = 0.25
 DEM_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "europe_15s.i16")
 
@@ -3831,6 +3835,27 @@ class SourceTracker:
         """
         def compute(cur):
             name = self.DRONE_EVIDENCE.get
+            # The encounters of drones with crewed aircraft: daily_drone_encounters up to the day before
+            # DRONE_ENCOUNTERS_UNIFIED_FROM, and from that day the drone rows of daily_crewed_encounters
+            # (wide threshold, which is the old 1 km and 150 m; kind_a is "drone", sorted first). The
+            # new rows carry the drone's evidence (drone_evidence; None for rows from before that column)
+            # but no flight class (None) and only the kind of the crewed aircraft, given the OGN category that stands
+            # for it. The 1-degree cell is the quarter-degree one divided by four.
+            unified = DRONE_ENCOUNTERS_UNIFIED_FROM.isoformat()
+            new = f"FROM daily_crewed_encounters WHERE kind_a = 'drone' AND threshold = 'wide' AND day >= '{unified}'"
+            old_ = f"FROM daily_drone_encounters WHERE day < '{unified}'"
+            qd = THERMAL_CELLS_PER_DEG
+            def merged(rows, key, extra=()):
+                """Sums the encounters of rows with the same fields (a month can hold days of both sources)."""
+                acc = {}
+                for r in rows:
+                    k = tuple(r[f] for f in key)
+                    if k in acc:
+                        acc[k]["encounters"] += r["encounters"]
+                    else:
+                        acc[k] = dict(r)
+                return list(acc.values())
+            cat = self.UNIFIED_CATEGORY.get
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, lat_idx, lon_idx, SUM(air_seconds), SUM(aircraft)
                                FROM daily_drone_cells GROUP BY 1, 2, 3, 4""")
             cells = [{"month": r[0], "evidence": name(int(r[1])), "lat": int(r[2]), "lon": int(r[3]),
@@ -3850,10 +3875,17 @@ class SourceTracker:
                       for r in cur.fetchall()]
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, drone_systems, other_category, other_systems,
                                   distance_band, shared_system, SUM(encounters)
-                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5, 6, 7""")
+                               """ + old_ + """ GROUP BY 1, 2, 3, 4, 5, 6, 7""")
             encounters = [{"month": r[0], "evidence": name(int(r[1])), "drone_systems": r[2],
                            "other_category": int(r[3]), "other_systems": r[4], "distance_band": int(r[5]),
                            "shared_system": bool(r[6]), "encounters": int(r[7])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), drone_evidence, systems_a, kind_b, systems_b, distance_band,
+                                  shares_any, SUM(encounters) """ + new + """ GROUP BY 1, 2, 3, 4, 5, 6, 7""")
+            encounters += [{"month": r[0], "evidence": r[1] or None, "drone_systems": r[2], "other_category": cat(r[3]),
+                            "other_systems": r[4], "distance_band": int(r[5]), "shared_system": bool(r[6]),
+                            "encounters": int(r[7])} for r in cur.fetchall()]
+            encounters = merged(encounters, ("month", "evidence", "drone_systems", "other_category", "other_systems",
+                                             "distance_band", "shared_system"))
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, SUM(addresses), SUM(air_seconds)
                                FROM daily_drone_classes GROUP BY 1, 2""")
             classes = [{"month": r[0], "evidence": name(int(r[1])), "address_days": int(r[2]),
@@ -3878,10 +3910,18 @@ class SourceTracker:
                                     "extent_band": int(r[3]), "drone_days": int(r[4])} for r in cur.fetchall()]
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, other_category, distance_band,
                                   SUM(encounters)
-                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5""")
+                               """ + old_ + """ GROUP BY 1, 2, 3, 4, 5""")
             by_flight["encounters_by_flight"] = [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
                                         "other_category": int(r[3]), "distance_band": int(r[4]),
                                         "encounters": int(r[5])} for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), drone_evidence, kind_b, distance_band, SUM(encounters) """
+                        + new + """ GROUP BY 1, 2, 3, 4""")
+            by_flight["encounters_by_flight"] += [{"month": r[0], "evidence": r[1] or None, "flight_class": None,
+                                                   "other_category": cat(r[2]), "distance_band": int(r[3]),
+                                                   "encounters": int(r[4])} for r in cur.fetchall()]
+            by_flight["encounters_by_flight"] = merged(by_flight["encounters_by_flight"],
+                                                       ("month", "evidence", "flight_class", "other_category",
+                                                        "distance_band"))
             # From 9 October 2026, where: the 1-degree cell of the midpoint at
             # the closest approach, the cells of `cells`, which give the drone
             # time to divide by. Days computed before have no cell and are
@@ -3889,23 +3929,42 @@ class SourceTracker:
             # above.
             cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, lat_idx, lon_idx, other_category,
                                    SUM(encounters)
-                                FROM daily_drone_encounters WHERE lat_idx <> {NO_CELL}
+                                """ + old_ + f""" AND lat_idx <> {NO_CELL}
                                 GROUP BY 1, 2, 3, 4, 5, 6""")
+            old_cells = cur.fetchall()
+            cur.execute(f"""SELECT DATE_FORMAT(day, '%Y-%m'), drone_evidence, FLOOR(lat_idx / {qd}), FLOOR(lon_idx / {qd}),
+                                   kind_b, SUM(encounters) """ + new + f""" AND lat_idx <> {NO_CELL}
+                                   GROUP BY 1, 2, 3, 4, 5""")
+            new_cells = cur.fetchall()
             # From the same day, how: the relative speed band (closing_bands_kmh)
             # and the angle between the two tracks (GEOMETRY), both None when
             # either velocity was missing and for the days computed before.
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), evidence, flight_class, other_category, closing_band, geometry,
                                   SUM(encounters)
-                               FROM daily_drone_encounters GROUP BY 1, 2, 3, 4, 5, 6""")
+                               """ + old_ + """ GROUP BY 1, 2, 3, 4, 5, 6""")
             by_flight["encounters_by_geometry"] = [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
                                                     "other_category": int(r[3]),
                                                     "closing_band": None if r[4] == UNKNOWN_BAND else int(r[4]),
                                                     "geometry": self.GEOMETRY.get(int(r[5])), "encounters": int(r[6])}
                                                    for r in cur.fetchall()]
+            cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), drone_evidence, kind_b, closing_band, geometry,
+                                  SUM(encounters) """ + new + """ GROUP BY 1, 2, 3, 4, 5""")
+            by_flight["encounters_by_geometry"] += [{"month": r[0], "evidence": r[1] or None, "flight_class": None,
+                                                     "other_category": cat(r[2]),
+                                                     "closing_band": None if r[3] == UNKNOWN_BAND else int(r[3]),
+                                                     "geometry": self.GEOMETRY.get(int(r[4])), "encounters": int(r[5])}
+                                                    for r in cur.fetchall()]
+            by_flight["encounters_by_geometry"] = merged(by_flight["encounters_by_geometry"],
+                                                         ("month", "evidence", "flight_class", "other_category",
+                                                          "closing_band", "geometry"))
             by_flight["closing_bands_kmh"] = [0, 50, 100, 200, 400]
-            by_flight["encounter_cells"] = [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
-                                             "lat": int(r[3]), "lon": int(r[4]), "other_category": int(r[5]),
-                                             "encounters": int(r[6])} for r in cur.fetchall()]
+            by_flight["encounter_cells"] = merged(
+                [{"month": r[0], "evidence": name(int(r[1])), "flight_class": flight(int(r[2])),
+                  "lat": int(r[3]), "lon": int(r[4]), "other_category": int(r[5]), "encounters": int(r[6])}
+                 for r in old_cells]
+                + [{"month": r[0], "evidence": r[1] or None, "flight_class": None, "lat": int(r[2]), "lon": int(r[3]),
+                    "other_category": cat(r[4]), "encounters": int(r[5])} for r in new_cells],
+                ("month", "evidence", "flight_class", "lat", "lon", "other_category"))
             return {"days": self._nightly_days(cur), "height_bands_m": [0, 50, 120, 300],
                     "speed_bands_kmh": [0, 20, 50, 100], "extent_bands_m": [0, 1000, 3000, 10000],
                     "distance_bands_m": [0, 300, 600, 1000], "classes": classes, "cells": cells, "bands": bands,
@@ -3916,12 +3975,17 @@ class SourceTracker:
     # Angle between the two ground tracks at an encounter's closest approach
     # (nightly.GEOMETRY_EDGES, 9 October 2026); 255, unknown, becomes None.
     GEOMETRY = {0: "same_way", 1: "crossing", 2: "head_on"}
+    # The OGN category that stands for each kind of crewed aircraft in the drone encounters filed by the
+    # crewed detector (DRONE_ENCOUNTERS_UNIFIED_FROM): the kind keeps tow planes and jets with the powered
+    # aircraft, and hang gliders with paragliders.
+    UNIFIED_CATEGORY = {"glider": 1, "powered": 8, "helicopter": 3, "free_flight": 7}
 
     def encounters_stats(self):
         """Crewed aircraft coming close, per month (METHOD.md 10.2).
 
         Aggregates only: per kind pair, threshold, distance and closing-speed
-        band and the systems of each side; never an event or a date finer
+        band, the systems of each side and, from 27 October 2026, `reliability`
+        (dense, reliable or uncertain: how the placement of the pair was judged); never an event or a date finer
         than the month. From 9 October 2026 also where, in quarter-degree
         cells (`encounter_cells`), beside the flying time of each kind there
         (`air_cells`, with the aircraft per day summed as `aircraft_days`, so
@@ -3939,15 +4003,15 @@ class SourceTracker:
         """
         def compute(cur):
             cur.execute("""SELECT DATE_FORMAT(day, '%Y-%m'), kind_a, kind_b, threshold, distance_band, closing_band,
-                                  systems_a, systems_b, shares_radio, shares_any, SUM(encounters)
-                               FROM daily_crewed_encounters GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10""")
+                                  systems_a, systems_b, shares_radio, shares_any, reliability, SUM(encounters)
+                               FROM daily_crewed_encounters GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11""")
             rows, same = [], []
             for r in cur.fetchall():
                 (same if r[1] == r[2] else rows).append(
                     {"month": r[0], "kind_a": r[1], "kind_b": r[2], "threshold": r[3],
                      "distance_band": int(r[4]), "closing_band": None if r[5] == UNKNOWN_BAND else int(r[5]),
                      "systems_a": r[6], "systems_b": r[7], "shares_radio": bool(r[8]), "shares_any": bool(r[9]),
-                     "encounters": int(r[10])})
+                     "reliability": r[10], "encounters": int(r[11])})
             # Days computed before 9 October 2026 have no cell (NO_CELL): in
             # the lists above, not in these.
             q = THERMAL_CELLS_PER_DEG

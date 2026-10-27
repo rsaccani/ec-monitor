@@ -885,7 +885,7 @@ class CrewedEncounters:
     cell (daily_air_cells).
     """
     KIND = {6: "free_flight", 7: "free_flight", 1: "glider", 2: "powered", 8: "powered", 9: "powered",
-            3: "helicopter"}
+            3: "helicopter", DRONE: "drone"}
     # Same-kind pairs left out (9 October 2026, with Rodolfo): two paragliders
     # 200 m apart in one thermal, or gliders in a gaggle, are how these kinds
     # fly, and would swamp every other count. Two powered aircraft or two
@@ -909,6 +909,41 @@ class CrewedEncounters:
     FORMATION_M, FORMATION_KMH, FORMATION_S, FORMATION_GAP = 300, 20, 60, 20
     ESCORT_M, ESCORT_S, ESCORT_KM, ESCORT_GAP = 300, 300, 3.0, 60
     DT, WINDOW = ENCOUNTER_S, STALE + 40
+    # Rules applied to each encounter once it is closed (27 October 2026, with Rodolfo).
+    # Two helicopters both under 40 km/h are a base at work; a slow helicopter
+    # beside any other kind stays, since a rescue hovering among paragliders is
+    # what must not be lost.
+    HELI_SLOW_KMH = 40
+    # One aircraft heard on two systems, or a formation or a tow the pair rules
+    # missed: the same way (under 45 degrees), under 40 km/h apart, within 300 m,
+    # and in contact for 60 s or 15 distinct seconds, or within 50 m.
+    TOGETHER_DEG, TOGETHER_KMH, TOGETHER_M, TOGETHER_SPAN, TOGETHER_SECS, TOGETHER_TIGHT_M = 45, 40, 300, 60, 15, 50
+    # An aircraft is placed at the instant of the other by interpolating its two
+    # fixes around it. Where those fixes are SPARSE_S or more apart the encounter
+    # is kept and judged by projection (see miss()): reliable when the projection
+    # from the earlier fix misses the later by less than half the encounter's
+    # distance. Fixes more than MAX_GAP_S apart are not interpolated.
+    SPARSE_S, MAX_GAP_S, RELIABLE_FRACTION = 10, 120, 0.5
+    # Two-ended placement (27 October 2026): at an instant between its fixes A and B
+    # an aircraft is placed on the blend of the arc projected forward from A and the
+    # arc projected backward from B, weighted by the time to each. When neither end
+    # turns faster than STRAIGHT_DEG_S the line between the fixes is used.
+    STRAIGHT_DEG_S = 3.0
+    # The fixes of an aircraft are kept for DT + HIST_SLACK_S seconds: an aircraft
+    # compared with another one at that one's fix may have newer fixes already, since
+    # packets arrive out of order across receivers, and the instant it is placed at
+    # must still lie in its history.
+    HIST_SLACK_S = 30
+    # Longest gap in seconds between the two fixes around the instant, per OGN category
+    # (close, wide), for an encounter to be judged by the projection; beyond it the
+    # encounter is kept and marked uncertain. Measured on 22 and 24 October 2026 by
+    # removing windows from dense tracks: the largest window whose placement was wrong
+    # in under 5% of the cases the projection accepted (METHOD.md). Other categories,
+    # and powered aircraft flying above 150 kt, use the powered values.
+    SPARSE_LIMITS = {1: (20, 45), 2: (20, 30), 3: (30, 45), 6: (10, 20), 7: (30, 90), 13: (45, 60)}
+    SPARSE_LIMIT_OTHER = (20, 45)
+    # A drone under this height above ground is on the ground: not compared.
+    DRONE_GROUND_M = 5
     # Index cells at least twice the widest threshold (2 km) up to about 65 N,
     # and 20-second buckets: a fix in one half of a cell can only match fixes
     # of this cell and the neighbour on that side, so 2 x 2 cells and 2 buckets
@@ -917,6 +952,11 @@ class CrewedEncounters:
 
     def __init__(self):
         self.last = {}                          # address -> (t, lat, lon)
+        # address -> its latest fixes (t, lat, lon, alt, course, kt, rot), enough to
+        # place it at any instant of the last DT seconds and to derive its turn rate.
+        self.hist = {}
+        self.rot_devices = set()                # addresses that sent a non-zero turn rate
+        self.unplaced = 0                       # comparisons dropped for want of fixes around the instant
         # (cell, 10-second bucket) -> {address: its latest fix there}: at a
         # 10 s tolerance the earlier fixes of the same bucket add nothing, and
         # in a gaggle comparing every second of every neighbour cost minutes.
@@ -933,21 +973,104 @@ class CrewedEncounters:
         # (towed address, tug address, towed category, t0, t1, start lat, lon, release height above ground)
         self.tows = []
 
-    def fix(self, address, kind, t, lat, lon, alt, course, kt, cat=None, agl=None):
+    @staticmethod
+    def _at(h, T):
+        """(lat, lon, alt, gap, (h, i)) of an aircraft at time T from its fixes h: its own
+        fix when there is one at T, else a position between the fixes around T (gap is their
+        distance in time, and (h, i) the earlier of them): the blend of the arcs from both
+        ends where one of them turns, the line between them otherwise. None when T lies outside."""
+        i = len(h) - 1
+        while i >= 0 and h[i][0] > T:
+            i -= 1
+        if i < 0:
+            return None
+        s_ = h[i]
+        if s_[0] == T:
+            return s_[1], s_[2], s_[3], 0, None
+        if i == len(h) - 1:
+            return None
+        n_ = h[i + 1]
+        gap = n_[0] - s_[0]
+        if gap > CrewedEncounters.MAX_GAP_S or abs(n_[2] - s_[2]) > 180:
+            return None
+        f = (T - s_[0]) / gap
+        alt = s_[3] + f * (n_[3] - s_[3])
+        lat, lon = s_[1] + f * (n_[1] - s_[1]), s_[2] + f * (n_[2] - s_[2])
+        if s_[4] is None or not s_[5]:
+            return lat, lon, alt, gap, (h, i)
+        # Along the arc of the earlier fix, and back along the arc of the later one when it has a
+        # course and speed (the model of miss()); altitude stays linear.
+        ra = CrewedEncounters._rate(h, i)
+        la, lo = sources._arc(s_[1], s_[2], s_[4], s_[5] * 0.514444, ra, T - s_[0])
+        if n_[4] is None or not n_[5]:
+            return la, lo, alt, gap, (h, i)
+        if n_[6] is not None:
+            rb = n_[6] * 3.0
+        elif i + 2 < len(h) and h[i + 2][4] is not None and h[i + 2][0] > n_[0]:
+            rb = (((h[i + 2][4] - n_[4] + 540) % 360) - 180) / (h[i + 2][0] - n_[0])
+        else:
+            rb = (((n_[4] - s_[4] + 540) % 360) - 180) / gap
+        if abs(ra) < CrewedEncounters.STRAIGHT_DEG_S and abs(rb) < CrewedEncounters.STRAIGHT_DEG_S:
+            return lat, lon, alt, gap, (h, i)
+        lb, ob = sources._arc(n_[1], n_[2], n_[4], n_[5] * 0.514444, rb, T - n_[0])
+        return (1 - f) * la + f * lb, (1 - f) * lo + f * ob, alt, gap, (h, i)
+
+    @staticmethod
+    def _rate(h, i):
+        """Degrees per second (positive to the right) the aircraft turns at its fix h[i]: the rate it
+        declares (half-turns per minute times 3), else the one derived from its course change since the
+        fix before it whatever the time between them, else 0."""
+        e = h[i]
+        if e[6] is not None:
+            return e[6] * 3.0
+        if i > 0 and e[4] is not None and h[i - 1][4] is not None and e[0] > h[i - 1][0]:
+            return (((e[4] - h[i - 1][4] + 540) % 360) - 180) / (e[0] - h[i - 1][0])
+        return 0.0
+
+    @staticmethod
+    def miss(ref):
+        """Metres by which the projection of the earlier fix of a pair misses the later one, or None
+        when the earlier fix has no course or speed. The projection runs along its course at its
+        speed, turning at the rate it declares, else at the rate derived from the course change
+        between it and the fix before it whatever the time between them, else straight (the
+        arc of monthly_prediction, METHOD.md "Predicting a few seconds ahead")."""
+        h, i = ref
+        e, n_ = h[i], h[i + 1]
+        if e[4] is None or not e[5]:
+            return None
+        la, lo = sources._arc(e[1], e[2], e[4], e[5] * 0.514444, CrewedEncounters._rate(h, i), n_[0] - e[0])
+        return dist(la, lo, n_[1], n_[2])
+
+    def fix(self, address, kind, t, lat, lon, alt, course, kt, cat=None, agl=None, rot=None):
+        if kind == "drone" and agl is not None and agl < self.DRONE_GROUND_M:
+            return                              # a drone standing on the ground is not compared
         prev = self.last.get(address)
         if prev is not None:
             if t <= prev[0]:
                 return                          # one fix per address and second, whatever the system
             if dist(prev[1], prev[2], lat, lon) > sources.IMPLAUSIBLE_MS * max(t - prev[0], 1):
                 self.last[address] = (t, lat, lon)
+                self.hist.pop(address, None)
                 return
-            if t - prev[0] <= self.AIR_GAP:
-                # Filed by the segment's first fix, as the timeline does.
+            if t - prev[0] <= self.AIR_GAP and kind != "drone":
+                # Filed by the segment's first fix, as the timeline does. (The flying time of
+                # drones is filed by the drone measures, with their evidence.)
                 a = self.air[(kind, math.floor(prev[1] * THERMAL_CELLS_PER_DEG),
                               math.floor(prev[2] * THERMAL_CELLS_PER_DEG))]
                 a[0] += t - prev[0]
                 a[1].add(address)
         self.last[address] = (t, lat, lon)
+        if rot is not None:
+            if rot != 0:
+                self.rot_devices.add(address)
+            elif address not in self.rot_devices:
+                rot = None                      # a zero from a device that never turned is no declaration
+        h = self.hist.get(address)
+        if h is None:
+            h = self.hist[address] = collections.deque()
+        h.append((t, lat, lon, alt, course, kt, rot))
+        while len(h) > 3 and h[2][0] <= t - self.DT - self.HIST_SLACK_S:
+            h.popleft()
         fl, fo, ft = lat / self.CELL_LAT, lon / self.CELL_LON, t / self.BUCKET
         cl, co, tb = int(fl // 1), int(fo // 1), int(ft // 1)
         nl = (cl, cl - 1 if fl - cl < 0.5 else cl + 1)
@@ -962,12 +1085,32 @@ class CrewedEncounters:
                     if not bucket:
                         continue
                     for o in bucket.values():
-                        ot, olat, olon, oalt, oaddr, okind, ovel, ocat, oagl = o
-                        if oaddr == address or abs(ot - t) > self.DT or abs(oalt - alt) > wide_v:
+                        ot, olat, olon, oalt, oaddr, okind, ovel, ocat, oagl, okt = o
+                        dt_ = abs(ot - t)
+                        if oaddr == address or dt_ > self.DT or abs(oalt - alt) > wide_v + 40 * dt_:
                             continue
-                        d = dist(lat, lon, olat, olon)
+                        if kind == "drone" and okind == "drone":
+                            continue            # one operator often flies several
+                        # Both aircraft at the same instant, that of the earlier fix: the one
+                        # with the later fix is placed there between its own two fixes.
+                        later_kt = (kt if t > ot else okt) or 0
+                        if dist(lat, lon, olat, olon) > wide_m + (later_kt * 0.6 + 10) * dt_:
+                            continue
+                        T = min(t, ot)
+                        ho = self.hist.get(oaddr)
+                        pa = self._at(h, T)
+                        pb = self._at(ho, T) if ho else None
+                        if pa is None or pb is None:
+                            self.unplaced += 1
+                            continue
+                        if abs(pa[2] - pb[2]) > wide_v:
+                            continue
+                        d = dist(pa[0], pa[1], pb[0], pb[1])
                         if d > wide_m:
                             continue
+                        olat, olon = pb[0], pb[1]
+                        mlat, mlon = (pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2
+                        dalt = abs(pa[2] - pb[2])
                         pair = (address, oaddr) if address < oaddr else (oaddr, address)
                         rel = (math.hypot(vel[0] - ovel[0], vel[1] - ovel[1])
                                if vel is not None and ovel is not None else None)
@@ -1005,28 +1148,92 @@ class CrewedEncounters:
                             continue
                         kinds = tuple(sorted((kind, okind)))
                         for name, (hm, vm) in self.THRESHOLDS.items():
-                            if d > hm or abs(oalt - alt) > vm:
+                            if d > hm or dalt > vm:
                                 continue
                             key = (pair, name)
                             enc = self.open.get(key)
                             start = min(t, ot)
                             if enc is not None and start - enc[0] <= ENCOUNTER_EVERY:
+                                info = enc[7]
+                                info["first"] = min(info["first"], t)
+                                info["last"] = max(info["last"], t)
+                                info["secs"].add(int(t))
                                 if d < enc[1]:
                                     enc[1], enc[2] = d, rel
-                                    enc[4], enc[5] = (lat + olat) / 2, (lon + olon) / 2
+                                    enc[4], enc[5] = mlat, mlon
                                     enc[6] = geometry(vel, ovel)
+                                    self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat)
                                 continue
                             if enc is not None:
                                 self.done.append((key,) + tuple(enc))
-                            self.open[key] = [start, d, rel, kinds, (lat + olat) / 2, (lon + olon) / 2,
-                                              geometry(vel, ovel)]
+                            info = {"first": t, "last": t, "secs": {int(t)}}
+                            self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat)
+                            self.open[key] = [start, d, rel, kinds, mlat, mlon, geometry(vel, ovel), info]
         k = (cl, co, tb)
         if k not in self.index:
             self.order.append(k)
-        self.index[k][address] = (t, lat, lon, alt, address, kind, vel, cat, agl)
+        self.index[k][address] = (t, lat, lon, alt, address, kind, vel, cat, agl, kt)
         self.max_t = max(self.max_t, t)
         while self.order and self.order[0][2] * self.BUCKET < self.max_t - self.WINDOW:
             self.index.pop(self.order.popleft(), None)
+
+    def _closest(self, info, vel, ovel, kt, okt, pa, pb, name, cat, ocat):
+        """What the closest approach of an encounter looked like: the speeds and the angle between
+        the tracks, the largest gap of the fix pairs the two positions were interpolated from
+        and, when that gap is SPARSE_S or more, the largest miss of their projections."""
+        info["spd"] = (None if kt is None else kt * 1.852, None if okt is None else okt * 1.852)
+        ang = None
+        if vel is not None and ovel is not None:
+            nn = math.hypot(*vel) * math.hypot(*ovel)
+            if nn:
+                ang = math.degrees(math.acos(max(-1, min(1, (vel[0] * ovel[0] + vel[1] * ovel[1]) / nn))))
+        info["ang"] = ang
+        info["gap"] = max(pa[3], pb[3])
+        miss = 0.0
+        over = False
+        for p, c in ((pa, cat), (pb, ocat)):
+            if p[3] >= self.SPARSE_S:
+                m = self.miss(p[4])
+                miss = None if miss is None or m is None else max(miss, m)
+                over = over or p[3] > self.sparse_limit(c, name)
+        info["over"] = over
+        info["miss"] = miss if info["gap"] >= self.SPARSE_S else None
+
+    def slow_helicopters(self, kinds, info):
+        spd = info["spd"]
+        return kinds == ("helicopter", "helicopter") and None not in spd and max(spd) < self.HELI_SLOW_KMH
+
+    def together(self, d, rel, info):
+        ang = info["ang"]
+        return (ang is not None and ang < self.TOGETHER_DEG and rel is not None and rel < self.TOGETHER_KMH
+                and d <= self.TOGETHER_M
+                and (info["last"] - info["first"] >= self.TOGETHER_SPAN or len(info["secs"]) >= self.TOGETHER_SECS
+                     or d <= self.TOGETHER_TIGHT_M))
+
+    def verdict(self, d, rel, kinds, info):
+        """Why a closed encounter is left out by the rules of 27 October 2026, or None."""
+        if self.slow_helicopters(kinds, info):
+            return "slow helicopters"
+        if self.together(d, rel, info):
+            return "flying together"
+        return None
+
+    def sparse_limit(self, cat, name):
+        """The longest gap in seconds between fixes for which the placement of an aircraft of this
+        OGN category is trusted at this threshold."""
+        lim = self.SPARSE_LIMITS.get(cat, self.SPARSE_LIMIT_OTHER)
+        return lim[0 if name == "close" else 1]
+
+    def sparse(self, d, info):
+        """None for an encounter whose fixes are dense, else "reliable" or "uncertain": uncertain
+        when a gap exceeds the limit of the aircraft's kind, or the projection misses by half the
+        distance or more."""
+        if info["gap"] < self.SPARSE_S:
+            return None
+        if info["over"]:
+            return "uncertain"
+        m = info["miss"]
+        return "reliable" if m is not None and m < self.RELIABLE_FRACTION * d else "uncertain"
 
     def feed_break(self, full=True):
         """The feed was cut (24 October 2026): no fix reaches back across it. The
@@ -1035,6 +1242,7 @@ class CrewedEncounters:
         together or close by that the pairs have open end too, a tow being filed
         if its run was long enough; a reconnect leaves them open."""
         self.last.clear()
+        self.hist.clear()
         if not full:
             return
         for f in self.slow.values():
@@ -1333,6 +1541,9 @@ class Nightly:
         self.major, self.major13 = {}, set()      # (address, tocall) -> majority category; vote()
         self.addr_major = {}                      # address -> majority over all its systems; vote()
         self.crewed = CrewedEncounters()
+        # From DRONE_ENCOUNTERS_UNIFIED_FROM the crewed detector also finds the drone encounters
+        # and the old drone-near-crewed matching below stays idle.
+        self.unified = day >= sources.DRONE_ENCOUNTERS_UNIFIED_FROM
         self.failed = {}                          # family -> what went wrong, for nightly_runs.notes
         self.tow_pairs = set()
         self.agl_time = collections.Counter()      # (category, solar hour, AGL band) -> s; drones apart
@@ -2032,18 +2243,25 @@ class Nightly:
             self.region_fix(src, tocall, category, lat, lon)
         if category == DRONE:
             self.drone_fix(address, t, lat, lon, alt_m, course, kt)
-        elif self.c and crewed_airborne and alt_m is not None and t - self.last_drone_t <= ENCOUNTER_ACTIVE:
+        elif self.c and not self.unified and crewed_airborne and alt_m is not None and t - self.last_drone_t <= ENCOUNTER_ACTIVE:
             self.crewed_fix(address, category, t, lat, lon, alt_m, course, kt)
         am = self.addr_major.get(address)
         ck = CrewedEncounters.KIND.get(am)
+        if am == DRONE and not self.unified:
+            ck = None
         agl = None
         if self.p and am in TOWED and alt_m is not None:
             ground = self.terrain.elevation(lat, lon)
             agl = alt_m - ground if ground is not None else None
             self.pattern(self.launch_fix, address, am, t, lat, lon, agl, kt, alt_m, course)
+        if am == DRONE and self.unified and alt_m is not None:
+            ground = self.terrain.elevation(lat, lon)
+            agl = alt_m - ground if ground is not None else None
         if (ck is not None and alt_m is not None and not PACKET_CATEGORY
-                and (kt or 0) >= sources.FLYING_KT.get(am, sources.AIRBORNE_KT)):
-            self.crewed.fix(address, ck, t, lat, lon, alt_m, course, kt, am, agl)
+                and (am == DRONE or (kt or 0) >= sources.FLYING_KT.get(am, sources.AIRBORNE_KT))):
+            r = sources._rot.search(body) if tocall in sources.TURN_RATE_SOURCES else None
+            self.crewed.fix(address, ck, t, lat, lon, alt_m, course, kt, am, agl,
+                            float(r.group(1)) if r else None)
         if self.p and (am in POWERED or am == HELICOPTER) and alt_m is not None:
             f = FL.search(body) if kind == "adsb" else None
             self.pattern(self.powered_fix, address, am, t, lat, lon, alt_m, kt, course,
@@ -3007,7 +3225,7 @@ class Nightly:
         self.drone_extent.setdefault(address, 0.0)
         self.last_drone_t = max(self.last_drone_t, t)
         self.drone_active[(int(lat // ACTIVE_DEG), int(lon // ACTIVE_DEG))] = t
-        if alt_m is None:
+        if alt_m is None or self.unified:
             return
         cell = (int(lat // CELL_LAT), int(lon // CELL_LON))
         vel = velocity(course, kt)
@@ -3734,7 +3952,7 @@ class Nightly:
         # them so that a place can be judged by encounters per hour flown.
         out["daily_crewed_encounters"] = (("day", "kind_a", "kind_b", "threshold", "lat_idx", "lon_idx",
                                            "distance_band", "closing_band", "geometry", "systems_a", "systems_b",
-                                           "shares_radio", "shares_any", "encounters"),
+                                           "shares_radio", "shares_any", "reliability", "drone_evidence", "encounters"),
                                           self.crewed_rows(day))
         out["daily_same_aircraft_pairs"] = (("day", "kind_a", "kind_b", "threshold", "pairs", "encounters"),
                                             [(day,) + k + (len(v[0]), v[1])
@@ -3887,7 +4105,9 @@ class Nightly:
                  if kind in ("adsl", "flarm", "fanet", "adsb", "radio")}
         rows = collections.Counter()
         self.crewed_summary = collections.Counter()
-        for (pair, name), t0, d, rel, kinds, la, lo, geom in ce.done:
+        self.sparse_counts = collections.Counter()
+        ev = self.evidence() if any("drone" in k for (_, _), _, _, _, k, *_ in ce.done) else {}
+        for (pair, name), t0, d, rel, kinds, la, lo, geom, info in ce.done:
             together = pair in ce.formation or pair in ce.escort
             self.crewed_summary[(kinds, name, "all")] += 1
             if pair in self.tow_pairs:
@@ -3898,6 +4118,14 @@ class Nightly:
                 self.crewed_summary[(kinds, name, "escort only")] += 1
             if together:
                 continue
+            if "drone" in kinds and any(self.addr_major.get(x) == DRONE and ev.get(x, UNCERTAIN) in SET_ASIDE
+                                        for x in pair):
+                self.crewed_summary[(kinds, name, "set aside as crewed")] += 1
+                continue                        # a crewed aircraft declared a drone, or a stray address
+            why = ce.verdict(d, rel, kinds, info)
+            if why:
+                self.crewed_summary[(kinds, name, why)] += 1
+                continue
             if same_aircraft(d, rel, geom):
                 s = self.same_aircraft[(kinds[0], kinds[1], name)]
                 s[0].add(pair)
@@ -3905,6 +4133,9 @@ class Nightly:
                 continue
             if geom == UNKNOWN_BAND:
                 self.crewed_summary[(kinds, name, "kept, geometry unknown")] += 1
+            sp = ce.sparse(d, info)
+            if sp:
+                self.sparse_counts[(name, sp)] += 1
             a, b = pair
             if CrewedEncounters.KIND[self.addr_major[a]] != kinds[0]:
                 a, b = b, a
@@ -3915,7 +4146,9 @@ class Nightly:
             cband = band(rel, CrewedEncounters.CLOSING_EDGES)
             rows[(kinds[0], kinds[1], name, math.floor(la * THERMAL_CELLS_PER_DEG),
                   math.floor(lo * THERMAL_CELLS_PER_DEG), dband, cband, geom, self.systems_of(a), self.systems_of(b),
-                  int(bool(sa & sb & radio)), int(bool(sa & sb)))] += 1
+                  int(bool(sa & sb & radio)), int(bool(sa & sb)), sp or "dense",
+                  next((EVIDENCE_NAMES.get(ev.get(x, UNCERTAIN), "") for x in pair if self.addr_major.get(x) == DRONE),
+                       ""))] += 1
         self.crewed_pairs = (len(ce.formation), len(ce.escort - ce.formation), len(ce.formation - ce.escort))
         return [(day,) + k + (n,) for k, n in sorted(rows.items())]
 
@@ -4649,6 +4882,9 @@ def main():
                     f"5-minute rule), {escort_only} more by the 5-minute rule alone")
         for (kinds, name, what), c in sorted(n.crewed_summary.items()):
             logger.info(f"Crewed encounters {kinds[0]} x {kinds[1]} {name} {what}: {c}")
+        logger.info("Crewed encounters kept on sparse fixes (judged by projection): "
+                    + ", ".join(f"{name} {what} {c}" for (name, what), c in sorted(n.sparse_counts.items()))
+                    + f"; {n.crewed.unplaced} comparisons without fixes around the instant")
     n.anon_mb()                         # the rows of every family are built by now
     run_row = (day.isoformat(), datetime.datetime.utcnow().replace(microsecond=0), read,
                ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1), n.anon_peak)

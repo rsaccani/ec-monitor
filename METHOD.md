@@ -1174,6 +1174,70 @@ had a median closing speed of 7 km/h, and 212 of 259 were under 100 m. A
 second rule, kept beside it, catches pairs within 300 m for more than
 5 minutes over more than 3 km whatever their relative speed.
 
+**Refinements of 27 October 2026 (decided with Rodolfo).** Crewed encounters are
+experimental and not presented on the site. From this date the two aircraft of an
+encounter are measured at the same instant, that of the earlier of the two fixes, and
+the other aircraft is placed there between its own two fixes A and B (the distance, the
+vertical separation and the midpoint all come from those positions). The placement is
+two-ended: the blend, weighted by the time to each fix, of the arc projected forward from
+A and the arc projected backward from B, each along its course at its speed and turning at
+the rate it declares, else at the rate derived from its course change (for B, from B and
+the fix after it, else from A and B), else straight. Where neither end turns faster than
+3 degrees per second (`STRAIGHT_DEG_S`) the line between the two fixes is used, and where
+B has no course or speed the arc from A alone. Altitude is interpolated linearly. Fixes
+more than 120 s apart are not interpolated. The two-ended blend was chosen on dense tracks
+of 22 and 24 October 2026 (10.8 million fixes, windows of 10 to 240 s removed and the
+placement compared with the true track): an arc from one end alone drifts out of a circle
+that ended inside the gap (gliders at the wide threshold, 60 s windows: wrong in 6% of the
+cases with the line, 21% with one arc, 6% with the blend), and the blend keeps the gain of
+the arc on the close threshold for gliders. The history that lets an aircraft be placed is
+kept for the comparison window plus 30 s (`HIST_SLACK_S`), because the other aircraft of a
+comparison may already have newer fixes than the one being processed, packets arriving out
+of order across receivers; with the window alone its fix at the instant had been dropped.
+
+Four rules apply to each encounter once it is closed. Two helicopters both under
+40 km/h are left out (a base at work); a slow helicopter beside any other kind stays.
+An encounter between two aircraft going the same way (under 45 degrees) at under
+40 km/h apart, within 300 m, in contact for 60 s or 15 distinct seconds, or within
+50 m, is left out as one aircraft on two systems or a formation the pair rules
+missed; a same-direction overtake is therefore not an encounter (decided with
+Rodolfo). An encounter placed between fixes 10 s or more apart is kept and judged
+by projection: from the earlier fix, along its course at its speed, turning at the rate
+it declares, else at the rate derived from its course change since the fix before it,
+else straight, to the time of the later fix. It is reliable when the projection misses
+by less than half the encounter's closest distance, and uncertain otherwise. It is also
+uncertain when the gap between the fixes exceeds the limit of the aircraft's kind
+(`SPARSE_LIMITS`, seconds at the close and at the wide threshold): glider 20 and 45, tow
+plane 20 and 30, helicopter 30 and 45, paraglider 30 and 90, hang glider 10 and 20,
+drone 45 and 60, powered aircraft and every other kind 20 and 45. A limit is the largest
+window whose placement was wrong in under 5% of the dense cases that the projection
+accepted, wrong meaning a horizontal miss over half the threshold (150 or 500 m) or a
+vertical one over half the vertical threshold (50 or 75 m). A track that begins inside
+the comparison window is not projected backward: the encounter is not found.
+
+**Drones in encounters** (27 October 2026, decided with Rodolfo). Encounters between a
+drone (category 13, remote ID included) and a crewed aircraft are filed with the crewed
+ones, as kind `drone`, at the same thresholds and with the same placement and rules; a
+hovering drone beside a crewed aircraft is the case of interest, so a drone counts as
+flying at any speed, and the slow-helicopter rule applies to two helicopters only. The
+crewed aircraft must be airborne by the flying rule of its category. Two drones are never
+compared (one operator often flies several). A drone under 5 m above ground
+(`DRONE_GROUND_M`) is on the ground and is not compared; where the terrain model gives no
+height the fix is kept. An address with crewed evidence, or a stray one, is set aside as in
+every drone measure (10.1). The flying time of drones is not filed from these fixes, since the
+drone measures file it with their evidence. From the day `DRONE_ENCOUNTERS_UNIFIED_FROM` (27 October 2026) this is the only
+detector of encounters between drones and crewed aircraft: the earlier one, which compared
+the fixes within 10 s, 1 km and 150 m without placing them at one instant, no longer runs, and
+`daily_drone_encounters` holds the days before that day only (its rows are kept; it is no longer
+written). The API of the drone measures (`drones_stats`) reads that table for the earlier days and
+the drone rows of `daily_crewed_encounters` (wide threshold, kind_a `drone`) from the switch day on,
+in the same fields. The new rows carry the drone's evidence (`drone_evidence`, filed in the key beside `reliability`:
+dense, reliable or uncertain, as judged above, for every encounter) but no flight class (None in the
+API; the set-aside addresses are already out of them), give the crewed aircraft as its kind and not its OGN
+category (the category that stands for the kind is returned: glider 1, powered 8, helicopter 3,
+paragliders and hang gliders 7), and put the encounter in the 1-degree cell that holds its
+quarter-degree cell.
+
 **Probably one aircraft under two addresses** (from 9 October 2026, decided
 with Rodolfo). An encounter whose closest approach is the same way (the two
 tracks within 45 degrees), under 150 m apart and under 20 km/h relative is

@@ -92,8 +92,10 @@ CREATE TABLE IF NOT EXISTS `daily_crewed_encounters` (
   `systems_b` varchar(255) NOT NULL,
   `shares_radio` tinyint(1) NOT NULL,
   `shares_any` tinyint(1) NOT NULL,
+  `reliability` varchar(9) NOT NULL DEFAULT 'dense',
+  `drone_evidence` varchar(12) NOT NULL DEFAULT '',
   `encounters` int(10) unsigned NOT NULL DEFAULT 0,
-  PRIMARY KEY (`day`,`kind_a`,`kind_b`,`threshold`,`lat_idx`,`lon_idx`,`distance_band`,`closing_band`,`geometry`,`systems_a`,`systems_b`)
+  PRIMARY KEY (`day`,`kind_a`,`kind_b`,`threshold`,`lat_idx`,`lon_idx`,`distance_band`,`closing_band`,`geometry`,`systems_a`,`systems_b`,`reliability`,`drone_evidence`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `daily_cruise` (

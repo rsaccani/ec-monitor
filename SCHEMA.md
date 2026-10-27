@@ -585,7 +585,7 @@ Flying time and distinct aircraft of a day per kind and 0.25-degree cell over th
 
 ### `daily_crewed_encounters`
 
-Encounters of a day between two crewed aircraft, per pair of kinds, threshold (wide or close), cell, distance band, closing band, geometry and the systems of each side.
+Encounters of a day between two crewed aircraft, or a drone and a crewed aircraft (kind drone, from 27 October 2026), per pair of kinds, threshold (wide or close), cell, distance band, closing band, geometry, the systems of each side, how the placement of the pair was judged (reliability: dense, reliable or uncertain) and, for a drone, its evidence (drone_evidence).
 
 | Column | Type | Default | PK |
 |---|---|---|---|
@@ -602,13 +602,15 @@ Encounters of a day between two crewed aircraft, per pair of kinds, threshold (w
 | `systems_b` | varchar(255) |  | 11 |
 | `shares_radio` | tinyint(1) |  |  |
 | `shares_any` | tinyint(1) |  |  |
+| `reliability` | varchar(9) | dense | 12 |
+| `drone_evidence` | varchar(12) |  | 13 |
 | `encounters` | int(10) unsigned | 0 |  |
 
 - Defined in: METHOD.md 10.2
 - Written by: the nightly, `nightly.py` `write_family` (nightly family `conspicuity`)
-- Read by: `sources.py` `SourceTracker.encounters_stats`
-- Published through: `/conspicuity-monitor/api/encounters`
-- History: `schema/2026-10-07-crewed-encounters.sql` (created); `schema/2026-10-09-encounter-cells.sql` (adds lat_idx, adds lon_idx, adds geometry, new primary key). Grants in `schema/2026-10-07-crewed-encounters.sql`
+- Read by: `sources.py` `SourceTracker.drones_stats`, `SourceTracker.encounters_stats`
+- Published through: `/conspicuity-monitor/api/encounters`, `/conspicuity-monitor/api/drones`
+- History: `schema/2026-10-07-crewed-encounters.sql` (created); `schema/2026-10-09-encounter-cells.sql` (adds lat_idx, adds lon_idx, adds geometry, new primary key); `schema/2026-10-27-encounters-reliability.sql` (adds reliability, adds drone_evidence, new primary key). Grants in `schema/2026-10-07-crewed-encounters.sql`
 - Service user's privileges: SELECT, INSERT (database-wide); DELETE (this table)
 
 ### `daily_drone_cells`
@@ -653,7 +655,7 @@ Addresses declaring a drone on a day per evidence class and flight class, with t
 
 ### `daily_drone_encounters`
 
-Encounters of a day between a drone and a crewed aircraft (within 10 s, 1 km and 150 m), per evidence and flight class, cell, systems of each side, distance, closing speed and geometry.
+History up to 26 October 2026 (`DRONE_ENCOUNTERS_UNIFIED_FROM`): from 27 October the drone encounters are rows of `daily_crewed_encounters` with kind `drone`, and this table is no longer written. Encounters of a day between a drone and a crewed aircraft (within 10 s, 1 km and 150 m), per evidence and flight class, cell, systems of each side, distance, closing speed and geometry.
 
 | Column | Type | Default | PK |
 |---|---|---|---|

@@ -197,8 +197,10 @@ DESCRIPTIONS = {
             "evidence and flight class, cell, systems of each side, distance, closing speed and geometry."),
     "daily_crewed_encounters": dict(
         group="conspicuity", doc="METHOD.md 10.2",
-        row="Encounters of a day between two crewed aircraft, per pair of kinds, threshold (wide or close), cell, "
-            "distance band, closing band, geometry and the systems of each side."),
+        row="Encounters of a day between two crewed aircraft, or a drone and a crewed aircraft (kind drone, from "
+            "27 October 2026), per pair of kinds, threshold (wide or close), cell, distance band, closing band, "
+            "geometry, the systems of each side, how the placement of the pair was judged (reliability: dense, "
+            "reliable or uncertain) and, for a drone, its evidence (drone_evidence)."),
     "daily_air_cells": dict(
         group="conspicuity", doc="METHOD.md 10.2",
         row="Flying time and distinct aircraft of a day per kind and 0.25-degree cell over the fixes encounters "
