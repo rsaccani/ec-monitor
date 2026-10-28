@@ -991,7 +991,12 @@ class CrewedEncounters:
             return None
         s_ = h[i]
         if s_[0] == T:
-            return s_[1], s_[2], s_[3], 0, None
+            # Its own fix: the position is exact, but the gap is still the time since the fix before, since that is how
+            # well the track around the instant is known. A gap of 0 called "dense" an encounter of two aircraft heard
+            # once each in the same second (Iceland, 26 October 2026). No fix before counts as the longest gap.
+            if i == 0:
+                return s_[1], s_[2], s_[3], CrewedEncounters.MAX_GAP_S, None
+            return s_[1], s_[2], s_[3], s_[0] - h[i - 1][0], (h, i - 1)
         if i == len(h) - 1:
             return None
         n_ = h[i + 1]
@@ -1220,7 +1225,7 @@ class CrewedEncounters:
         over = False
         for p, c in ((pa, cat), (pb, ocat)):
             if p[3] >= self.SPARSE_S:
-                m = self.miss(p[4])
+                m = self.miss(p[4]) if p[4] is not None else None
                 miss = None if miss is None or m is None else max(miss, m)
                 over = over or p[3] > self.sparse_limit(c, name)
         info["over"] = over

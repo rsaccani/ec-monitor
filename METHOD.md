@@ -1213,7 +1213,11 @@ drone 45 and 60, powered aircraft and every other kind 20 and 45. A limit is the
 window whose placement was wrong in under 5% of the dense cases that the projection
 accepted, wrong meaning a horizontal miss over half the threshold (150 or 500 m) or a
 vertical one over half the vertical threshold (50 or 75 m). A track that begins inside
-the comparison window is not projected backward: the encounter is not found.
+the comparison window is not projected backward: the encounter is not found. An
+aircraft that has a fix at the instant itself is judged by the gap since its fix before,
+and one heard for the first time at that instant counts as sparse beyond every limit:
+until 29 October 2026 such a fix counted as no gap at all, which called "dense" two
+aircraft heard once each in the same second (Iceland, 26 October 2026).
 
 **Drones in encounters** (27 October 2026, decided with Rodolfo). Encounters between a
 drone (category 13, remote ID included) and a crewed aircraft are filed with the crewed
