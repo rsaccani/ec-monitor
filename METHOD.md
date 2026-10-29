@@ -1709,6 +1709,127 @@ follow the receiver coverage as in 10.6, and a maker's count is a count of
 devices on the air, which says nothing about how many of its instruments are
 sold.
 
+### 10.9 Coverage in detail: reception by distance, the estimate, and the measured volume
+
+The page conspicuity.eu/stations/coverage/area/ answers, for one square of up
+to 40 km and one kind of aircraft, how much of the time an aircraft flying
+there goes unheard by radio or by phone app. Where the monitor has measured
+it, the page shows the measurement; elsewhere, for radio only, an estimate.
+Everything below was measured on the recording of 6 to 29 October 2026, which
+holds about 66,600 hours of flying heard by radio (12,938 of free flight,
+53,636 of gliders and powered aircraft) and 12,800 by phone app, with the
+scripts in `tools/coverage/`.
+
+**Reception by distance.** For every minute in which at least one station
+received an airborne aircraft, each other OGN station within 100 km that
+forwarded at least one aircraft that day is a candidate, and it either
+received that aircraft in that minute or did not (3.3 million aircraft-minutes,
+103 million pairs). A pair counts only with a line of sight between the
+aircraft and the station's antenna, taken 10 m above the ground, over the
+ETOPO 2022 surface at 15 arc-seconds on an earth of 4/3 its radius, sampled
+every 250 m within 5 km of either end and every 500 m between. The share of
+pairs that received, by distance:
+
+| Distance, km | 0-2 | 2-5 | 5-10 | 10-15 | 15-20 | 20-30 | 30-40 | 40-50 | 50-75 | 75-100 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Paraglider or hang glider, FLARM | .93 | .94 | .77 | .59 | .46 | .45 | .25 | .13 | .07 | .03 |
+| Paraglider or hang glider, FANET | .74 | .86 | .68 | .42 | .38 | .33 | .20 | .12 | .07 | .03 |
+| Glider, FLARM | .96 | .89 | .70 | .52 | .40 | .28 | .18 | .11 | .06 | .02 |
+| Powered, FLARM | .95 | .84 | .69 | .55 | .43 | .31 | .22 | .14 | .07 | .03 |
+
+The intervals, from resampling whole days, are within about .02 for gliders
+and powered aircraft and wider for free flight (.88 to .97 for FLARM at 0-2
+km). FANET ground stations are left out of the candidates: near the flying
+sites many of them receive poorly, FANET at 0-2 km in 29% of the minutes
+against 75% for OGN stations at the same distance, and counting them
+lowered the curve of the stations the estimate actually uses. Two gateways that
+forward a remote network from a fixed point (SKTmqtt, SKXFWD) are left out
+too. Without the line-of-sight condition the curves fall much faster (50%
+reached at 8.5 km for free flight instead of 11.5 km), because stations
+hidden by the relief count as misses.
+
+**The estimate.** At each point of the square, at the chosen height above
+the ground, the estimate of the time without signal is the product, over the
+40 nearest OGN stations within 100 km that have a line of sight to the point,
+of one minus the station's share at that distance, read from the curve of the
+chosen device and interpolated in the logarithm of the distance. A point that
+no station sees is at 100%. No calibration is applied. A single scale fitted
+to the measurements was tried and dropped: it capped every point at the
+scale itself, 46%, so a point nobody receives could never show as poorly
+covered. Maps that keep 0 and 100% in place fitted no better. The top of the
+scale cannot be fitted at all, since a cell that no station hears has no
+measurement.
+
+**How good the estimate is.** Against the 340 free-flight cell-bands of the
+coverage map (section 10.5, 11 to 28 October 2026), the estimate ranks the
+cells with a rank correlation of .45 and is pessimistic by 15 points on
+average. The measurements themselves, split by day into two halves, agree
+with each other at .86, so the estimate misses something real. Correcting
+each station by its signal at 10 km, or each 10-degree sector by the
+reception rose (section 10.7), did not improve it (.42 and .45). Weighting
+each cell by where the probes actually flew raised the rank correlation to .51,
+and adding each station's share of the flying hours in which it was alive to
+.54, with the bias near zero; the first needs flying already measured, so
+the page does not use it. Against the measured volume (below), the estimate
+ranks the voxels at .48 for free flight and .55 for gliders and powered
+aircraft. For gliders and powered aircraft it ranks as well at 2,000 m above
+the ground as near it and is about 10 points optimistic at every height;
+above 2,000 m it still gets the level within about 10 points but no longer
+which voxels are worse (rank correlation .1 to .2, where the measurements
+agree with themselves at .8 to .9). For paragliders, measured up to 2,000 m
+above the ground, it ranks as well aloft as low down and grows more
+optimistic with height, about 16 points at 1,200 to 2,000 m. The two
+references disagree in sign, pessimistic against the cells and optimistic
+against the voxels: the cells use only probes carrying two radio systems and
+put each gap where the aircraft was last heard, while the voxels use every
+aircraft and spread each gap along its path. Which of the two the estimate
+should follow is open.
+
+**The measured volume.** Space is cut into voxels in absolute terms: cells of
+0.02 degrees and bands of 100 m above sea level, and a coarser level of 0.05
+degrees and 250 m. Two channels are kept apart. Radio is every reception by a
+ground station, including FLARM and FANET forwarded by internet gateways.
+Phone app is SafeSky and Naviter at their own cadences (section 5), Vololibero,
+Microtrak at 20 s and flyxc at 60 s; apps without a regular cadence are left
+out, since their gaps cannot be told from their rhythm. Each family is kept
+apart too: free flight, and gliders with powered aircraft. Every segment
+between two fixes of an airborne aircraft is spread over the voxels along the
+straight line between them, in proportion to the time spent in each, and so
+is its part without signal (the time beyond the source's interval plus 10 s,
+as in section 2). A voxel is shown when it holds at least three
+aircraft-days and ten minutes of flying; the page uses the fine level where it
+passes, else the coarse one, else the estimate. Over Europe the 24 days
+held 12,938 hours of free flight and 53,636 of gliders and powered aircraft
+by radio, 33% and 20% of them without signal, and 3,015 and 9,819 hours by
+phone app, 6% and 9% without signal. The page will show the last 12 months
+once the volume is computed each night; the files published now cover 6 to
+29 October 2026.
+
+**Phone apps: no estimate yet.** Several models from cell sites were tried,
+on OpenCelliD's sites for Italy, Switzerland, Austria, Slovenia and France
+(CC BY-SA 4.0) clustered into masts, against 2,800 hours of app flying in the
+Alps: features of the nearest site and the number of sites in sight within
+10 km (the best: a minute with and without signal told apart 66% of the time);
+the product over all sites by distance and elevation angle (55 to 59%); the
+nearest site seen within an angle range, the best being 5 degrees below to 2
+above the antenna (60%), with or without a very near site as a fallback; and
+each Italian operator's sites alone (differences under the noise). The
+number of sites in line of sight carries more than the count of all sites
+around, and crewed aircraft lose more when the nearest site is seen from more
+than about 30 degrees above. The aircraft matters far more than the sites:
+an aircraft-day's own share of minutes without signal in one half of the day
+foretells the other half 72 to 78% of the time, and a third of the variation
+in free flight, a quarter in crewed flight, lies between aircraft-days. The
+app alone tells almost nothing (51%). The cause is not identified; the
+airframe alone does not explain it, since at the same distance and height
+gliders lose 13.8% against 8.0% for powered aircraft, and powered aircraft
+4.6% against 6.5% for paragliders. The measured phone volume therefore
+describes mainly what the pilots who flew there experienced, with their own
+phones and installations, and the floor of three
+aircraft-days matters more for it than for radio. A map of the network itself
+would compare each aircraft with its own average of the day; it needs more
+flying than late October gives.
+
 ## 11. Known limits
 
 - A device never heard at all does not appear, and a pilot who carries
