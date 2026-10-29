@@ -993,8 +993,10 @@ class CrewedEncounters:
         if s_[0] == T:
             # Its own fix: the position is exact, but the gap is still the time since the fix before, since that is how
             # well the track around the instant is known. A gap of 0 called "dense" an encounter of two aircraft heard
-            # once each in the same second (Iceland, 26 October 2026). No fix before counts as the longest gap.
-            if i == 0:
+            # once each in the same second (Iceland, 26 October 2026). No fix before, or one further back than MAX_GAP_S
+            # (the same limit as between two fixes), counts as the longest gap: an aircraft heard in the morning and
+            # again in the afternoon gave 16 hours, and 18 overflowed gap_a_s on 28 October 2026.
+            if i == 0 or s_[0] - h[i - 1][0] > CrewedEncounters.MAX_GAP_S:
                 return s_[1], s_[2], s_[3], CrewedEncounters.MAX_GAP_S, None
             return s_[1], s_[2], s_[3], s_[0] - h[i - 1][0], (h, i - 1)
         if i == len(h) - 1:

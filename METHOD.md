@@ -1215,7 +1215,8 @@ accepted, wrong meaning a horizontal miss over half the threshold (150 or 500 m)
 vertical one over half the vertical threshold (50 or 75 m). A track that begins inside
 the comparison window is not projected backward: the encounter is not found. An
 aircraft that has a fix at the instant itself is judged by the gap since its fix before,
-and one heard for the first time at that instant counts as sparse beyond every limit:
+and one heard for the first time at that instant, or for the first time in more than two
+minutes (the limit between two fixes above), counts as sparse beyond every limit:
 until 29 October 2026 such a fix counted as no gap at all, which called "dense" two
 aircraft heard once each in the same second (Iceland, 26 October 2026).
 
