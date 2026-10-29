@@ -1170,6 +1170,26 @@ def get_coverage_gaps():
         return jsonify({})
 
 
+# The place names do not change between deploys, so a day in the visitor's
+# browser and in the front proxy is safe; the box answers repeat for a square
+# that is only looked at.
+PLACES_CACHE = {"Cache-Control": "public, max-age=86400"}
+
+
+@app.route(API + "/places")
+def get_places():
+    """Place search and the names inside a square, for the coverage-in-detail tool (README.md).
+
+    ?q=text gives up to 10 towns, peaks, passes, volcanoes, take-offs and airfields; ?s=&w=&n=&e= (a box of
+    at most 1 degree a side) gives the landmarks and take-offs inside it."""
+    out, status = sources.place_request(request.args)
+    resp = jsonify(out)
+    resp.status_code = status
+    if status == 200:
+        resp.headers.update(PLACES_CACHE)
+    return resp
+
+
 @app.route(API + "/stations/<path:name>/rose")
 def get_station_rose(name):
     """One station's reception rose: per source, 36 sectors of 10 degrees with the receptions, the mean signal

@@ -34,6 +34,7 @@ import re
 import statistics
 import threading
 import time
+import unicodedata
 import zlib
 
 import pymysql
@@ -1259,7 +1260,7 @@ _site_raw = {}          # list name -> {unique name: the name as the list gives 
 _place_names = {}       # (lat_idx, lon_idx, kind) -> (name, lat, lon) or None
 _site_names = None      # (list, name) -> [(lat, lon, display name)], for site_position
 _site_alias = {}        # list name -> {unique name: the town-only name of 8 October 2026 (ac4d1eb)}
-_landmarks = None       # 0.25-degree cell -> [(lat, lon, name, kind, sitelinks)]
+_landmarks = None       # 0.25-degree cell -> [(lat, lon, name, kind, sitelinks, ele or None)]
 COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 
@@ -1323,10 +1324,17 @@ def _load_landmarks():
             for line in f:
                 if line.startswith("#"):
                     continue
-                name, lat, lon, _ele, kind, sitelinks, _q = line.rstrip("\n").split("\t")
+                name, lat, lon, ele, kind, sitelinks, _q = line.rstrip("\n").split("\t")
                 lat, lon = float(lat), float(lon)
+                # Last in the tuple, so the readers that index 0-4 are unaffected;
+                # OSM leaves the height blank on some peaks and writes "2 000" or
+                # "3000 m" on others, hence the lenient read.
+                try:
+                    ele = round(float(ele.lower().replace("m", "").replace(" ", "").replace(",", ".")))
+                except ValueError:
+                    ele = None
                 by_cell[(math.floor(lat * THERMAL_CELLS_PER_DEG), math.floor(lon * THERMAL_CELLS_PER_DEG))].append(
-                    (lat, lon, name, kind, int(sitelinks)))
+                    (lat, lon, name, kind, int(sitelinks), ele))
     except (OSError, ValueError) as e:
         logger.error(f"No peaks and passes for place names ({e})")
     _landmarks = by_cell
@@ -1488,6 +1496,183 @@ def _landmark_near(lat, lon, near_m, within_m):
                     best = (d, p)
     p = (nearest or best or (None, None))[1]
     return (p[2], p[0], p[1]) if p else None
+
+
+# Place search for the coverage-in-detail tool: a visitor types a town, peak,
+# pass or take-off and the square moves there, and the square's own mountains
+# and take-offs are named on its view. Built on first use from the lists above,
+# which the thermal cells already hold, so the only new memory is the index.
+# It is one sorted string of keys (a name and each tail of it that starts at
+# a word, so "del grappa" finds "Bassano del Grappa" as well as "grappa" does)
+# with two arrays beside it: where each key starts, and which record it is. A
+# prefix is two bisects on that string; a list of 300,000 Python strings would
+# cost four times as much for the same job.
+PLACE_KINDS_SITE = ("fivl", "takeoff", "airfield")
+PLACE_MAX_RESULTS = 10
+PLACE_BOX_MAX_DEG = 1.0
+PLACE_BOX_MAX_RESULTS = 200
+_place_index = None
+_place_index_lock = threading.Lock()
+
+
+def _fold(text):
+    """Lower case without accents, with punctuation as a space: "Säntis" and
+    "santis" meet, and so do "L'Aquila", "l aquila" and "Saint-Gervais"."""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c)).casefold()
+    return " ".join(re.sub(r"[\W_]+", " ", text).split())
+
+
+def _build_place_index():
+    if _places is None:
+        _load_places()
+    if _landmarks is None:
+        _load_landmarks()
+    if _sites is None:
+        _load_sites()
+    # One flat list per kind, holding the tuples the thermal cells already
+    # hold (a reference each, no copy).
+    groups = [[p for cell in _places.values() for p in cell],
+              [p for cell in _landmarks.values() for p in cell]]
+    groups += [_sites.get(k, ()) for k in PLACE_KINDS_SITE]
+    starts, total = [], 0
+    for g in groups:
+        starts.append(total)
+        total += len(g)
+    name_of = (lambda p: p[1], lambda p: p[2], lambda p: p[2], lambda p: p[2], lambda p: p[2])
+    keys = []
+    for gi, g in enumerate(groups):
+        for i, p in enumerate(g):
+            folded = _fold(name_of[gi](p))
+            pos = 0
+            while True:
+                keys.append((folded[pos:], (starts[gi] + i) * 2 + (pos == 0)))
+                pos = folded.find(" ", pos) + 1
+                if pos == 0:
+                    break
+    keys.sort()
+    text = "\n".join(k for k, _ in keys)
+    offsets = array.array("I")
+    at = 0
+    for k, _ in keys:
+        offsets.append(at)
+        at += len(k) + 1
+    refs = array.array("I", (r for _, r in keys))
+    return {"groups": groups, "starts": starts, "text": text, "offsets": offsets, "refs": refs,
+            "n": len(keys)}
+
+
+def _place_key(ix, i):
+    text, offsets = ix["text"], ix["offsets"]
+    end = offsets[i + 1] - 1 if i + 1 < ix["n"] else len(text)
+    return text[offsets[i]:end]
+
+
+def _place_get():
+    global _place_index
+    if _place_index is None:
+        with _place_index_lock:
+            if _place_index is None:
+                _place_index = _build_place_index()
+    return _place_index
+
+
+def _place_record(ix, rec):
+    """(group, tuple) of a record number."""
+    gi = bisect.bisect_right(ix["starts"], rec) - 1
+    return gi, ix["groups"][gi][rec - ix["starts"][gi]]
+
+
+def _place_json(gi, p):
+    """The answer for one record: name, kind, lat, lon, then ele, sitelinks, country where known."""
+    if gi == 0:
+        return {"name": p[1], "kind": "town", "lat": p[3], "lon": p[4], "country": p[2]}
+    if gi == 1:
+        out = {"name": p[2], "kind": p[3], "lat": p[0], "lon": p[1], "sitelinks": p[4]}
+        if p[5] is not None:
+            out["ele"] = p[5]
+        return out
+    return {"name": p[2], "kind": PLACE_KINDS_SITE[gi - 2], "lat": p[0], "lon": p[1]}
+
+
+def _place_weight(gi, p):
+    """Importance within a rank, so a pilot's lists come first: FIVL sites,
+    then take-offs, then towns and landmarks on one scale (sitelinks for a
+    landmark, three times the decades of population for a town, so a town of
+    5,000 weighs as a peak with 11 sitelinks and a city of a million as one
+    with 18), then airfields."""
+    if gi == 2:
+        return (0, 0)
+    if gi == 3:
+        return (1, 0)
+    if gi == 4:
+        return (3, 0)
+    return (2, -(p[4] if gi == 1 else 3 * math.log10(max(p[0], 1))))
+
+
+def place_search(q):
+    """Up to PLACE_MAX_RESULTS places whose name, or any word-led tail of it,
+    begins with q (accents, case and punctuation ignored): exact name first,
+    then a name beginning with q, then one with a word beginning with it."""
+    q = _fold(q or "")
+    if len(q) < 2:
+        return []
+    ix = _place_get()
+    n = ix["n"]
+    # The keys are sorted, so those beginning with q are one run: from the
+    # first key >= q up to the first key past q followed by any character.
+    lo = bisect.bisect_left(range(n), q, key=lambda i: _place_key(ix, i))
+    hi = bisect.bisect_left(range(n), q + "\U0010ffff", lo, key=lambda i: _place_key(ix, i))
+    best = {}
+    for i in range(lo, hi):
+        r = ix["refs"][i]
+        rec, at_start = r >> 1, r & 1
+        gi, p = _place_record(ix, rec)
+        if at_start:
+            rank = 0 if _place_key(ix, i) == q else 1
+        else:
+            rank = 2
+        if rec not in best or rank < best[rec][0]:
+            best[rec] = (rank, gi, p)
+    ranked = sorted(best.values(), key=lambda t: (t[0], _place_weight(t[1], t[2]), t[2][1] if t[1] == 0 else t[2][2]))
+    return [_place_json(gi, p) for _, gi, p in ranked[:PLACE_MAX_RESULTS]]
+
+
+def place_request(args):
+    """(answer, status) of GET /places for a mapping of query parameters; the route only adds the headers."""
+    if "q" in args:
+        return place_search(args["q"]), 200
+    try:
+        s, w, n, e = (float(args[k]) for k in ("s", "w", "n", "e"))
+    except (KeyError, ValueError):
+        return {"error": "q=text, or s, w, n and e in degrees"}, 400
+    if not all(map(math.isfinite, (s, w, n, e))) or not (-90 <= s <= n <= 90) or not (-180 <= w <= e <= 180) \
+            or n - s > PLACE_BOX_MAX_DEG or e - w > PLACE_BOX_MAX_DEG:
+        return {"error": "the box must be s <= n, w <= e and at most 1 degree a side"}, 400
+    return places_in_box(s, w, n, e), 200
+
+
+def places_in_box(south, west, north, east):
+    """Landmarks, then FIVL sites and take-offs, inside a box of degrees, at
+    most PLACE_BOX_MAX_RESULTS: landmarks by sitelinks then height, sites in
+    list order. No towns and no airfields, which the 3D view has no use for."""
+    ix = _place_get()
+    n = THERMAL_CELLS_PER_DEG
+    marks = []
+    for la in range(math.floor(south * n), math.floor(north * n) + 1):
+        for lo in range(math.floor(west * n), math.floor(east * n) + 1):
+            for p in _landmarks.get((la, lo), ()):
+                if south <= p[0] <= north and west <= p[1] <= east:
+                    marks.append(p)
+    marks.sort(key=lambda p: (-p[4], -(p[5] if p[5] is not None else -1), p[2]))
+    out = [_place_json(1, p) for p in marks[:PLACE_BOX_MAX_RESULTS]]
+    for gi in (2, 3):
+        for p in ix["groups"][gi]:
+            if len(out) >= PLACE_BOX_MAX_RESULTS:
+                return out
+            if south <= p[0] <= north and west <= p[1] <= east:
+                out.append(_place_json(gi, p))
+    return out
 
 
 def _generic(name, words):
