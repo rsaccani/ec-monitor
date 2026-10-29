@@ -327,6 +327,10 @@ DESCRIPTIONS = {
         group="other", doc="METHOD.md 10",
         row="One nightly computation of a day: when it finished, how many hourly files it read and which were "
             "missing, lines read, duration, peak anonymous memory, and which family failed if one did."),
+    "volume_runs": dict(
+        group="other", doc="METHOD.md 10.9",
+        row="One run of the nightly measured-volume step for a day: when it finished, duration, peak memory, "
+            "status, hourly files read, voxels and bytes of the day's file, tiles written."),
 }
 
 # ---------------------------------------------------------------------------
