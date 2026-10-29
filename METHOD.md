@@ -1801,9 +1801,12 @@ aircraft-days and ten minutes of flying; the page uses the fine level where it
 passes, else the coarse one, else the estimate. Over Europe the 24 days
 held 12,938 hours of free flight and 53,636 of gliders and powered aircraft
 by radio, 33% and 20% of them without signal, and 3,015 and 9,819 hours by
-phone app, 6% and 9% without signal. The page will show the last 12 months
-once the volume is computed each night; the files published now cover 6 to
-29 October 2026.
+phone app, 6% and 9% without signal. Since 30 October 2026 the volume is
+computed each night after the main nightly (`volume.py`, run by
+`volume-nightly.sh`): one compressed file per day, kept 13 months, monthly
+totals kept for good, and the page's tiles rebuilt from the last 12 months and
+switched in at once, so a reader never sees half a rebuild. The days start on
+6 October 2026. Each run leaves a row in `volume_runs`.
 
 **Phone apps: no estimate yet.** Several models from cell sites were tried,
 on OpenCelliD's sites for Italy, Switzerland, Austria, Slovenia and France
