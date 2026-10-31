@@ -540,7 +540,7 @@ def run_nightly(raw_dir, store, out, day):
         notes.append(f"{type(e).__name__}: {e}"[:200])
         traceback.print_exc()
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
-    missing = d["stats"].get("hours_missing")
+    missing = d["stats"].get("hours_missing", 0)       # the counters leave out a zero; None only if run_day never returned
     if missing:
         notes.append(f"{missing} hourly files missing")
     record_run((day.isoformat(), datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None), round(time.time() - t0, 1), round(rss),
