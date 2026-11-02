@@ -40,6 +40,7 @@ import zlib
 import pymysql
 
 import rose
+import station_unique
 
 logger = logging.getLogger("main")
 
@@ -1913,6 +1914,7 @@ STATION_SENSITIVITY_DB = 10         # a tenth of the signal power below the netw
 STATION_LOW_SHARE = 0.8             # the card says "nearly all neighbours" from this share of partners, "some" below it
 STATION_LOW_SHOWN_DB = 3            # the card words the partner share when the station is at least this far below (nightly.SENS_LOW_DB)
 STATION_WINDOW_DAYS = 30            # a station's card
+UNIQUE_MIN_HEARD_KEYS = 360         # a station is ranked in a band from one hour heard there: 360 keys of 10 s
 
 # Garbage position streams (item 0i, rule agreed 26 October 2026), judged by the nightly's first pass per (address,
 # receiving station) pair over the whole UTC day, on fixes that passed the stale/future filter. Garbage is one radio
@@ -2378,6 +2380,7 @@ class SourceTracker:
         self.quality_cache = (0, None)
         self.stations_cache = (0, None)
         self.station_map_cache = (0, None)
+        self.unique_cache = (0, None)
         self.coverage_gaps_cache = (0, None)
         self.snapshots_cache = (0, None)
         self.encounters_cache = (0, None)
@@ -4298,6 +4301,92 @@ class SourceTracker:
                        "links": [{"label": a, "url": b} for a, b in d["links"]]}
                 for code, d in STATION_NOTES.items()}
 
+    @staticmethod
+    def _unique_compute(cur):
+        """The last STATION_WINDOW_DAYS days of daily_station_unique added up per station, and for each band the
+        sorted shares (unique over heard) of the stations with UNIQUE_MIN_HEARD_KEYS heard or more there."""
+        cur.execute("SELECT MAX(day) FROM daily_station_unique")
+        latest = cur.fetchone()[0]
+        if latest is None:
+            return None
+        cur.execute("""SELECT station, COUNT(*), SUM(heard_low), SUM(heard_mid), SUM(heard_high),
+                              SUM(unique_low), SUM(unique_mid), SUM(unique_high)
+                       FROM daily_station_unique WHERE day > %s - INTERVAL %s DAY GROUP BY station""",
+                    (latest, STATION_WINDOW_DAYS))
+        totals = {r[0]: (int(r[1]),) + tuple(int(x) for x in r[2:]) for r in cur.fetchall()}
+        shares = []
+        for i in range(3):
+            shares.append(sorted(t[4 + i] / t[1 + i] for t in totals.values() if t[1 + i] >= UNIQUE_MIN_HEARD_KEYS))
+        return {"latest": latest, "totals": totals, "shares": shares}
+
+    def unique_totals(self):
+        """_unique_compute, cached; None until the table has a row, and when it cannot be read (a deploy that
+        came before schema/2026-11-02-station-unique.sql must not cost a station its card)."""
+        stamp, cached = self.unique_cache
+        if time.time() - stamp < STATS_CACHE_SECONDS:
+            return cached
+        with self.stat_lock("unique"):
+            stamp, cached = self.unique_cache
+            if time.time() - stamp < STATS_CACHE_SECONDS:
+                return cached
+            out = None
+            try:
+                conn = self.connect_db()
+                try:
+                    with conn.cursor() as cur:
+                        out = self._unique_compute(cur)
+                finally:
+                    conn.close()
+            except pymysql.MySQLError as e:
+                logger.error(f"Error reading daily_station_unique: {e}")
+            self.unique_cache = (time.time(), out)
+            return out
+
+    @staticmethod
+    def _unique_head(u):
+        return {"latest_day": u["latest"].isoformat(), "window_days": STATION_WINDOW_DAYS,
+                "band_limits_m": list(station_unique.BANDS_M), "min_heard_hours": UNIQUE_MIN_HEARD_KEYS / 360}
+
+    def station_exposure(self, name):
+        """One station's last STATION_WINDOW_DAYS days of unique deliveries (METHOD.md 10.5), per band of height
+        above the ground: hours heard (a key is 10 s), hours only this station delivered, the share between
+        them, and the share's percentile among the stations with at least an hour heard in that band. The
+        percentile is the share of those stations whose own share is lower, ties counting half; None for a
+        station under the hour. None when the station has no row."""
+        u = self.unique_totals()
+        t = None if u is None else u["totals"].get(name)
+        if t is None:
+            return None
+        bands = {}
+        for i, band in enumerate(station_unique.BAND_NAMES):
+            heard, uniq = t[1 + i], t[4 + i]
+            sh = u["shares"][i]
+            rank = None
+            if heard >= UNIQUE_MIN_HEARD_KEYS:
+                x = uniq / heard
+                lo, hi = bisect.bisect_left(sh, x), bisect.bisect_right(sh, x)
+                rank = round(100 * (lo + (hi - lo) / 2) / len(sh), 1)
+            bands[band] = {"heard_hours": round(heard / 360, 2), "unique_hours": round(uniq / 360, 2),
+                           "share": round(uniq / heard, 4) if heard else None, "percentile": rank,
+                           "stations_ranked": len(sh)}
+        return dict(self._unique_head(u), days=t[0], bands=bands)
+
+    def exposure_summary(self):
+        """The network's figures behind the percentiles, for /stations: per band the stations ranked, the hours
+        heard and the hours only one station delivered, and the share's 10th, 50th and 90th percentile."""
+        u = self.unique_totals()
+        if u is None:
+            return None
+        bands = {}
+        for i, band in enumerate(station_unique.BAND_NAMES):
+            sh = u["shares"][i]
+            q = (lambda p: round(sh[min(len(sh) - 1, int(len(sh) * p / 100))], 4)) if sh else (lambda p: None)
+            bands[band] = {"stations_ranked": len(sh),
+                           "heard_hours": round(sum(t[1 + i] for t in u["totals"].values()) / 360, 1),
+                           "unique_hours": round(sum(t[4 + i] for t in u["totals"].values()) / 360, 1),
+                           "share_p10": q(10), "share_p50": q(50), "share_p90": q(90)}
+        return dict(self._unique_head(u), stations=len(u["totals"]), bands=bands)
+
     def stations_stats(self):
         """Per day the stations judged and how many carry no note, the stations behind each note on the
         latest day, and the names for the search box.
@@ -4360,6 +4449,7 @@ class SourceTracker:
             return {"days": days, "latest_day": latest, "census": census, "stations_by_note": by_note,
                     "stations_with_note": with_note,
                     "free_space_k": 20, "sensitivity_low_share": STATION_LOW_SHARE,
+                    "exposure": self.exposure_summary(),
                     "notes": self.station_note_info(), "window_days": STATION_WINDOW_DAYS,
                     "stations": names}
         return self._cached("stations", "stations_cache", compute)
@@ -4436,7 +4526,8 @@ class SourceTracker:
                               "links": [{"label": a, "url": b} for a, b in info["links"]],
                               "days_flagged": sum(1 for d in days if code in d["notes"]), "days": len(days)})
         return {"found": True, "name": name, "latest_day": latest.isoformat(), "last_seen": last["day"],
-                "window_days": STATION_WINDOW_DAYS, "days": days, "notes": notes}
+                "window_days": STATION_WINDOW_DAYS, "days": days, "notes": notes,
+                "exposure": self.station_exposure(name)}
 
     def station_rose(self, name):
         """One station's reception rose (METHOD.md 10.7): per source, the 36 sectors added up over the last
