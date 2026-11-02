@@ -48,6 +48,10 @@ class Unique:
         if (tocall not in SYSTEMS or category is None or category in NOT_AIRCRAFT or kt is None or kt < MIN_KT
                 or course is None or alt_m is None or receiver is None):
             return
+        # A copy later than the hold would reopen a bin already counted and score as unique, and a time
+        # stamp ahead of arrival would keep its bin open until the clock catches up.
+        if not 0 <= epoch - t <= HOLD_S:
+            return
         try:
             a = int(address, 16)
         except ValueError:
