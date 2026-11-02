@@ -1565,6 +1565,45 @@ plenty of flying of one-radio aircraft; and the best site within a cell, a
 ridge or a hut with a view, is for the club to find, with the lowest band
 heard as the guide.
 
+**What only this station delivers** (from 2 November 2026, table
+`daily_station_unique`). For each station and day, the nightly counts the
+flying the station delivered to OGN and the part of it that no other station
+delivered, per band of height above the ground: below 300 m, 300 to 1,000 m,
+and 1,000 m and above. A share near 100% says that the aircraft the station
+hears would mostly vanish from the network without it; a share near zero says
+its neighbours hear the same aircraft. Height decides the answer, because an
+aircraft high up is in sight of many stations at once: on 1 November 2026 the
+median station delivered alone about 30% of what it heard below 300 m, 10%
+between 300 and 1,000 m, and 1.4% above. A station at a landing field and one
+on a summit are therefore compared band by band.
+
+The unit is a step: a device address and a 10-second slice of the packets'
+own time stamps. A step is delivered by every station that forwarded at least
+one packet of that address with a time stamp inside the slice, and is unique
+to a station when it was the only one. Steps are counted in hours, 360 to the
+hour. Only systems that a station hears over the air count (FLARM, FANET,
+ADS-L, the OGN tracker, PilotAware), since a position sent by a phone app has
+no station to credit; packets under 5 km/h, of ground vehicles and static
+objects, and of unknown ground height are left out, so that aircraft standing
+on a landing field next to a station do not count as its flying. The band of a
+step is taken from its first packet to arrive. A copy of a packet is accepted
+up to 5 minutes after its time stamp, the same limit as everywhere else
+(section 1); later copies, and time stamps ahead of their arrival, are
+dropped.
+
+The card adds up the last 30 days and ranks the station's share, in each band,
+among the stations with at least one hour heard in that band over the same
+days, a tie counting half. A device that sends a position only every 20 to 30
+seconds, as most FANET devices do, fills one step in two or three: its flying
+is undercounted the same way in both figures, so the share stays fair while
+the hours read low.
+
+What it cannot see: a station that hears an aircraft only when another station
+hears it too may still matter on the day the other one fails, which this
+measure leaves to availability; two receivers under the same name count as
+one; and the hours are flying heard, so a station in a place where nobody flies
+shows little whatever its reach.
+
 ### 10.6 Devices by country and region
 
 From 25 October 2026 the nightly batch notes, for each device, the countries
