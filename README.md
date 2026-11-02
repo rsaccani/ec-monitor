@@ -101,7 +101,7 @@ flowchart TB
     live["Listener and live totals<br/>sources.py"]
     rec["Recorder<br/>recorder.py"]
     chk["Device check<br/>check.py"]
-    arch["Archive every 6 h<br/>addresses → counts"]
+    arch["Archive: months before the previous one,<br/>addresses → counts"]
   end
 
   raw[("Raw feed<br/>hourly files, 30 days")]
