@@ -242,6 +242,10 @@ DESCRIPTIONS = {
         group="stations", doc="METHOD.md 10.5",
         row="The network's figures of a day for station sensitivity: the fitted slope k, the station pairs and "
             "observations it came from, and the stations judged. One row per day."),
+    "daily_station_unique": dict(
+        group="stations", doc="METHOD.md 10.5",
+        row="One OGN receiver on a day: the keys (a device address and a 10-second bin of packet time) it delivered "
+            "and the keys only it delivered, in three bands of height above the ground. No address is kept."),
     "daily_station_rose": dict(
         group="station_rose", doc="METHOD.md 10.7",
         row="The direct airborne receptions of a station on one source in a day, in 36 sectors of 10 degrees by "

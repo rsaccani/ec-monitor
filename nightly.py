@@ -59,6 +59,7 @@ from dotenv import load_dotenv
 import check
 import recorder
 import rose
+import station_unique
 import sources
 
 logger = logging.getLogger("nightly")
@@ -319,7 +320,7 @@ FAMILIES = {
                     "daily_quality"),
     # Ground stations (METHOD.md 10.5, 17 October 2026): a family of its own, so that a station table that is
     # missing or fails costs the others nothing.
-    "stations": ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"),
+    "stations": ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps", "daily_station_unique"),
     # Devices by country and region (METHOD.md 10.6, 25 October 2026): a family of its own as well, since it
     # holds addresses and is archived apart.
     "regions": ("daily_device_regions",),
@@ -1404,6 +1405,20 @@ def coverage_guard(f):
     return guarded
 
 
+def unique_guard(f):
+    """An error in the unique-delivery measure costs the day its daily_station_unique rows and nothing else."""
+    def guarded(self, *args):
+        if not self.su_on:
+            return
+        try:
+            f(self, *args)
+        except Exception as e:
+            logger.exception("The unique deliveries failed during the pass")
+            self.failed["station unique"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.su_on = False
+    return guarded
+
+
 class Station:
     """The beacons one station sent in a UTC day (METHOD.md 10.5): when, and what its status said."""
     __slots__ = ("last", "silence", "max_gap", "beacons", "status", "lat", "lon", "tocall", "token", "cpu",
@@ -1612,6 +1627,8 @@ class Nightly:
         self.pre_gen = 0                       # feed breaks met by the first pass
         self.d1 = self.d0 + 86400
         self.terrain = sources.Terrain(sources.dem_path())
+        self.su_on = True                      # METHOD.md 10.5, what only one station delivers; switched off alone if it fails
+        self.su = station_unique.Unique(self.terrain)
         self.lines = 0
         # stream state, as in the service
         self.last_fix = {}                     # (src, tocall, via) -> (t, lat, lon)
@@ -2211,6 +2228,10 @@ class Nightly:
             # Every receiver's copy of a fix, before the drop and the vote below: the rose needs the packet's
             # own category and the receiver, and no address.
             self.rose_fix(tocall, path[-1], lat, lon, category, kt, alt_m, body)
+        if self.s and self.su_on and tocall in station_unique.SYSTEMS:
+            # What each receiver delivered of a device's 10-second bins, and what only it delivered, before the
+            # drop and the vote below, like the rose: a receiver's copy is judged by what it forwarded.
+            self.unique_fix(epoch, t, tocall, id_category, kt, course, alt_m, address, path, lat, lon)
         if kind != "adsb" and (address, tocall) in self.dropped:
             return                              # an impossible stream-day (9 October 2026), counted in 10.4
         self.maker_fix(src, tocall, kind, rnd, body, id_category)
@@ -3794,7 +3815,24 @@ class Nightly:
         return {"daily_stations": (self.STATION_COLUMNS, rows),
                 "daily_station_sensitivity": (self.SENSITIVITY_COLUMNS,
                                               [(day, None if k is None else round(k, 3), n_pairs, n_obs, len(sens))]),
-                "daily_coverage_gaps": (self.COVERAGE_COLUMNS, self.rows_coverage_gaps(day))}
+                "daily_coverage_gaps": (self.COVERAGE_COLUMNS, self.rows_coverage_gaps(day)),
+                "daily_station_unique": (self.UNIQUE_COLUMNS, self.rows_station_unique(day))}
+
+    UNIQUE_COLUMNS = ("day", "station", "heard_low", "heard_mid", "heard_high", "unique_low", "unique_mid",
+                      "unique_high")
+
+    @unique_guard
+    def unique_fix(self, epoch, t, tocall, id_category, kt, course, alt_m, address, path, lat, lon):
+        self.su.packet(epoch, t, tocall, id_category, kt, course, alt_m, address, receiver_of(path), lat, lon)
+
+    def rows_station_unique(self, day):
+        """METHOD.md 10.5: per station, the 10-second keys it delivered and those only it delivered, by band."""
+        if not self.su_on:
+            return []                           # failed during the pass: the day keeps no such rows
+        rows = self.su.rows(day)
+        logger.info(f"Unique deliveries: {self.su.keys:,} keys, {len(rows)} stations, {self.su.no_ground:,} "
+                    f"packets without ground, {self.su.overflow} receivers over the limit")
+        return rows
 
     COVERAGE_COLUMNS = ("day", "lat_idx", "lon_idx", "family", "band", "probe_s", "probe_late_s", "probe_aircraft",
                         "air_s")
@@ -4624,7 +4662,7 @@ def print_dry_run(tables, run_row):
           f"lines {run_row[4]:,}, {run_row[5]:.0f} s")
     for table, (cols, rows) in tables.items():
         print(f"\n== {table}: {len(rows)} rows")
-        if table in ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"):
+        if table in ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps", "daily_station_unique"):
             continue                    # public names, but 2,600 of them: see print_stations_dry_run
         if table == "daily_device_regions":
             # Addresses: distinct devices per country, and per region for the first countries, only.
@@ -4873,6 +4911,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--day", help="UTC day, YYYY-MM-DD (default: yesterday)")
     ap.add_argument("--dry-run", action="store_true", help="print the aggregates instead of writing them")
+    ap.add_argument("--unique-dump", help="with --dry-run, write the daily_station_unique rows to this file, tab-separated")
     ap.add_argument("--rose-dump", help="with --dry-run, write the daily_station_rose rows to this file, as JSON lines")
     ap.add_argument("--hours", help="only these hours of the day, e.g. 12-13 (for testing)")
     ap.add_argument("--snapshot", action="store_true",
@@ -4972,6 +5011,10 @@ def main():
                ",".join(str(h) for h in missing), n.lines, round(time.time() - started, 1), n.anon_peak)
     if args.dry_run:
         print_dry_run(tables, run_row)
+        if args.unique_dump:
+            with open(args.unique_dump, "w") as out:
+                for row in tables.get("daily_station_unique", ((), []))[1]:
+                    out.write("\t".join(str(x) for x in row) + "\n")
         if args.rose_dump:
             with open(args.rose_dump, "w") as out:
                 for row in tables.get("daily_station_rose", ((), []))[1]:
