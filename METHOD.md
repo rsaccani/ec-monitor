@@ -161,6 +161,9 @@ through the gateway IZ0QWM-10, as its developer described on 19 October
 "net" since they carry no signal report, and so apart from the Remote ID
 that receivers hear. Before then they would have counted as ADS-B
 heard by radio; none appears in the raw recording of 12 to 19 October.
+On 1 November 2026 Drone Sky Check moved to its own tocall, OGNDSC,
+through the feeder DSCFEED; those packets are counted the same way, and
+the old path is still recognised.
 
 **Do not track.** A packet whose id carries the owner's no-tracking flag is
 dropped on arrival, like a device marked in the OGN device database, from

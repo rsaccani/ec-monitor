@@ -109,7 +109,11 @@ REMOTE_ID, DRONE_CATEGORY = "OGNMAV", 13
 # arrives under OGADSB with no RF data, so by its tocall alone it would count
 # as ADS-B heard by radio. It is counted as Remote ID, and since it carries no
 # signal report it falls under via "net", apart from what receivers hear.
+# From 1 November 2026 DSC sends on OGN's production port under its own
+# tocall OGNDSC, through the feeder DSCFEED, with OGN-type addresses (its
+# developer, 2 November 2026); the old path stays recognised.
 REMOTE_ID_GATEWAYS = {"IZ0QWM-10"}
+REMOTE_ID_NET_TOCALLS = {"OGNDSC"}
 
 # Not aircraft: receivers announcing their own position, and delayed or
 # synthesised copies of packets already counted elsewhere.
@@ -293,7 +297,7 @@ def same_system(tocall, device_id):
 
 def packet_system(path, device_id):
     """same_system for a packet's path (tocall first, receiver or gateway last)."""
-    if path[0] == "OGADSB" and path[-1] in REMOTE_ID_GATEWAYS:
+    if path[0] in REMOTE_ID_NET_TOCALLS or (path[0] == "OGADSB" and path[-1] in REMOTE_ID_GATEWAYS):
         return REMOTE_ID
     return same_system(path[0], device_id)
 
