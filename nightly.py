@@ -320,7 +320,10 @@ FAMILIES = {
                     "daily_quality"),
     # Ground stations (METHOD.md 10.5, 17 October 2026): a family of its own, so that a station table that is
     # missing or fails costs the others nothing.
-    "stations": ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps", "daily_station_unique"),
+    "stations": ("daily_stations", "daily_station_sensitivity", "daily_coverage_gaps"),
+    # What only one station delivers (METHOD.md 10.5, 2 November 2026): its own family, so that a missing
+    # table or an error there leaves the other station rows of the day in place.
+    "station_unique": ("daily_station_unique",),
     # Devices by country and region (METHOD.md 10.6, 25 October 2026): a family of its own as well, since it
     # holds addresses and is archived apart.
     "regions": ("daily_device_regions",),
@@ -339,7 +342,8 @@ FAMILIES = {
                  "daily_cruise", "daily_helicopter_night"),
 }
 TABLES = (FAMILIES["conspicuity"] + FAMILIES["patterns"] + FAMILIES["stations"] + FAMILIES["regions"]
-          + FAMILIES["makers"] + FAMILIES["device_pattern"] + FAMILIES["station_rose"])
+          + FAMILIES["makers"] + FAMILIES["device_pattern"] + FAMILIES["station_rose"]
+          + FAMILIES["station_unique"])
 PATTERN_KEEP_DAYS = 30                  # the days daily_device_pattern keeps, the run's day included
 ROSE_KEEP_DAYS = 30                     # the days before the run's day that daily_station_rose keeps
 # Item 0i's agreement test of branch (b) keeps a second's fixes until packets for it can no longer arrive: a packet is
@@ -1414,7 +1418,7 @@ def unique_guard(f):
             f(self, *args)
         except Exception as e:
             logger.exception("The unique deliveries failed during the pass")
-            self.failed["station unique"] = f"pass: {type(e).__name__}: {e}"[:200]
+            self.failed["station_unique"] = f"pass: {type(e).__name__}: {e}"[:200]
             self.su_on = False
     return guarded
 
@@ -3681,12 +3685,13 @@ class Nightly:
         the tows the launches find.
         """
         out = {"conspicuity": {}, "patterns": {}, "stations": {}, "regions": {}, "makers": {}, "device_pattern": {},
-               "station_rose": {}}
+               "station_rose": {}, "station_unique": {}}
         for family, compute in (("patterns", self.rows_patterns), ("conspicuity", self.rows_conspicuity),
                                 ("stations", self.rows_stations), ("regions", self.rows_regions),
                                 ("makers", self.rows_makers),
                                 ("device_pattern", self.rows_device_pattern),
-                                ("station_rose", self.rows_station_rose)):
+                                ("station_rose", self.rows_station_rose),
+                                ("station_unique", self.rows_station_unique_family)):
             if family in self.failed:
                 continue                        # already failed during the pass
             try:
@@ -3815,8 +3820,7 @@ class Nightly:
         return {"daily_stations": (self.STATION_COLUMNS, rows),
                 "daily_station_sensitivity": (self.SENSITIVITY_COLUMNS,
                                               [(day, None if k is None else round(k, 3), n_pairs, n_obs, len(sens))]),
-                "daily_coverage_gaps": (self.COVERAGE_COLUMNS, self.rows_coverage_gaps(day)),
-                "daily_station_unique": (self.UNIQUE_COLUMNS, self.rows_station_unique(day))}
+                "daily_coverage_gaps": (self.COVERAGE_COLUMNS, self.rows_coverage_gaps(day))}
 
     UNIQUE_COLUMNS = ("day", "station", "heard_low", "heard_mid", "heard_high", "unique_low", "unique_mid",
                       "unique_high")
@@ -3824,6 +3828,11 @@ class Nightly:
     @unique_guard
     def unique_fix(self, epoch, t, tocall, id_category, kt, course, alt_m, address, path, lat, lon):
         self.su.packet(epoch, t, tocall, id_category, kt, course, alt_m, address, receiver_of(path), lat, lon)
+
+    def rows_station_unique_family(self):
+        if not self.s:
+            raise RuntimeError("the station measures were off in the pass")   # keeps the day's earlier rows
+        return {"daily_station_unique": (self.UNIQUE_COLUMNS, self.rows_station_unique(self.day.isoformat()))}
 
     def rows_station_unique(self, day):
         """METHOD.md 10.5: per station, the 10-second keys it delivered and those only it delivered, by band."""
@@ -5065,7 +5074,8 @@ def main():
                   f"{c:6.0f} {n.drone_extent.get(a, 0) / 1000:7.1f}")
     failed = dict(n.failed)
     written = []
-    for family in ("conspicuity", "patterns", "stations", "regions", "makers", "device_pattern", "station_rose"):
+    for family in ("conspicuity", "patterns", "stations", "regions", "makers", "device_pattern", "station_rose",
+                   "station_unique"):
         if family in failed:
             continue
         if args.dry_run:
