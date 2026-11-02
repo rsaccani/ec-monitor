@@ -141,6 +141,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
+    # The same scope as the nightly that writes the later days, so the two agree
+    nightly.EUROPE_ONLY = (os.getenv("EC_SCOPE") or "europe") == "europe"
     raw_dir = os.path.expanduser(os.getenv("EC_RAW_DIR") or "")
     if not os.path.isdir(raw_dir):
         logger.error("EC_RAW_DIR is not set or not a directory")
