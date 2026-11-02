@@ -4969,7 +4969,8 @@ def main():
         return 1
     families = n.rows()
     tables = {**families["conspicuity"], **families["patterns"], **families["stations"], **families["regions"],
-              **families["makers"], **families["device_pattern"], **families["station_rose"]}
+              **families["makers"], **families["device_pattern"], **families["station_rose"],
+              **families["station_unique"]}
     # daily_quality.check_name is varchar(64) (widened on 7 October 2026 after a
     # 35-character name made a recompute fail): fail here, in a dry run too.
     long = {r[3] for r in tables.get("daily_quality", ((), []))[1] if len(r[3]) > 64}
