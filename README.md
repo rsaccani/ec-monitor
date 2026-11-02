@@ -92,10 +92,9 @@ rule also covers aggregates of this kind is not settled in the terms.
 What each part costs in memory, CPU, database and disk is in [RESOURCES.md](RESOURCES.md); `/internal/resources` on the host returns the current figures.
 
 ```mermaid
-flowchart LR
+flowchart TB
   feed["OGN APRS feed<br/>(every receiver's copy)"]
-  ddb["OGN device database"]
-  dem["Terrain model<br/>(ETOPO 2022, 15″)"]
+  ref["OGN device database<br/>terrain model (ETOPO 2022, 15″)"]
   meteo["Open-Meteo<br/>(wind)"]
 
   subgraph worker["Service: one gunicorn worker"]
@@ -103,34 +102,34 @@ flowchart LR
     rec["Recorder<br/>recorder.py"]
     chk["Device check<br/>check.py"]
     arch["Archive every 6 h<br/>addresses → counts"]
-    api["Flask endpoints<br/>app.py"]
   end
 
   raw[("Raw feed<br/>hourly files, 30 days")]
-  db[("MariaDB")]
 
   subgraph night["Each night"]
     nightly["nightly.py<br/>daily measures by family"]
     volume["volume.py<br/>measured volume"]
   end
 
+  db[("MariaDB")]
+  api["Flask endpoints, app.py<br/>(in the same worker)"]
   pages["Pages and anyone<br/>reading the API"]
 
-  feed --> live --> db
-  feed --> rec --> raw
+  feed --> live
+  feed --> rec
   feed --> chk
-  ddb --> live
-  dem --> live
-  raw --> nightly
-  ddb --> nightly
-  dem --> nightly
+  ref --> live
+  ref --> nightly
   meteo --> nightly
-  nightly --> db
-  raw --> volume --> db
+  rec --> raw
+  raw --> nightly
+  raw --> volume
+  live --> db
   arch --> db
+  nightly --> db
+  volume --> db
   db --> api
   chk --> api
-  live --> api
   api --> pages
 ```
 
