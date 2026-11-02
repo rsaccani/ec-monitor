@@ -91,6 +91,54 @@ rule also covers aggregates of this kind is not settled in the terms.
 
 What each part costs in memory, CPU, database and disk is in [RESOURCES.md](RESOURCES.md); `/internal/resources` on the host returns the current figures.
 
+```mermaid
+flowchart LR
+  feed["OGN APRS feed<br/>(every receiver's copy)"]
+  ddb["OGN device database"]
+  dem["Terrain model<br/>(ETOPO 2022, 15″)"]
+  meteo["Open-Meteo<br/>(wind)"]
+
+  subgraph worker["Service: one gunicorn worker"]
+    live["Listener and live totals<br/>sources.py"]
+    rec["Recorder<br/>recorder.py"]
+    chk["Device check<br/>check.py"]
+    arch["Archive every 6 h<br/>addresses → counts"]
+    api["Flask endpoints<br/>app.py"]
+  end
+
+  raw[("Raw feed<br/>hourly files, 30 days")]
+  db[("MariaDB")]
+
+  subgraph night["Each night"]
+    nightly["nightly.py<br/>daily measures by family"]
+    volume["volume.py<br/>measured volume"]
+  end
+
+  pages["Pages and anyone<br/>reading the API"]
+
+  feed --> live --> db
+  feed --> rec --> raw
+  feed --> chk
+  ddb --> live
+  dem --> live
+  raw --> nightly
+  ddb --> nightly
+  dem --> nightly
+  meteo --> nightly
+  nightly --> db
+  raw --> volume --> db
+  arch --> db
+  db --> api
+  chk --> api
+  live --> api
+  api --> pages
+```
+
+The worker counts the live totals and keeps the raw recording; everything that needs a whole day, or
+packets from every receiver side by side, is computed afterwards from that recording by `nightly.py`
+(METHOD.md section 10) and `volume.py` (section 10.9), each night family written in a transaction of its
+own so that one failing measure leaves the others in place.
+
 One gunicorn worker runs a listener thread on the OGN feed (the whole feed, about 1,200 lines a second at a busy hour)
 and the Flask endpoints that the page reads. `sources.py` keeps the totals in memory and writes them to
 MariaDB every 15 minutes, counted from the worker's start, and once more when the worker stops, so a
