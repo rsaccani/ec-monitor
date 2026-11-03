@@ -1191,7 +1191,8 @@ class CrewedEncounters:
                                 info = enc[7]
                                 info["first"] = min(info["first"], t)
                                 info["last"] = max(info["last"], t)
-                                info["secs"].add(int(t))
+                                if len(info["secs"]) < self.TOGETHER_SECS:      # together() asks only for that many
+                                    info["secs"].add(int(t))
                                 if d < enc[1]:
                                     enc[1], enc[2] = d, rel
                                     enc[4], enc[5] = mlat, mlon

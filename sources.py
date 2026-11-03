@@ -1353,7 +1353,11 @@ ADMIN1_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "
 ADMIN1_BAND_DEG = 0.1
 ADMIN1_SNAP_DEG = (0.01, 0.03, 0.05)   # a point just off a simplified coast tries these offsets, up to about 5 km
 _admin1 = None                         # (rings, {(lat cell, lon cell): ring ids}); rings: (cc, region, xs, ys, bbox, bands)
+# One entry per 0.0001-degree cell asked for, which on a world day is half a million cells: the key is
+# one integer and the answer one shared tuple per region, about 70 bytes an entry against 200 for a
+# tuple of two floats and a fresh answer (100 MB on 31 October 2026, measured with tracemalloc).
 _region_cache = {}
+_region_answers = {}
 
 
 def _load_admin1():
@@ -1405,7 +1409,7 @@ def _inside(ring, lat, lon):
 def region_at(lat, lon):
     """(ISO country code, region) of a point, or (None, None) at sea. A point in two rings (an enclave
     such as San Marino inside Italy, whose hole the file leaves out) takes the smaller."""
-    key = (round(lat, 4), round(lon, 4))
+    key = (round(lat * 10000) + 900000) * 3600001 + round(lon * 10000) + 1800000
     if key in _region_cache:
         return _region_cache[key]
     if _admin1 is None:
@@ -1428,6 +1432,7 @@ def region_at(lat, lon):
         if best is not None:
             found = (best[1], best[2])
             break
+    found = _region_answers.setdefault(found, found)
     _region_cache[key] = found
     return found
 
