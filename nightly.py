@@ -939,6 +939,8 @@ class CrewedEncounters:
     # packets arrive out of order across receivers, and the instant it is placed at
     # must still lie in its history.
     HIST_SLACK_S = 30
+    HIST_SWEEP_S = 600
+    HIST_DROP_S = MAX_GAP_S + WINDOW + DT + HIST_SLACK_S   # silent this long, its history goes
     # A run of contacts within the wide threshold ends after this many seconds without one.
     WIDE_GAP_S = 60
     # Longest gap in seconds between the two fixes around the instant, per OGN category
@@ -969,6 +971,7 @@ class CrewedEncounters:
         # in a gaggle comparing every second of every neighbour cost minutes.
         self.index = collections.defaultdict(dict)
         self.order = collections.deque()
+        self.hist_swept = -1e18
         self.max_t = -1e18
         self.slow = {}                          # pair -> [first t, last t]
         self.near = {}                          # pair -> [first t, lat, lon, last t]
@@ -1211,6 +1214,14 @@ class CrewedEncounters:
         self.max_t = max(self.max_t, t)
         while self.order and self.order[0][2] * self.BUCKET < self.max_t - self.WINDOW:
             self.index.pop(self.order.popleft(), None)
+        if self.max_t - self.hist_swept > self.HIST_SWEEP_S:
+            # An aircraft silent this long has left the index, and _at() treats fixes further back
+            # than MAX_GAP_S as none: its history only held memory (8,000 aircraft, 32 MB, on
+            # 31 October 2026, every one landed that day kept to midnight).
+            cut = self.max_t - self.HIST_DROP_S
+            for a in [a for a, q in self.hist.items() if q[-1][0] < cut]:
+                del self.hist[a]
+            self.hist_swept = self.max_t
 
     def _closest(self, info, vel, ovel, kt, okt, pa, pb, name, cat, ocat, ev):
         """What the closest approach of an encounter looked like: the speeds and the angle between
@@ -1220,7 +1231,7 @@ class CrewedEncounters:
         # For the event table (METHOD.md 10.2): the instant, the placed positions of the two addresses
         # (pa is `address`, pb is `oaddr`), the vertical distance, when the pair came within 1 km, and
         # how fast each was turning at that instant.
-        info["event"] = (T, address, oaddr, pa, pb, dalt, t1km, self._turn(h, T), self._turn(ho, T))
+        info["event"] = (T, address, oaddr, pa[:4], pb[:4], dalt, t1km, self._turn(h, T), self._turn(ho, T))
         info["spd"] = (None if kt is None else kt * 1.852, None if okt is None else okt * 1.852)
         ang = None
         if vel is not None and ovel is not None:
@@ -3111,17 +3122,29 @@ class Nightly:
         last = self.wave_last.get(address)
         if last is not None and t <= last[0]:
             return
-        q = self.wave_q[address]
+        q = self.wave_q.get(address)
         if last is None or t - last[0] > WAVE_GAP:
-            q.clear()
+            if q:
+                q.clear()
             net = turned = 0.0
         else:
             d = (course - last[1] + 540) % 360 - 180
             net, turned = last[2] + d, last[3] + abs(d)
         self.wave_last[address] = (t, course, net, turned)
-        q.append((t, alt, net, turned, lat, lon))
+        # Only a fix from WAVE_MIN_M up can start a climb (the loop below skips the others), so
+        # only those are queued: a queue of every glider's last ten minutes held 31 MB on
+        # 31 October 2026 and grows with the hours flown in thermals.
+        if alt >= WAVE_MIN_M:
+            if q is None:
+                q = self.wave_q[address] = collections.deque()
+            q.append((t, alt, net, turned, lat, lon))
+        if q is None:
+            return
         while q and t - q[0][0] > WAVE_WINDOW:
             q.popleft()
+        if not q:
+            del self.wave_q[address]
+            return
         if alt < WAVE_MIN_M + WAVE_GAIN_M or t < self.wave_quiet.get(address, 0):
             return
         for t0, a0, n0, u0, la0, lo0 in q:
