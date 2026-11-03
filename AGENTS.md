@@ -157,6 +157,23 @@ def get_db_connection(max_retries=30, retry_delay=10):
 - Handle thread exceptions gracefully
 - Use thread-safe operations for shared data
 
+### Memory
+Every new feature is also a memory change, and is not finished until its memory is measured.
+The nightly holds a whole day's state in memory, the worker runs for weeks, and both share a small
+host with the database, so state kept per aircraft, per pair or per fix grows with the traffic,
+and a summer Saturday carries many times the traffic of an autumn weekday.
+- Keep per-fix data in `array` columns or packed integers, not in tuples of floats inside dicts:
+  a tuple of three floats costs about 136 bytes for 24 bytes of data.
+- Per-object state goes in classes with `__slots__`.
+- Drop per-aircraft state when the aircraft has gone silent and nothing downstream can use it,
+  instead of keeping it to the end of the day.
+- Never keep a reference to a larger structure (a history, a track) inside a record that outlives
+  it, when only a few fields of it are read later.
+- Bound every cache, or key it compactly (one integer, shared answers).
+- Before merging, run the nightly's dry run on a busy day with and without the change: the output
+  must be identical, or differ only as intended, and the `Peak memory` line goes in the commit
+  message. `NIGHTLY_TRACE=1` shows the allocating lines, at about six times the run time.
+
 ### Database Operations
 - Use connection pooling where possible
 - Implement retry logic for database operations
@@ -192,7 +209,8 @@ def get_db_connection(max_retries=30, retry_delay=10):
 3. **Plan the implementation**: Break down the task into smaller steps
 4. **Implement changes**: Follow code style guidelines
 5. **Test manually**: Run the application and verify the changes work
-6. **Review code**: Check for consistency, errors, and edge cases
+6. **Review code**: Check for consistency, errors, and edge cases, and measure the memory the
+   change adds (see "Memory" above)
 7. **Document changes**: Update README if necessary
 
 ## Common Patterns
