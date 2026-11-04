@@ -38,6 +38,7 @@ import calendar
 import collections
 import csv
 import io
+import itertools
 import datetime
 import json
 import logging
@@ -187,6 +188,7 @@ RECEIVER_MOVED_M = 2000
 RECEIVER_ALTITUDE_M = 500
 RELAY_OFFSET_M = 20
 RELAY_MIN_SHARED = 50
+RELAY_HIST_M = 63                # relay pairs: differences within this many metres go in a histogram
 RELAY_LATE_SHARE, RELAY_LATE_MIN = 0.05, 100
 RELAY_GROUP_S = 20              # seconds after the first reception of a fix to wait for other receivers
 RELAY_SOURCES = {"OGFLR"}       # FLARM: the receiver converts ellipsoid height to MSL itself
@@ -628,6 +630,32 @@ def climb_span(samples):
     return best
 
 
+class Samples:
+    """A kept thermal's samples, read-only: the 5-second buckets in order with their packed
+    positions, 16 bytes a sample in three arrays (pack() needs 67 bits, so its latitude part
+    is kept apart). As a dict each sample cost about 100 bytes, and the day's thermals are all
+    held until the gaggle pass at midnight. Answers len(), items() in bucket order and
+    get(bucket) like the dict it replaces."""
+    __slots__ = ("b", "hi", "lo")
+    LO = (1 << 42) - 1
+
+    def __init__(self, samples):
+        keys = sorted(samples)
+        self.b = array.array("i", keys)
+        self.hi = array.array("i", (samples[k] >> 42 for k in keys))
+        self.lo = array.array("q", (samples[k] & self.LO for k in keys))
+
+    def __len__(self):
+        return len(self.b)
+
+    def items(self):
+        return ((b, h << 42 | lo) for b, h, lo in zip(self.b, self.hi, self.lo))
+
+    def get(self, b, default=None):
+        i = bisect.bisect_left(self.b, b)
+        return self.hi[i] << 42 | self.lo[i] if i < len(self.b) and self.b[i] == b else default
+
+
 class CircleTrack:
     """One address on one system, while it may be circling."""
     __slots__ = ("cat", "last", "run", "run_s", "run_m", "run_t0", "run_pos", "run_samples", "thermal", "thermals")
@@ -684,6 +712,7 @@ class CircleTrack:
         THERMAL_MIN_GAIN (PATTERNS.md, section 2)."""
         span = climb_span(th[7])
         if span is not None and span[0] >= THERMAL_MIN_GAIN:
+            th[7] = Samples(th[7])
             th.extend(span)
             self.thermals.append(th)
             outcome = "thermal"
@@ -1203,7 +1232,7 @@ class CrewedEncounters:
                                     self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat, ev)
                                 continue
                             if enc is not None:
-                                self.done.append((key,) + tuple(enc))
+                                self.close_encounter(key, enc)
                             info = {"first": t, "last": t, "secs": {int(t)}}
                             self._closest(info, vel, ovel, kt, okt, pa, pb, name, cat, ocat, ev)
                             self.open[key] = [start, d, rel, kinds, mlat, mlon, geometry(vel, ovel), info]
@@ -1254,11 +1283,35 @@ class CrewedEncounters:
         spd = info["spd"]
         return kinds == ("helicopter", "helicopter") and None not in spd and max(spd) < self.HELI_SLOW_KMH
 
+    def close_encounter(self, key, enc):
+        """An encounter goes to done, where it waits for midnight, when the day's tows and evidence are known.
+        Its numbers go in one array of doubles, with a bit per field for None and one for an integer, and its
+        seconds as a count, all together() reads: about 450 bytes an encounter, where the info dict and its
+        tuples cost 2,300 (94 MB on a day with five times the traffic of 31 October 2026). closed() gives them
+        back in the shape they were found in."""
+        t0, d, rel, kinds, la, lo, geom, info = enc
+        T, addr, oaddr, pa, pb, dalt, t1km, turn_x, turn_y = info["event"]
+        vals = ((t0, d, rel, la, lo, info["first"], info["last"], len(info["secs"]), T) + tuple(pa) + tuple(pb)
+                + (dalt, t1km, turn_x, turn_y) + tuple(info["spd"]) + (info["ang"], info["gap"], info["miss"]))
+        none = sum(1 << i for i, v in enumerate(vals) if v is None)
+        ints = sum(1 << i for i, v in enumerate(vals) if type(v) is int)
+        self.done.append((key, kinds, geom, addr, oaddr, info["over"], none, ints,
+                          array.array("d", [0.0 if v is None else v for v in vals])))
+
+    def closed(self):
+        """The closed encounters as (key, t0, d, rel, kinds, lat, lon, geometry, info)."""
+        for key, kinds, geom, addr, oaddr, over, none, ints, a in self.done:
+            v = [None if none >> i & 1 else int(x) if ints >> i & 1 else x for i, x in enumerate(a)]
+            info = {"first": v[5], "last": v[6], "secs": v[7],
+                    "event": (v[8], addr, oaddr, tuple(v[9:13]), tuple(v[13:17]), v[17], v[18], v[19], v[20]),
+                    "spd": (v[21], v[22]), "ang": v[23], "gap": v[24], "over": over, "miss": v[25]}
+            yield key, v[0], v[1], v[2], kinds, v[3], v[4], geom, info
+
     def together(self, d, rel, info):
         ang = info["ang"]
         return (ang is not None and ang < self.TOGETHER_DEG and rel is not None and rel < self.TOGETHER_KMH
                 and d <= self.TOGETHER_M
-                and (info["last"] - info["first"] >= self.TOGETHER_SPAN or len(info["secs"]) >= self.TOGETHER_SECS
+                and (info["last"] - info["first"] >= self.TOGETHER_SPAN or info["secs"] >= self.TOGETHER_SECS
                      or d <= self.TOGETHER_TIGHT_M))
 
     def verdict(self, d, rel, kinds, info):
@@ -1315,7 +1368,7 @@ class CrewedEncounters:
 
     def finish(self):
         for key, enc in self.open.items():
-            self.done.append((key,) + tuple(enc))
+            self.close_encounter(key, enc)
         self.open = {}
         for f in self.slow.values():
             self.close_slow(f)
@@ -1591,7 +1644,10 @@ class Nightly:
         self.fanet_makers = {}    # address (6 hex digits) -> maker named by its FANET byte, for a FANET device seen
         self.dp = True            # METHOD.md 7, the device patterns; switched off if its work fails during the pass
         self.dp_pos = {}          # receiver -> (lat, lon), the last position it beaconed (as SourceTracker.stations)
-        self.dpat = {}            # (address, tocall, sector) -> [receptions, sum of dB scaled to 10 km]
+        # (address, tocall) -> receptions of the 12 sectors, then their sums of dB scaled to 10 km: one array of
+        # 24 doubles per aircraft and source, where a list per sector cost 400 bytes a sector (100 MB on a day
+        # with five times the traffic of 31 October 2026).
+        self.dpat = {}
         self.ro = True            # METHOD.md 10.7, the station roses; switched off if its work fails during the pass
         self.rose = rose.Rose()
         self.rose_wait = {}       # receiver not yet placed -> its receptions so far, fed when its first beacon comes
@@ -1616,7 +1672,7 @@ class Nightly:
         self.addr_hour_air = collections.Counter() # (address, solar hour) -> s, gliders and free flight
         self.drone_agl = collections.Counter()     # (solar hour, AGL band, address) -> s
         self.flight = {}                           # address -> [t0, lat0, lon0, last t, max d, path, cat, lon]
-        self.flights = []                          # (address, cat, t0, lon0, seconds, max d, path)
+        self.flights = []                          # see end_flight and flight_records
         self.wave_q = collections.defaultdict(collections.deque)   # glider -> (t, alt, net turn, abs turn)
         self.wave_last = {}                        # glider -> (t, course, net, abs)
         self.wave_quiet = {}
@@ -1673,7 +1729,10 @@ class Nightly:
         self.cut = {}                          # address -> its last fix before an impossible one
         self.drone_fx = {}                     # address declaring a drone -> array of (t, lat, lon, kt, alt)
         self.drone_far = collections.Counter() # address declaring a drone -> impossible jumps over DF_SHARED_JUMP_M
-        self.addr_systems = collections.defaultdict(set)     # address -> systems, platforms left out
+        # address -> systems, platforms left out, as one shared frozenset per combination: there are a few
+        # dozen combinations, and a set of its own cost each address 200 bytes.
+        self.addr_systems = {}
+        self.system_sets = {}
         self.addr_platforms = collections.defaultdict(set)   # address -> platforms that relayed it
         # 1. hours
         self.hours_air = collections.defaultdict(float)     # (local day number, category, hour) -> s
@@ -1698,7 +1757,9 @@ class Nightly:
         self.encounters = []                   # (drone, other, other category, min distance, lat, lon, km/h, geometry)
         # 5. quality
         self.q = collections.defaultdict(lambda: collections.Counter())  # label -> check -> count
-        self.categories = collections.defaultdict(collections.Counter)   # (label, address) -> category -> n
+        # (label, address, category) -> n: one flat counter, since nearly every address declares one category
+        # and a Counter of its own cost it 300 bytes.
+        self.categories = collections.Counter()
         self.jumps = collections.Counter()     # (label, address) -> jumps
         self.addresses = set()                 # (label, address)
         self.rx_pos = {}                       # receiver -> [lat0, lon0, beacons, far beacons, max distance]
@@ -1715,7 +1776,12 @@ class Nightly:
         self._relay_offsets = None
         self.relay_groups = {}                 # (address, packet time) -> (reception epoch, {receiver: (alt, snr)}, lat, lon)
         self.relay_order = collections.deque()
-        self.relay_pairs = collections.defaultdict(lambda: array.array("h"))  # (rx a, rx b) -> alt a - alt b, m
+        # (rx a, rx b) -> alt a - alt b in m, as a histogram of the differences within RELAY_HIST_M and a list of
+        # the rest: only the median is read, which the two give exactly, and the histogram's 500 bytes stay
+        # the same however many fixes the pair shares (an array of every difference took 55 MB on a day with
+        # five times the traffic of 31 October 2026, and grows with it).
+        self.relay_pairs = collections.defaultdict(lambda: array.array("I", bytes(4 * (2 * RELAY_HIST_M + 1))))
+        self.relay_far = collections.defaultdict(lambda: array.array("h"))
         # (rx a, rx b) -> x, y of each shared fix, interleaved: x = log10(d_b / d_a) in 0.001, y = snr_a - snr_b in 0.1 dB
         self.sens_pairs = collections.defaultdict(lambda: array.array("h"))
         self._sensitivity = None
@@ -1747,9 +1813,10 @@ class Nightly:
                 f"streams {len(self.last_fix):,}, addresses {len(self.addr_fix):,}, "
                 f"circle tracks {len(self.circles):,} with {sum(len(t.thermals) for t in self.circles.values()):,} "
                 f"thermals and {samples:,} samples, parked runs {len(self.parked_runs):,}, "
-                f"relay pairs {len(self.relay_pairs):,} ({sum(len(v) for v in self.relay_pairs.values()):,}), "
+                f"relay pairs {len(self.relay_pairs):,} "
+                f"({sum(sum(v) for v in self.relay_pairs.values()) + sum(len(v) for v in self.relay_far.values()):,}), "
                 f"sensitivity pairs {len(self.sens_pairs):,} ({sum(len(v) for v in self.sens_pairs.values()) // 2:,}), "
-                f"device categories {len(self.categories):,}")
+                f"device categories {len({k[:2] for k in self.categories}):,}")
 
     def chain_pass(self, files):
         """Before the first pass: FLARM's random addresses joined into chains.
@@ -2105,6 +2172,9 @@ class Nightly:
                 self.station_status(epoch, src, head.split(",")[0], body)
             return                              # status lines, objects, messages
         path = head.split(",")
+        # The receiver, the source and its address are keys in a dozen tables each: one shared string apiece,
+        # instead of one per packet that created an entry.
+        path[-1] = sys.intern(path[-1])
         raw_tc = path[0]
         in_day = self.d0 <= epoch < self.d1     # quality is filed by reception
         if raw_tc == "OGNSDR" or raw_tc == "OGNSXR":
@@ -2125,7 +2195,7 @@ class Nightly:
             return                              # weather stations
         tocall = sources.packet_system(path, src)
         rnd = src.startswith(sources.RANDOM_PREFIX) and tocall in sources.RANDOM_ROTATING
-        src = self.chained(src, tocall)
+        src = sys.intern(self.chained(src, tocall))
         id_category, no_track = sources.id_info(body)
         if no_track:
             return
@@ -2173,7 +2243,7 @@ class Nightly:
             category = id_category
         else:
             category = sources.SYMBOL_CATEGORY.get(symbol, sources.UNKNOWN_CATEGORY)
-        address = src[-6:]
+        address = sys.intern(src[-6:])
         if address in self.notrack:
             return                              # the owner asked OGN not to track it
         if self.s and not rnd and via == "radio" and tocall in sources.RADIO_CADENCE:
@@ -2223,7 +2293,7 @@ class Nightly:
                 q["categorised"] += 1
                 q["category_stray"] += stray
             if id_category is not None:
-                self.categories[(label, address)][id_category] += 1
+                self.categories[(label, address, id_category)] += 1
             if via == "radio" and kind != "adsb":
                 rx = path[-1]
                 self.rx_relay[rx] += 1
@@ -2296,7 +2366,10 @@ class Nightly:
         kt = self.zero.speed(key, tocall, category, t, lat, lon, kt)
         moved = kt is not reported
         if kind != "platform":
-            self.addr_systems[address].add(label)
+            own = self.addr_systems.get(address, frozenset())
+            if label not in own:
+                own = own | {label}
+                self.addr_systems[address] = self.system_sets.setdefault(own, own)
         else:
             self.addr_platforms[address].add(label)
         if q is not None:
@@ -2485,10 +2558,20 @@ class Nightly:
                 return
             self.winches.append((address,) + tuple(w))
             del self.winch_open[address]
-        q = self.winch_recent[address]
+        # A launch starts from a fix under WINCH_LOW (the loop below looks for the first one), so a
+        # glider's queue is opened by such a fix and dropped once none is left in it: a queue of
+        # every glider's last minute, kept to midnight, held 5.7 MB on 31 October 2026.
+        q = self.winch_recent.get(address)
+        if q is None:
+            if agl >= WINCH_LOW:
+                return
+            q = self.winch_recent[address] = collections.deque()
         q.append((t, agl, kmh, lat, lon, alt_m))
         while q and t - q[0][0] > WINCH_S:
             q.popleft()
+        if q[0][1] >= WINCH_LOW and not any(x[1] < WINCH_LOW for x in q):
+            del self.winch_recent[address]
+            return
         if agl < WINCH_HIGH:
             return
         # From under 50 m to here within 90 s, at cable speed once off the
@@ -2536,7 +2619,7 @@ class Nightly:
         # A session whose flight lasts under FLIGHT_MIN_S, or which never made a
         # flight, is a fragment at the edge of coverage: not a launch either.
         flight_s = collections.defaultdict(list)
-        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flight_records():
             flight_s[address].append((t0, sec))
         self.launch_fragments = 0
         for address, cat, t, la, lo, agl in self.sessions:
@@ -2578,12 +2661,21 @@ class Nightly:
     # choosing where "plain" ends and "mountain" begins (7 October 2026): the
     # threshold is to be set after looking at the distribution.
     RELIEF_M, RELIEF_CELL = 5000, 0.02
+    # The cache is one array of 50 x 50 cells (2 bytes each) per degree square touched, -1 for a cell not
+    # computed yet and -2 for no terrain: a dict of cells cost about 230 bytes a cell, 30 MB on 31 October
+    # 2026 and 110 MB on a day with five times its traffic spread over five times its area.
+    RELIEF_TILE = 50
 
     def relief(self, lat, lon):
         key = (int(lat // self.RELIEF_CELL), int(lon // self.RELIEF_CELL))
         cache = self.__dict__.setdefault("_relief", {})
-        if key in cache:
-            return cache[key]
+        tile = cache.get((key[0] // self.RELIEF_TILE, key[1] // self.RELIEF_TILE))
+        if tile is None:
+            tile = cache[(key[0] // self.RELIEF_TILE, key[1] // self.RELIEF_TILE)] = \
+                array.array("h", [-1]) * (self.RELIEF_TILE * self.RELIEF_TILE)
+        i = key[0] % self.RELIEF_TILE * self.RELIEF_TILE + key[1] % self.RELIEF_TILE
+        if tile[i] != -1:
+            return None if tile[i] == -2 else tile[i]
         tr = self.terrain
         value = None
         if tr.ok:
@@ -2607,7 +2699,7 @@ class Nightly:
                         vals = [0 if v == tr.nodata or v < 0 else v for v in a]
                     hi, lo = max(hi, max(vals)), min(lo, min(vals))
                 value = hi - lo
-        cache[key] = value
+        tile[i] = -2 if value is None else value
         return value
 
     def terrain_of(self, lat, lon):
@@ -2630,7 +2722,7 @@ class Nightly:
                 r = self.relief(x[3], x[4])
                 if r is not None:
                     hist[("thermals", THERMAL_KIND.get(cat))][min(30, int(r // 100))] += 1
-        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flight_records():
             if self.d0 <= t0 < self.d1:
                 r = self.relief(lat0, lon0)
                 if r is not None:
@@ -2993,8 +3085,21 @@ class Nightly:
             before = [a for t, a in f[14] if INFER_BACK[0] <= last_t - t <= INFER_BACK[1]]
             if before and last_alt is not None and last_alt < max(before):
                 landing, how = (f[8], f[9], last_alt), "inferred"
-        self.flights.append((address, f[6], f[0], f[7], f[3] - f[0], f[4], f[5], f[1], f[12], f[13], landing, how,
-                             f[16][0]))
+        # The numbers in one array of doubles, with a bit per field for None and one for an integer: 250 bytes
+        # a flight where a tuple of 13 cost 620 (43 MB on a day with five times the traffic of 31 October
+        # 2026). flight_records() gives them back as tuples.
+        vals = (f[0], f[7], f[3] - f[0], f[4], f[5], f[1], f[12], f[13], f[16][0]) + (landing or (None,) * 3)
+        none = sum(1 << i for i, v in enumerate(vals) if v is None)
+        ints = sum(1 << i for i, v in enumerate(vals) if type(v) is int)
+        self.flights.append((address, f[6], how, none, ints,
+                             array.array("d", [0.0 if v is None else v for v in vals])))
+
+    def flight_records(self):
+        """The day's flights as end_flight describes them."""
+        for address, cat, how, none, ints, a in self.flights:
+            v = [None if none >> i & 1 else int(x) if ints >> i & 1 else x for i, x in enumerate(a)]
+            yield (address, cat, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                   None if how == "none" else tuple(v[9:12]), how, v[8])
 
     def site_near(self, which, lat, lon, radius):
         """The site of a list of sources._sites ("fivl", "takeoff", "airfield")
@@ -3034,7 +3139,7 @@ class Nightly:
         filed by the take-off site of the flight it was flown in, in its
         0.25-degree cell, for naming thermal places (PATTERNS.md, section 3)."""
         by_address = collections.defaultdict(list)
-        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flight_records():
             by_address[address].append((t0, t0 + sec, lat0, lon0, cat))
         out = collections.Counter()
         n = THERMAL_CELLS_PER_DEG
@@ -3063,7 +3168,7 @@ class Nightly:
         for address, t0, la, lo, top in self.winches:
             tow_agl[address].append((t0, top))
         self.first_climb_starts = collections.Counter()
-        for address, cat, t0, lon0, sec, maxd, path, lat0, alt0, agl0, landing, how, climb_top in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, alt0, agl0, landing, how, climb_top in self.flight_records():
             if not self.d0 <= t0 < self.d1 or sec < FLIGHT_MIN_S:
                 continue
             if how == "inferred" and cat in POWERED_FIXED and self.airfield_near(landing[0], landing[1]) is None:
@@ -3438,11 +3543,11 @@ class Nightly:
         if not m:
             return
         sector = int(((sources._bearing(lat, lon, *where) - course + 15) % 360) // 30)
-        a = self.dpat.get((address, tocall, sector))
+        a = self.dpat.get((address, tocall))
         if a is None:
-            a = self.dpat[(address, tocall, sector)] = [0, 0.0]
-        a[0] += 1
-        a[1] += float(m.group(1)) + sources.SNR_SLOPE_DB * math.log10(km / 10)
+            a = self.dpat[(address, tocall)] = array.array("d", bytes(24 * 8))
+        a[sector] += 1
+        a[12 + sector] += float(m.group(1)) + sources.SNR_SLOPE_DB * math.log10(km / 10)
 
     @maker_guard
     def maker_fix(self, device, tocall, kind, rnd, body, category=None):
@@ -3590,7 +3695,11 @@ class Nightly:
             for j in range(i + 1, len(items)):
                 if items[i][1][0] is not None and items[j][1][0] is not None:
                     diff = max(-32000, min(32000, round(items[i][1][0] - items[j][1][0])))
-                    self.relay_pairs[(items[i][0], items[j][0])].append(diff)
+                    hist = self.relay_pairs[(items[i][0], items[j][0])]     # made at the first, as before
+                    if -RELAY_HIST_M <= diff <= RELAY_HIST_M:
+                        hist[diff + RELAY_HIST_M] += 1
+                    else:
+                        self.relay_far[(items[i][0], items[j][0])].append(diff)
         if self.s:
             self.sensitivity_pair(items, lat, lon)
 
@@ -3745,8 +3854,9 @@ class Nightly:
         """METHOD.md 7: one row per device, source and sector with a far airborne reception that day."""
         day = self.day.isoformat()
         return {"daily_device_pattern": (("day", "address", "source", "sector", "n", "snr_sum"),
-                                         [(day, a, tc, sec, n, round(total, 1))
-                                          for (a, tc, sec), (n, total) in sorted(self.dpat.items())])}
+                                         [(day, a, tc, sec, int(v[sec]), round(v[12 + sec], 1))
+                                          for (a, tc), v in sorted(self.dpat.items())
+                                          for sec in range(12) if v[sec]])}
 
     def rows_station_rose(self):
         """METHOD.md 10.7: one row per station and source with a direct airborne reception that day."""
@@ -4153,7 +4263,7 @@ class Nightly:
                                       [(day, k, tr, h, round(circ[(k, tr, h)], 1), round(air[(k, tr, h)], 1))
                                        for (k, tr, h) in sorted(set(circ) | set(air))])
         fl = collections.defaultdict(lambda: [0, 0.0, 0.0])
-        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in self.flight_records():
             if not self.d0 <= t0 < self.d1 or sec < FLIGHT_MIN_S:
                 continue
             launch = self.flight_launch(address, t0) if cat == 1 else ""
@@ -4215,8 +4325,8 @@ class Nightly:
         self.crewed_events = []
         self.crewed_summary = collections.Counter()
         self.sparse_counts = collections.Counter()
-        ev = self.evidence() if any("drone" in k for (_, _), _, _, _, k, *_ in ce.done) else {}
-        for (pair, name), t0, d, rel, kinds, la, lo, geom, info in ce.done:
+        ev = self.evidence() if any("drone" in r[1] for r in ce.done) else {}
+        for (pair, name), t0, d, rel, kinds, la, lo, geom, info in ce.closed():
             together = pair in ce.formation or pair in ce.escort
             self.crewed_summary[(kinds, name, "all")] += 1
             if pair in self.tow_pairs:
@@ -4341,10 +4451,11 @@ class Nightly:
         cat_change = collections.Counter()
         ground_mode = collections.Counter()
         with_cat = collections.Counter()
-        for (label, address), c in self.categories.items():
-            cats = {k for k, n in c.items() if n >= 2}   # a single corrupt packet does not make a change
-            if not cats:
-                continue
+        # A single corrupt packet does not make a change. The keys are sorted, so that each device's categories
+        # come together without a set per device at the moment the day's rows are built.
+        keys = sorted(k for k, n in self.categories.items() if n >= 2)
+        for (label, address), grp in itertools.groupby(keys, key=lambda k: k[:2]):
+            cats = {k[2] for k in grp}
             with_cat[label] += 1
             if label == "FANET" and 15 in cats and len(cats - {15}) == 1 and cats - {15} <= set(FREE_FLIGHT):
                 ground_mode[label] += 1                    # a landed pilot's instrument in ground-tracking mode
@@ -4523,9 +4634,24 @@ class Nightly:
         if self._relay_offsets is not None:
             return self._relay_offsets
         pair_med = {}
-        for (a, b), diffs in self.relay_pairs.items():
-            v = sorted(diffs)
-            pair_med[(a, b)] = (v[len(v) // 2], len(v))
+        for key, hist in self.relay_pairs.items():
+            far = sorted(self.relay_far.get(key, ()))
+            low = [x for x in far if x < 0]
+            n = sum(hist) + len(far)
+            k = n // 2                          # the median as the sorted list of every difference gave it
+            if k < len(low):
+                m = low[k]
+            else:
+                k -= len(low)
+                m = None
+                for i, c in enumerate(hist):
+                    if k < c:
+                        m = i - RELAY_HIST_M
+                        break
+                    k -= c
+                if m is None:
+                    m = far[len(low) + k]
+            pair_med[key] = (m, n)
         by_rx = collections.defaultdict(list)    # receiver -> [(partner, median of rx - partner, n)]
         for (a, b), (m, n) in pair_med.items():
             by_rx[a].append((b, m, n))
@@ -5060,7 +5186,7 @@ def main():
     if args.dry_run and "patterns" not in n.failed:
         # Flight medians per kind, for checking the rule; aggregates only.
         by = collections.defaultdict(list)
-        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in n.flights:
+        for address, cat, t0, lon0, sec, maxd, path, lat0, *_ in n.flight_records():
             if n.d0 <= t0 < n.d1:
                 by[FREE_FLIGHT_KIND.get(cat) or (PATTERN_KIND.get(cat, "other") if cat != DRONE else "drone")].append(
                     (sec, maxd, path))
