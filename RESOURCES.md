@@ -30,6 +30,14 @@ traffic of a US afternoon in every hour) its anonymous memory reached 183 MB aga
 the same day measured in Europe only; RSS was 919 against 488 MB, the difference being the
 world terrain file read through the mapping.
 
+From 4 November 2026 the nightly keeps less in memory and writes more to temporary files (Python's
+`tempfile`, deleted when closed; on the host `/tmp` is on the root disk). The station-pair
+sensitivity samples take 8 bytes each and are written twice, once as they come and once grouped by
+pair for the medians: on 31 October 2026, about 4 million samples and 60 MB. Closed encounters and
+flights wait in another file until the rows are built. On a dry run of that day the peak physical
+footprint on a Mac went from 525 to 416 MB, and on a synthetic day with five times its traffic from
+1,609 to about 1,130 MB.
+
 MariaDB held 582 MB RSS (buffer pool 300 MB) for the whole host, the EC database included.
 
 ## CPU

@@ -387,6 +387,10 @@ the totals live in that process. Within a few seconds the log shows the connecti
 database 15 minutes after the start. In production the same command runs as a systemd service
 (`Restart=always`), behind nginx, which proxies `/conspicuity-monitor/api/` to it.
 
+The tests are in [tests/](tests/), with their own [README](tests/README.md): a fast suite that needs
+no database, network or terrain model, and an opt-in comparison of a whole day's dry run against a
+stored output.
+
 ## Deploying updates
 
 In production the service directory is a git checkout of this repository, and `deploy.sh` moves
