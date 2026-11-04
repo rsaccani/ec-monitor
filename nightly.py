@@ -44,6 +44,7 @@ import json
 import logging
 import math
 import os
+import pickle
 import resource
 import re
 import statistics
@@ -661,6 +662,45 @@ class Samples:
         return self.hi[i] << 42 | self.lo[i] if i < len(self.b) and self.b[i] == b else default
 
 
+class Spill:
+    """Records of the day that are only read at midnight, kept in a temporary file in batches.
+
+    Iteration gives them back in the order appended, the file first and then the
+    batch still in memory; each iterator keeps its own place in the file, so
+    appending or a second iterator in between does no harm."""
+    BATCH = 5000
+
+    def __init__(self):
+        self.file = None
+        self.batch = []
+        self.n = 0
+
+    def append(self, record):
+        self.batch.append(record)
+        self.n += 1
+        if len(self.batch) >= self.BATCH:
+            if self.file is None:
+                self.file = tempfile.TemporaryFile()
+            self.file.seek(0, 2)
+            pickle.dump(self.batch, self.file, pickle.HIGHEST_PROTOCOL)
+            self.batch = []
+
+    def __iter__(self):
+        pos = 0
+        while self.file is not None:
+            self.file.seek(pos)
+            try:
+                batch = pickle.load(self.file)
+            except EOFError:
+                break
+            pos = self.file.tell()
+            yield from batch
+        yield from list(self.batch)
+
+    def __len__(self):
+        return self.n
+
+
 class CircleTrack:
     """One address on one system, while it may be circling."""
     __slots__ = ("cat", "last", "run", "run_s", "run_m", "run_t0", "run_pos", "run_samples", "thermal", "thermals")
@@ -1014,7 +1054,7 @@ class CrewedEncounters:
         # the time from 1 km to the closest approach)
         self.wide = {}
         self.open = {}                          # (pair, threshold) -> [t0, d, closing, kinds, lat, lon, geometry]
-        self.done = []
+        self.done = Spill()
         # (kind, lat_idx, lon_idx) at THERMAL_CELLS_PER_DEG -> [seconds, addresses]
         self.air = collections.defaultdict(lambda: [0.0, set()])
         # (towed address, tug address, towed category, t0, t1, start lat, lon, release height above ground)
@@ -1677,7 +1717,7 @@ class Nightly:
         self.addr_hour_air = collections.Counter() # (address, solar hour) -> s, gliders and free flight
         self.drone_agl = collections.Counter()     # (solar hour, AGL band, address) -> s
         self.flight = {}                           # address -> [t0, lat0, lon0, last t, max d, path, cat, lon]
-        self.flights = []                          # see end_flight and flight_records
+        self.flights = Spill()                     # see end_flight and flight_records
         self.wave_q = collections.defaultdict(collections.deque)   # glider -> (t, alt, net turn, abs turn)
         self.wave_last = {}                        # glider -> (t, course, net, abs)
         self.wave_quiet = {}

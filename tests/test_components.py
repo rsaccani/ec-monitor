@@ -114,13 +114,13 @@ def test_two_aircraft_converging_record_one_encounter():
 def test_aircraft_far_apart_record_nothing():
     ce = nightly.CrewedEncounters()
     crossing_pair(ce, 5000)
-    assert ce.done == []
+    assert list(ce.done) == []
 
 
 def test_aircraft_far_apart_vertically_record_nothing():
     ce = nightly.CrewedEncounters()
     crossing_pair(ce, 100, alt_b=1500 + 600)
-    assert ce.done == []
+    assert list(ce.done) == []
 
 
 def test_encounter_at_wide_distance_only():
