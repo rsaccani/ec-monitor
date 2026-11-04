@@ -103,7 +103,7 @@ def test_two_aircraft_converging_record_one_encounter():
     assert {pair for (pair, _), *_ in ce.done} == {("5E0010", "5E0011")}
     names = sorted(name for (_, name), *_ in ce.done)
     assert names == ["close", "wide"]                    # one per threshold
-    for key, t0, d, rel, kinds, lat, lon, geom, info in ce.done:
+    for key, t0, d, rel, kinds, lat, lon, geom, info in ce.closed():
         assert 190 < d < 215
         assert rel == pytest.approx(370.4, rel=0.01)    # closing speed in km/h
         assert kinds == ("powered", "powered")
