@@ -47,6 +47,7 @@ import os
 import resource
 import re
 import statistics
+import tempfile
 import subprocess
 import sys
 import time
@@ -205,6 +206,10 @@ SENS_SANE_DB = 6                # partners further than this from the network ar
 SENS_LOW_DB = 3                 # a partner counts as "higher" when the station is more than this below it (half the power)
 SENS_K_MIN_OBS = 10000          # shared receptions needed to fit k; with fewer the day is not judged
 SENS_LOG_Q, SENS_DB_Q = 1000, 10   # stored as short integers: log10 of the distance ratio in 0.001, SNR difference in 0.1 dB
+SILENT_EVERY = 600              # feed seconds between two drops of the state of aircraft gone silent
+SILENT_AFTER = 2 * sources.SESSION_BREAK   # silence after which the next fix starts afresh anyway
+SENS_BUFFER = 1 << 20           # samples held before they go to the sample file
+SENS_BUCKETS = 64               # the sample file is read back in this many groups of pairs, one group in memory at a time
 
 # Impossible tracks (METHOD.md, sections 1 and 10.4, from 9 October 2026).
 # Every fix beyond the limits of its category (sources.CEILINGS) is dropped,
@@ -1706,6 +1711,7 @@ class Nightly:
         self.last_fix = {}                     # (src, tocall, via) -> (t, lat, lon)
         self.addr_fix = {}                     # address -> (t, lat, lon, kt, alt, reported kt)
         self.zero = sources.ZeroSpeed()        # FLARM's 0 on moving free-flight instruments
+        self.silent_at = 0
         self.zero_gain = collections.Counter() # category -> s flown only thanks to the speed from positions
         # impossible tracks: the first pass's per-stream record and its verdict
         self.streams = {}                      # (address, tocall) -> [t, lat, lon, fixes, seconds, levels, feed breaks met]
@@ -1782,8 +1788,13 @@ class Nightly:
         # five times the traffic of 31 October 2026, and grows with it).
         self.relay_pairs = collections.defaultdict(lambda: array.array("I", bytes(4 * (2 * RELAY_HIST_M + 1))))
         self.relay_far = collections.defaultdict(lambda: array.array("h"))
-        # (rx a, rx b) -> x, y of each shared fix, interleaved: x = log10(d_b / d_a) in 0.001, y = snr_a - snr_b in 0.1 dB
-        self.sens_pairs = collections.defaultdict(lambda: array.array("h"))
+        # (rx a, rx b) -> [shared fixes, sum x, sum y, sum xy, sum xx], x = log10(d_b / d_a) in 0.001, y = snr_a - snr_b
+        # in 0.1 dB: enough to fit k. The samples themselves, needed only for each pair's median once k is known,
+        # wait in a temporary file, since a busy day holds tens of millions of them.
+        self.sens_sums = {}
+        self.sens_ids = {}                     # (rx a, rx b) -> pair number in the sample file
+        self.sens_buf = array.array("i")       # pair number, x << 16 | y & 0xffff, interleaved
+        self.sens_file = None
         self._sensitivity = None
 
     # --- the pass ---------------------------------------------------------------
@@ -1815,7 +1826,7 @@ class Nightly:
                 f"thermals and {samples:,} samples, parked runs {len(self.parked_runs):,}, "
                 f"relay pairs {len(self.relay_pairs):,} "
                 f"({sum(sum(v) for v in self.relay_pairs.values()) + sum(len(v) for v in self.relay_far.values()):,}), "
-                f"sensitivity pairs {len(self.sens_pairs):,} ({sum(len(v) for v in self.sens_pairs.values()) // 2:,}), "
+                f"sensitivity pairs {len(self.sens_sums):,} ({sum(s[0] for s in self.sens_sums.values()):,}), "
                 f"device categories {len({k[:2] for k in self.categories}):,}")
 
     def chain_pass(self, files):
@@ -2160,6 +2171,8 @@ class Nightly:
         if line == sources.FEED_BREAK:
             self.feed_break(epoch)
             return
+        if epoch >= self.silent_at:
+            self.drop_silent(epoch)
         try:
             src, rest = line.split(">", 1)
             head, body = rest.split(":", 1)
@@ -3717,9 +3730,84 @@ class Nightly:
         for i in range(len(heard)):
             for j in range(i + 1, len(heard)):
                 a, b = heard[i], heard[j]
-                v = self.sens_pairs[(a[0], b[0])]
-                v.append(round((b[2] - a[2]) * SENS_LOG_Q))
-                v.append(max(-32000, min(32000, round((a[1] - b[1]) * SENS_DB_Q))))
+                key = (a[0], b[0])
+                x = round((b[2] - a[2]) * SENS_LOG_Q)
+                y = max(-32000, min(32000, round((a[1] - b[1]) * SENS_DB_Q)))
+                s = self.sens_sums.get(key)
+                if s is None:
+                    s = self.sens_sums[key] = [0, 0, 0, 0, 0]
+                    self.sens_ids[key] = len(self.sens_ids)
+                s[0] += 1
+                s[1] += x
+                s[2] += y
+                s[3] += x * y
+                s[4] += x * x
+                self.sens_buf.append(self.sens_ids[key])
+                self.sens_buf.append(x << 16 | y & 0xffff)
+                if len(self.sens_buf) >= 2 * SENS_BUFFER:
+                    self.sens_flush()
+
+    def sens_flush(self):
+        if self.sens_file is None:
+            self.sens_file = tempfile.TemporaryFile()
+        self.sens_buf.tofile(self.sens_file)
+        del self.sens_buf[:]
+
+    def sens_medians(self, pairs, k):
+        """The median of y - k x of each pair in `pairs`, from the sample file, read back one group of pairs at a time."""
+        self.sens_flush()
+        ids = {self.sens_ids[key]: key for key in pairs}
+        groups = [tempfile.TemporaryFile() for _ in range(SENS_BUCKETS)]
+        self.sens_file.seek(0)
+        while True:
+            chunk = array.array("i")
+            try:
+                chunk.fromfile(self.sens_file, 2 * SENS_BUFFER)
+            except EOFError:                    # the last, shorter chunk is read all the same
+                pass
+            if not chunk:
+                break
+            parts = [array.array("i") for _ in range(SENS_BUCKETS)]
+            for i in range(0, len(chunk), 2):
+                if chunk[i] in ids:
+                    part = parts[chunk[i] % SENS_BUCKETS]
+                    part.append(chunk[i])
+                    part.append(chunk[i + 1])
+            for f, part in zip(groups, parts):
+                part.tofile(f)
+        self.sens_file.close()
+        self.sens_file = None
+        medians = {}
+        for f in groups:
+            f.seek(0)
+            data = array.array("i")
+            data.frombytes(f.read())
+            f.close()
+            values = collections.defaultdict(list)
+            for i in range(0, len(data), 2):
+                y = data[i + 1] & 0xffff
+                y = y - 65536 if y >= 32768 else y
+                values[data[i]].append(y / SENS_DB_Q - k * (data[i + 1] >> 16) / SENS_LOG_Q)
+            for n, v in values.items():
+                medians[ids[n]] = statistics.median(v)
+        return medians
+
+    def drop_silent(self, epoch):
+        """The per-address fix, the parked runs and the winch queues of aircraft silent for SILENT_AFTER go.
+
+        Their next fix, if one comes, starts afresh exactly as it would have after
+        a gap over sources.SESSION_BREAK, and a parked run is closed as that fix
+        would have closed it; kept to midnight, a busy day's silent aircraft would
+        hold hundreds of MB. `last_fix` stays: the jump count compares a stream's
+        fix with its previous one however long ago it came."""
+        self.silent_at = epoch + SILENT_EVERY
+        cutoff = epoch - SILENT_AFTER
+        self.addr_fix = {k: v for k, v in self.addr_fix.items() if v[0] >= cutoff}
+        self.zero.prune(cutoff)
+        for key in [k for k, r in self.parked_runs.items() if r.t1 < cutoff]:
+            self.close_parked(key, self.parked_runs.pop(key))
+        for address in [a for a, q in self.winch_recent.items() if not q or q[-1][0] < cutoff]:
+            del self.winch_recent[address]
 
     # --- end of the day -----------------------------------------------------------------------
 
@@ -4582,23 +4670,21 @@ class Nightly:
         # A station whose reported position moved during the day has its distances measured from the
         # first position, so it sits out the comparison that day.
         moved = {name for name, r in self.rx_pos.items() if r[4] > RECEIVER_MOVED_M}
-        pairs = {key: v for key, v in self.sens_pairs.items()
-                 if len(v) >= 2 * SENS_PAIR_MIN and key[0] not in moved and key[1] not in moved}
-        n_obs = sum(len(v) for v in pairs.values()) // 2
+        pairs = {key: s for key, s in self.sens_sums.items()
+                 if s[0] >= SENS_PAIR_MIN and key[0] not in moved and key[1] not in moved}
+        n_obs = sum(s[0] for s in pairs.values())
         out = (None, {}, len(pairs), n_obs)
         if n_obs >= SENS_K_MIN_OBS:
             num = den = 0.0
-            for v in pairs.values():
-                xs, ys = v[0::2], v[1::2]
-                mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-                num += sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-                den += sum((x - mx) ** 2 for x in xs)
+            for n, sx, sy, sxy, sxx in pairs.values():
+                num += (n * sxy - sx * sy) / n
+                den += (n * sxx - sx * sx) / n
             k = num / den * SENS_LOG_Q / SENS_DB_Q if den else None
             if k is not None and k > 0:
                 nb = collections.defaultdict(list)       # station -> [(partner, shared fixes, station minus partner)]
-                for (a, b), v in pairs.items():
-                    m = statistics.median(y / SENS_DB_Q - k * x / SENS_LOG_Q for x, y in zip(v[0::2], v[1::2]))
-                    n = len(v) // 2
+                medians = self.sens_medians(pairs, k)
+                for (a, b), s in pairs.items():
+                    m, n = medians[(a, b)], s[0]
                     nb[a].append((b, n, m))
                     nb[b].append((a, n, -m))
 
