@@ -39,7 +39,7 @@ flask run
 
 ### Testing
 
-There are no formal test files in the project. Testing is done manually by:
+Automated tests are in `tests/` (see `tests/README.md`: the fast suite and the golden dry-run comparison). Beyond them, testing is done manually by:
 1. Running the application in development mode
 2. Accessing the endpoints:
    - `/demo` - standalone demo map
