@@ -3833,7 +3833,8 @@ class Nightly:
         return medians
 
     def drop_silent(self, epoch):
-        """The per-address fix, the parked runs and the winch queues of aircraft silent for SILENT_AFTER go.
+        """The per-address fix, the parked runs, the winch queues and the circling tracks of aircraft silent for
+        SILENT_AFTER go.
 
         Their next fix, if one comes, starts afresh exactly as it would have after
         a gap over sources.SESSION_BREAK, and a parked run is closed as that fix
@@ -3848,6 +3849,13 @@ class Nightly:
             self.close_parked(key, self.parked_runs.pop(key))
         for address in [a for a, q in self.winch_recent.items() if not q or q[-1][0] < cutoff]:
             del self.winch_recent[address]
+        # A circling track's next fix after such a silence closes its run, and its open thermal can no longer
+        # merge (THERMAL_MERGE_S), so both close here; a track left with no thermal goes, most of the day's.
+        for key in [k for k, tr in self.circles.items() if tr.last is not None and tr.last[0] < cutoff]:
+            tr = self.circles[key]
+            tr.finish()
+            if not tr.thermals:
+                del self.circles[key]
 
     # --- end of the day -----------------------------------------------------------------------
 
@@ -3870,6 +3878,19 @@ class Nightly:
         for address, f in self.flight.items():
             self.end_flight(address, f)
         self.flight = {}
+        self.drop_pass_state()
+
+    def drop_pass_state(self):
+        """What only the pass reads goes once it is over, so that building the rows reuses its memory: on a
+        synthetic day with five times the traffic of 31 October 2026 these held about 170 MB, and the rows
+        added 80 MB to the pass's own peak."""
+        for name in ("last_fix", "addr_fix", "cut", "rose_wait", "wave_last", "launch_last", "winch_recent",
+                     "hour_fixes", "drone_session", "drone_index", "crewed_index", "drone_active",
+                     "encounters_open", "cg_radio", "cg_heard", "parked_runs", "powered"):
+            getattr(self, name).clear()
+        self.zero.feed_break()
+        for table in (self.crewed.last, self.crewed.index, self.crewed.near, self.crewed.wide):
+            table.clear()
 
     def evidence(self):
         """address with a category 13 -> one of the classes of EVIDENCE_NAMES.
