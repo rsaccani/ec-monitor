@@ -1356,6 +1356,9 @@ _admin1 = None                         # (rings, {(lat cell, lon cell): ring ids
 # One entry per 0.0001-degree cell asked for, which on a world day is half a million cells: the key is
 # one integer and the answer one shared tuple per region, about 70 bytes an entry against 200 for a
 # tuple of two floats and a fresh answer (100 MB on 31 October 2026, measured with tracemalloc).
+# Emptied when it reaches REGION_CACHE_MAX, which bounds it on a busy day: 533k entries and 38 MB
+# by tracemalloc on the nightly of 31 October 2026.
+REGION_CACHE_MAX = 1 << 18
 _region_cache = {}
 _region_answers = {}
 
@@ -1433,6 +1436,8 @@ def region_at(lat, lon):
             found = (best[1], best[2])
             break
     found = _region_answers.setdefault(found, found)
+    if len(_region_cache) >= REGION_CACHE_MAX:
+        _region_cache.clear()
     _region_cache[key] = found
     return found
 

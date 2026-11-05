@@ -41,6 +41,7 @@ import os
 import pickle
 import statistics
 import struct
+import sys
 import threading
 import time
 
@@ -86,9 +87,19 @@ N_PATTERN = 360
 PATTERN_MIN_N = 10          # receptions a sector needs to count
 PATTERN_MIN_SECTORS = 8     # sectors with PATTERN_MIN_N each, or no pattern is shown
 PATTERN_DAYS = 30           # the days of daily_device_pattern (nightly.PATTERN_KEEP_DAYS)
-STATE_VERSION = 3           # 2: samples carry their time (10 October 2026); 3: packed (24 October 2026)
+STATE_VERSION = 4           # 2: samples carry their time (10 October 2026); 3: packed (24 October 2026);
+                            # 4: compact Systems, in a file of its own (STATE_PATH, "-v4" before the extension)
 STATE_PATH = os.environ.get("EC_CHECK_STATE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "check-state.pickle"))
+
+
+
+def v4_path(path):
+    """The compact state's file, next to the old one: code that does not know version 4 never reads
+    it and starts empty, which is its rollback."""
+    root, ext = os.path.splitext(path)
+    return root + "-v4" + ext
+
 
 ADDRESS_TYPES = {0: "random", 1: "icao", 2: "flarm", 3: "ogn"}
 
@@ -135,7 +146,9 @@ class Samples:
         return out
 
     def __reduce__(self):
-        return (type(self), (bytes(self.buf),))
+        # The bytearray itself: a bytes copy per series would stay alive in the pickler's memo
+        # until the whole state is written.
+        return (type(self), (self.buf,))
 
     def __len__(self):
         return len(self.buf) // self.fmt.size
@@ -182,14 +195,45 @@ def _int16(v):
     return max(-32768, min(32767, v))
 
 
+# The signal of one device at one receiver and distance band (epoch, dB), packed in a bytes object
+# held directly as the dict's value: an immutable series of fixed-size records, newest last, and
+# the key tuples and receiver names shared between systems (31 October 2026: 58,698 keys at 334 B
+# each at 1x, of which 167 B were the Signal object, a name and a tuple of its own, and slack).
+_SIG = struct.Struct("<Ih")
+_SIG_CAP = N_SIGNAL * _SIG.size
+_KEYS = {}
+
+
+def sig_key(station, band):
+    """The (station, band) key, one tuple and one string for every system that has it."""
+    k = _KEYS.get((station, band))
+    if k is None:
+        if len(_KEYS) > 200000:
+            _KEYS.clear()
+        k = _KEYS[(station, band)] = (sys.intern(station), band)
+    return k
+
+
+def sig_push(buf, epoch, db):
+    buf += _SIG.pack(epoch, _int16(db))
+    return buf[-_SIG_CAP:] if len(buf) > _SIG_CAP else buf
+
+
+def sig_len(buf):
+    return len(buf) // _SIG.size
+
+
+def sig_since(buf, cutoff):
+    """The records from cutoff on, in order."""
+    if all(t >= cutoff for t, _ in _SIG.iter_unpack(buf)):
+        return buf
+    return b"".join(_SIG.pack(t, v) for t, v in _SIG.iter_unpack(buf) if t >= cutoff)
+
+
 class Signal(Samples):
-    """(epoch, dB) of one device at one receiver and distance band."""
+    """(epoch, dB) as the version 3 state kept it: only read from an old state and converted."""
     __slots__ = ()
     fmt = struct.Struct("<Ih")
-
-    @staticmethod
-    def pack(x):
-        return x[0], _int16(x[1])
 
 
 class Khz(Samples):
@@ -258,8 +302,36 @@ class Pattern(Samples):
         return rec[0], rec[1], rec[2] / 10
 
 
+class Gap(Samples):
+    """(from, to) epochs of one silence."""
+    __slots__ = ()
+    fmt = struct.Struct("<II")
+
+
+class Hours(Samples):
+    """(UTC hour start, packets) of one system, in the order the hours were first heard: a
+    dict of hour -> packets, packed."""
+    __slots__ = ()
+    fmt = struct.Struct("<II")
+
+    def bump(self, h):
+        size, buf = self.fmt.size, self.buf
+        for i in range(len(buf) - size, -1, -size):
+            if _EPOCH.unpack_from(buf, i)[0] == h:
+                n = _EPOCH.unpack_from(buf, i + 4)[0]
+                buf[i + 4:i + 8] = _EPOCH.pack(n + 1)
+                return
+        buf += self.fmt.pack(h, 1)
+
+    def first(self):
+        """The earliest hour, or None."""
+        return min((_EPOCH.unpack_from(self.buf, i)[0] for i in range(0, len(self.buf), self.fmt.size)),
+                   default=None)
+
+
 class System:
     """What one system of one address sent: plain attributes, so it pickles."""
+    pattern = None          # a System saved before 25 October 2026 has none
     # Set by DeviceCheck.feed_break: the next fix starts again, with no interval or
     # silence to the one before. A class attribute, so that a state saved without it reads back.
     cut = False
@@ -268,21 +340,31 @@ class System:
         self.label, self.kind, self.via, self.tocall = label, kind, via, tocall
         self.src = None
         self.first = self.last = None
-        self.hours = {}         # UTC hour start -> packets
+        self.hours = Hours()    # UTC hour start -> packets
         self.cats = {}          # declared category -> packets
         self.atype = None
         self.stealth = False
         self.fix = None         # (t_fix, lat, lon, alt_m, course, speed_kt, station, snr, err)
         self.intervals = []
-        self.signal = {}        # (station, band) -> Signal of (epoch, dB)
-        self.khz = Khz()        # (epoch, offset minus the receiver's own median, kHz)
+        self.signal = {}        # sig_key(station, band) -> packed (epoch, dB) records, sig_push
+        self.khz = None         # Khz of (epoch, offset minus the receiver's own median, kHz), from the first sample
         self.delay = []         # seconds between the fix and its arrival
         self.err_packets = 0    # packets with corrected bit errors
         self.radio_packets = 0
-        self.gaps = []          # (from, to) epochs
+        self.gaps = Gap()       # (from, to) epochs
         self.jumps = []         # epochs of impossible jumps
-        self.stations = {}      # receiver -> [packets, last epoch, min km, max km]
-        self.pattern = Pattern()  # far airborne receptions by sector (PATTERN_MIN_KM)
+        self.stations = {}      # receiver -> last epoch it relayed this system
+        self.pattern = None     # Pattern of far airborne receptions by sector (PATTERN_MIN_KM), from the first one
+
+
+def _from_v3(s):
+    """A System of the version 3 state, in place, as the compact layout keeps it."""
+    s.stations = {sys.intern(k): v[1] for k, v in s.stations.items()}
+    s.signal = {sig_key(*k): bytes(v.buf) for k, v in s.signal.items()}
+    s.gaps = Gap.of(s.gaps)
+    s.hours = Hours.of(s.hours.items())
+    s.khz = s.khz or None
+    s.pattern = getattr(s, "pattern", None) or None
 
 
 class DeviceCheck:
@@ -290,7 +372,8 @@ class DeviceCheck:
         self.stations = stations    # SourceTracker.stations: receiver -> (lat, lon)
         self.terrain = terrain
         self.ddb = ddb or (lambda address: {})
-        self.path = path
+        self.path = path                # the version 3 file, read once when there is no version 4 one
+        self.path4 = v4_path(path)
         self.devices = {}           # address -> {label: System}
         self.active = {}            # receiver -> last epoch it relayed a packet
         self.ref = {}               # (receiver, label, band) -> Ref of (epoch, address, dB), every device
@@ -310,6 +393,8 @@ class DeviceCheck:
             return
         t_fix, lat, lon, course, speed, _rot, _sym, alt_m = fix
         address = src[-6:].upper()
+        if station is not None:
+            station = sys.intern(station)    # one string for every table that holds it
         if kind == "platform":
             # A platform (PureTrack and the like) forwards positions it got
             # from elsewhere, some under pseudo-receivers with made-up signal
@@ -341,7 +426,7 @@ class DeviceCheck:
             if s is None:
                 s = systems[label] = System(label, kind, via, tocall)
             if s.last is not None and tick - s.last > SESSION_S:
-                s.intervals, s.signal, s.khz, s.delay = [], {}, Khz(), []
+                s.intervals, s.signal, s.khz, s.delay = [], {}, None, []
                 s.err_packets = s.radio_packets = 0
             s.src = src
             if via == "radio":
@@ -350,7 +435,7 @@ class DeviceCheck:
                 s.first = tick
             s.last = tick
             h = tick - tick % 3600
-            s.hours[h] = s.hours.get(h, 0) + 1
+            s.hours.bump(h)
             if category is not None:
                 s.cats[category] = s.cats.get(category, 0) + 1
             m = sources._id_field.search(body)
@@ -387,29 +472,22 @@ class DeviceCheck:
             s.radio_packets += 1
             if err:
                 s.err_packets += 1
-            st = s.stations.get(station)
+            s.stations[station] = tick
             where = self.stations.get(station)
             km = sources._distance(lat, lon, *where) / 1000 if where else None
-            if st is None:
-                st = s.stations[station] = [0, tick, km, km]
-            st[0] += 1
-            st[1] = tick
-            if km is not None:
-                st[2] = km if st[2] is None else min(st[2], km)
-                st[3] = km if st[3] is None else max(st[3], km)
             if khz is not None:
                 ref = self.ref_khz.get(station)
                 if ref is None:
                     ref = self.ref_khz[station] = Khz()
                 _push(ref, (tick, round(khz, 1)), N_REF)
                 base = statistics.median(v for t, v in ref)
+                if s.khz is None:
+                    s.khz = Khz()
                 _push(s.khz, (tick, round(khz - base, 1)), N_SAMPLES)
             if snr is not None and km is not None:
                 b = band_of(km)
-                sig = s.signal.get((station, b))
-                if sig is None:
-                    sig = s.signal[(station, b)] = Signal()
-                _push(sig, (tick, round(snr)), N_SIGNAL)
+                key = sig_key(station, b)
+                s.signal[key] = sig_push(s.signal.get(key, b""), tick, round(snr))
                 ref = self.ref.get((station, label, b))
                 if ref is None:
                     ref = self.ref[(station, label, b)] = Ref()
@@ -418,9 +496,9 @@ class DeviceCheck:
                         and (speed or 0) >= sources.FLYING_KT.get(category, sources.AIRBORNE_KT)):
                     rel = (sources._bearing(lat, lon, *where) - course) % 360
                     sector = int(((rel + 15) % 360) // 30)
-                    pat = getattr(s, "pattern", None)
+                    pat = s.pattern
                     if pat is None:
-                        pat = s.pattern = Pattern()    # a System saved before 25 October 2026
+                        pat = s.pattern = Pattern()
                     _push(pat, (tick, sector, snr + sources.SNR_SLOPE_DB * math.log10(km / 10)), N_PATTERN)
 
     def feed_break(self, epoch=None):
@@ -444,16 +522,18 @@ class DeviceCheck:
                     if s.last < cutoff:
                         del systems[label]
                         continue
-                    s.hours = {h: n for h, n in s.hours.items() if h >= cutoff}
-                    s.gaps = [g for g in s.gaps if g[0] >= cutoff]
-                    s.khz = s.khz.since(cutoff)
-                    s.signal = {k: v.since(cutoff) for k, v in s.signal.items()}
+                    s.hours = s.hours.since(cutoff)
+                    s.gaps = s.gaps.since(cutoff)
+                    if s.khz is not None:
+                        s.khz = s.khz.since(cutoff) or None
+                    s.signal = {k: sig_since(v, cutoff) for k, v in s.signal.items()}
                     s.signal = {k: v for k, v in s.signal.items() if v}
-                    if getattr(s, "pattern", None) is not None:
-                        s.pattern = s.pattern.since(cutoff)
+                    if s.pattern is not None:
+                        s.pattern = s.pattern.since(cutoff) or None
                     s.jumps = [j for j in s.jumps if j > cutoff]
-                    s.stations = {k: v for k, v in s.stations.items() if v[1] > cutoff}
-                    s.first = max(s.first, min(s.hours) if s.hours else s.last)
+                    s.stations = {k: v for k, v in s.stations.items() if v > cutoff}
+                    first_hour = s.hours.first()
+                    s.first = max(s.first, first_hour if first_hour is not None else s.last)
                 if not systems:
                     del self.devices[address]
             self.active = {k: v for k, v in self.active.items() if v > cutoff}
@@ -486,19 +566,46 @@ class DeviceCheck:
 
     def save(self):
         try:
-            with self.lock:
-                blob = pickle.dumps((time.time(), self.devices, self.active, self.ref, self.ref_khz,
-                                     dict(self.stations), STATE_VERSION),
-                                    protocol=pickle.HIGHEST_PROTOCOL)
-            tmp = self.path + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(blob)
+            tmp = self.path4 + ".tmp"
+            # Straight to the file, under the lock, so the state is never held twice in memory.
+            with open(tmp, "wb") as f, self.lock:
+                pickle.dump((time.time(), self.devices, self.active, self.ref, self.ref_khz,
+                             dict(self.stations), STATE_VERSION), f, protocol=pickle.HIGHEST_PROTOCOL)
             os.chmod(tmp, 0o600)
-            os.replace(tmp, self.path)
+            os.replace(tmp, self.path4)
         except Exception as e:
             logger.error("Device check: could not save the state: %s", e)
 
     def load(self):
+        try:
+            with open(self.path4, "rb") as f:
+                saved = pickle.load(f)
+            if len(saved) < 7 or saved[6] != STATE_VERSION:
+                logger.error("Device check: the saved state is of version %s, not read", saved[6:7])
+                return
+        except FileNotFoundError:
+            self.load_v3()
+            return
+        except Exception as e:
+            logger.error("Device check: could not read the saved state: %s", e)
+            return
+        saved_at, devices, active, ref, ref_khz = saved[:5]
+        if time.time() - saved_at > WINDOW:
+            return
+        for name, where in saved[5].items():
+            self.stations.setdefault(name, where)
+        for systems in devices.values():
+            for s in systems.values():
+                # Names and keys shared again, as in a running service.
+                s.signal = {sig_key(*k): v for k, v in s.signal.items()}
+                s.stations = {sys.intern(k): v for k, v in s.stations.items()}
+        self.devices, self.active, self.ref, self.ref_khz = devices, active, ref, ref_khz
+        self.prune()
+        logger.info("Device check: %d addresses read back", len(self.devices))
+
+    def load_v3(self):
+        """The state of the code before version 4: read, converted exactly, kept in memory until the
+        next save writes it in the new file. The old file is left as it is."""
         try:
             with open(self.path, "rb") as f:
                 saved = pickle.load(f)
@@ -530,9 +637,12 @@ class DeviceCheck:
                     s.khz = Khz.of(s.khz)
             ref = {k: Ref.of(v) for k, v in ref.items()}
             ref_khz = {k: Khz.of(v) for k, v in ref_khz.items()}
+        for systems in devices.values():
+            for s in systems.values():
+                _from_v3(s)
         self.devices, self.active, self.ref, self.ref_khz = devices, active, ref, ref_khz
         self.prune()
-        logger.info("Device check: %d addresses read back", len(self.devices))
+        logger.info("Device check: %d addresses read back (version 3 state converted)", len(self.devices))
 
     # --- the answer ---------------------------------------------------------
 
@@ -597,8 +707,8 @@ class DeviceCheck:
         cat = max(s.cats, key=s.cats.get) if s.cats else None
         sig = []
         cutoff = now - WINDOW
-        for (station, b), samples in sorted(s.signal.items(), key=lambda kv: -len(kv[1]))[:4]:
-            values = [v for t, v in samples if t >= cutoff]
+        for (station, b), samples in sorted(s.signal.items(), key=lambda kv: -sig_len(kv[1]))[:4]:
+            values = [v for t, v in _SIG.iter_unpack(samples) if t >= cutoff]
             if not values:
                 continue
             # Other devices only: near a receiver with little traffic the
@@ -611,15 +721,15 @@ class DeviceCheck:
         return {
             "system": s.label, "kind": s.kind, "via": s.via, "tocall": s.tocall, "callsign": s.src,
             "first": max(s.first, now - WINDOW), "last_heard": s.last,
-            "packets": sum(n for h, n in s.hours.items() if h >= cutoff),
+            "packets": sum(n for h, n in s.hours if h >= cutoff),
             "category": cat, "category_name": sources.CATEGORY_NAMES.get(cat) if cat is not None else None,
             "categories": {sources.CATEGORY_NAMES.get(c, str(c)): n for c, n in s.cats.items()},
             "address_type": ADDRESS_TYPES.get(s.atype), "stealth": s.stealth,
             "interval_s": _median(s.intervals),
             "nominal_s": cadence[2] if cadence and cadence[0] is None else None,
             "delay_s": _median(s.delay),
-            "khz_offset": round(_median([v for t, v in s.khz if t >= cutoff]), 1)
-                          if any(t >= cutoff for t, v in s.khz) else None,
+            "khz_offset": round(_median([v for t, v in s.khz or () if t >= cutoff]), 1)
+                          if any(t >= cutoff for t, v in s.khz or ()) else None,
             "error_share": round(s.err_packets / s.radio_packets, 2) if s.radio_packets else None,
             "receivers": len(s.stations),
             "signal": sig,
@@ -633,7 +743,7 @@ class DeviceCheck:
         """Per sector (0 = nose, clockwise) the median signal minus the system's
         own median, in dB, and the receptions; None where a sector has fewer than
         PATTERN_MIN_N, and shown at all only with PATTERN_MIN_SECTORS such sectors."""
-        recs = [(sec, v) for t, sec, v in (getattr(s, "pattern", None) or ()) if t >= cutoff]
+        recs = [(sec, v) for t, sec, v in (s.pattern or ()) if t >= cutoff]
         by = [[] for _ in range(12)]
         for sec, v in recs:
             by[sec].append(v)
