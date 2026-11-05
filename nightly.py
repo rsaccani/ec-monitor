@@ -37,6 +37,7 @@ import bisect
 import calendar
 import collections
 import csv
+import gc
 import io
 import itertools
 import datetime
@@ -1636,7 +1637,10 @@ class GarbagePair:
                 self.pinned += 1
         if self.t is not None and abs(t - self.t) <= sources.GARBAGE_PAIR_GAP_S:
             self.pairs += 1
-            if garbage_km(self.lat, self.lon, lat, lon) > sources.GARBAGE_JUMP_KM:
+            # A haversine distance never exceeds 111.2 km per degree of latitude plus longitude difference, so
+            # fixes closer than that bound are no jump and the trigonometry runs only for the doubtful pairs.
+            if ((abs(lat - self.lat) + abs(lon - self.lon)) * 111.2 >= sources.GARBAGE_JUMP_KM * 0.999
+                    and garbage_km(self.lat, self.lon, lat, lon) > sources.GARBAGE_JUMP_KM):
                 self.jumps += 1
                 if self.tracks is None:
                     self.tracks = [[self.t, self.lat, self.lon]]
@@ -2068,11 +2072,23 @@ class Nightly:
         v = _FPM.search(body)
         if not pair.add(t, lat, lon, alt_m, int(v.group(1)) if v else None):
             return
-        self.g_recent.setdefault(t, {}).setdefault(address, []).append((t, lat, lon, rx, pair))
+        bucket = self.g_recent.get(t)
+        if bucket is None:
+            bucket = self.g_recent[t] = {}
+        fixes = bucket.get(address)
+        if fixes is None:
+            bucket[address] = [(t, lat, lon, rx, pair)]
+        else:
+            fixes.append((t, lat, lon, rx, pair))
         self.g_buffered += 1
         if epoch > self.g_clock:
-            self.g_clock = int(epoch)
-            self.garbage_advance(self.g_clock)
+            clock = int(epoch)
+            if clock != self.g_clock:
+                self.g_clock = clock
+                self.garbage_advance(clock)
+            elif self.g_buffered > self.g_peak:
+                # Within the same second garbage_advance would judge and drop nothing; it only samples the peak.
+                self.g_peak = self.g_buffered
 
     def garbage_advance(self, clock):
         """Judge the seconds whose fixes can no longer get a neighbour, and drop the oldest."""
@@ -2184,6 +2200,9 @@ class Nightly:
                     + ", ".join(str(shares[k]) for k in range(5)))
 
     def run(self, raw_dir, hours=range(24)):
+        # The passes keep millions of small tuples and lists alive, and the default threshold of 700 allocations
+        # sends the collector over them again and again: 6% of the first pass on three hours of 31 October 2026.
+        gc.set_threshold(100_000, 10, 10)
         files = [(hour_path(raw_dir, self.day, h) if h in hours else None, None) for h in range(24)]
         missing = [h for h, (p, _) in enumerate(files) if p is None]
         self.missing_hours = tuple(missing)
