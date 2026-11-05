@@ -301,6 +301,53 @@ verdict, 7 SafeSky streams were set aside whole on 6 October 2026. What each ste
 6 and 7 October 2026: the fixes beyond the limits cut 2.3 and 0.7 h of drone flight (6.7% and 3.3% of it), 0.4 and 0.3 h of gliders, 0.3 and 0.04 h of helicopters, 0.2 and 0.5 h of powered aircraft; the segments beyond the limits cut another 0.2 and 0.02 h of gliders, 0.3 and 0.25 h of helicopters and 0.07 h of free flight; jets gained 10 and 8 h that the 500 km/h rule had cut. Two streams were set aside on 6 October and none on 7 October, and the flying time they would have kept was under 0.1 h, so the whole-day verdict changes almost nothing on these days and is there for the day a shared address flies. All of it is counted on the
 data-quality page (10.4).
 
+**Garbage position streams** (nightly measures, from 26 October 2026). One
+radio sending nonsense, or one station decoding a device wrongly, produces
+positions that belong to no aircraft, while the same address heard by other
+stations is real: on 23 October 2026 the station LSMD garbled about forty
+Swiss aircraft that 17 to 35 other stations heard right. The unit judged is
+therefore one address at one receiving station over the UTC day, and only
+that pair's fixes are dropped. A pair is judged from 20 fixes (the same fix
+heard twice in a row counts once), and is garbage on either of two counts:
+
+- **Jumps.** Two consecutive fixes at most 10 seconds apart and more than
+  5 km apart are a jump. With at least 20 such pairs of fixes, at least 10
+  jumps and jumps in over 5% of them, the fixes are chained greedily into
+  tracks (a fix joins an open track it could reach at 350 m/s plus 0.5 km).
+  An address shared by two real aircraft chains into a few tracks, 0.01 to
+  0.2 new tracks per jump, while garbage opens 0.6 to 1.4; above 0.5 the pair
+  is garbage.
+- **Altitude or climb that lie.** An altitude above 20,000 m or below
+  -500 m on 3% of the fixes or more, or a vertical speed pinned at the
+  instrument's full scale (9,900 to 10,100 ft/min) on 10% of at least 50
+  fixes that carry one. This count needs a second opinion: it applies when
+  no other station heard the address that day, or when the other stations
+  contradict the pair more often than they confirm it. A fix is confirmed
+  when another station has a fix of the address within 5 seconds and 2 km of
+  it, and contradicted when none is within 2 km and one is over 5 km away.
+
+An address flagged at every station that heard it is garbage at its source,
+and its fixes go everywhere (FLRDD0C75 on 18 and 24 October 2026, at 5 to 7
+stations). A station gets a maintenance note (10.5) only for addresses that
+another station heard cleanly and that its own fixes contradicted more often
+than they agreed: F9C918 at LKSU and LKOL on 24 October 2026, 106 and 65
+fixes confirmed against 7 and 1 contradicted, is more likely two aircraft on
+one address than a station at fault. ADS-B is not judged. From 3 to 5
+November 2026 the rule judged 14,000 to 15,000 pairs a day and flagged 25,
+14 and 10.
+
+**Station clock fault** (nightly measures, from 26 October 2026). A station
+whose clock is wrong stamps packets minutes away from when they arrive, and
+the 5-minute rule for stale and future fixes drops them: edle3 on 24 October
+2026, from 14:38 to 15:43 UTC, reported an NTP offset of 16,000 ms (not
+synchronised) and lost 43.6% of its fixes in its worst hour. A UTC hour with
+at least 100 fixes from a station, more than 30% of them dropped this way,
+is listed as a clock fault and opens a note on the station's card. On
+18 October 2026 that threshold marked 2 station-hours of 7,609; from 3 to 5
+November 2026 it marked 11 to 32 station-hours at 9 to 11 stations a day.
+The dropped fixes were never measured, so the rule changes no figure; it
+tells the operator why the station's traffic thinned.
+
 **ADS-B** is counted among the sources but left out of the measures of
 visibility and of flying time, being almost entirely airliners.
 
@@ -851,6 +898,24 @@ rules for stale and future fixes, the airborne speeds per kind and FLARM's
 9 October 2026), one timeline per 24-bit address for flying time, with
 FLARM's random addresses joined into one address per chain (section 1,
 from 15 October 2026). Devices whose owners asked not to be tracked are never recorded.
+
+**How a night runs.** Several rules judge an address or a station on its
+whole day, and the measures need the verdict from the day's first packet:
+a fix at 08:00 is kept or dropped by how that station behaved until
+midnight, and an aircraft is counted in its day's category from its first
+fix. The run therefore reads the day's recording three times, in this order.
+
+1. **Chains.** FLARM's random addresses are joined into chains (section 1).
+2. **Verdicts.** One read of every position decides, for the whole day:
+   the category each address declares most often on each system (below);
+   which streams are impossible, which needs that category, since the
+   limits depend on it (section 1); which (address, station) pairs send
+   garbage positions, and which stations had a clock fault (section 1).
+   This pass keeps only what the verdicts need, and took about 17% of the
+   run on 31 October 2026.
+3. **Measures.** Every measure of this section and of PATTERNS.md, line
+   by line, with the verdicts applied as exclusions, and at the end the rows
+   of each table. About 80% of the run.
 
 One rule differs from the live measures. These take the category of every
 packet; the nightly measures take, from 7 October 2026, the category the
@@ -1452,6 +1517,8 @@ A **maintenance note** is open on a station's card for the day whenever a check 
 - **CPU temperature at 80 °C or above** (median of the day), where a Raspberry Pi starts to slow itself down and the decoder may fall behind. The median station was at 51.5 °C, nine in ten under 66.6 °C.
 - **Radio noise above 10 dB** over the reference (median of the day), which reduces the distance at which weak signals are received. Typical sources are a transmitter nearby, a preamplifier or filter to check, or interference from the station's own computer. The median was +3.4 dB, nine in ten under +7.0 dB. To be checked against more days.
 - **Reported position changes during the day**, **Configured altitude differs from the terrain**, **Some packets forwarded more than 60 s late**, **Aircraft categories that differ from the usual one** and **Geoid conversion to check** are the five receiver checks of 10.4 (moved, altitude, late, stray categories, altitude offset), with their thresholds.
+- **Clock fault** (from 26 October 2026): an hour with at least 100 fixes, more than 30% of which arrived out of time because of its clock (section 1, Station clock fault).
+- **Garbage positions** (from 26 October 2026): addresses whose positions from this station the other stations contradicted, and whose fixes from this station were dropped for the day (section 1, Garbage position streams).
 
 The software, clock, temperature and noise notes apply to stations running the OGN receiver software, the only one whose status beacon carries those figures (`CPU:` in the beacon). Software of other makers, such as GXAirCom, is judged by the receiver checks alone. A note gives the figure measured, the threshold, what it means for the data and a link to the remedy in the OGN documentation; for the altitude offset, the rule of the OGN protocol that `A=` is height above the geoid. The notes make no claim about what other stations or the monitor compensate for, which has not been measured.
 
