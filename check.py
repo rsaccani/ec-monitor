@@ -26,7 +26,9 @@ seconds and can never be looked up, so they are not kept at all.
 
 The state is pickled every SAVE_EVERY seconds and at exit, and read back at
 start, because a deploy reloads the worker and would otherwise empty it. The
-receivers' positions (SourceTracker.stations) are saved with it.
+receivers' positions (SourceTracker.stations) are saved with it. A worker
+holds a lock on the state while it runs, so a new one reads it only after the
+old one's last save.
 
 The timed samples (signal, frequency offset, and the reference of other
 devices) are half a million records over a day, and as lists of tuples of
@@ -35,6 +37,7 @@ They are kept packed in Samples instead, 6 to 12 bytes a record.
 """
 
 import atexit
+import fcntl
 import logging
 import math
 import os
@@ -89,6 +92,7 @@ PATTERN_MIN_SECTORS = 8     # sectors with PATTERN_MIN_N each, or no pattern is 
 PATTERN_DAYS = 30           # the days of daily_device_pattern (nightly.PATTERN_KEEP_DAYS)
 STATE_VERSION = 4           # 2: samples carry their time (10 October 2026); 3: packed (24 October 2026);
                             # 4: compact Systems, in a file of its own (STATE_PATH, "-v4" before the extension)
+HANDOVER_S = 20             # how long a new worker waits for the old one's last save
 STATE_PATH = os.environ.get("EC_CHECK_STATE", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "check-state.pickle"))
 
@@ -380,8 +384,37 @@ class DeviceCheck:
         self.ref_khz = {}           # receiver -> Khz of (epoch, kHz), every device
         self.cache = {}
         self.lock = threading.Lock()
+        self.owner = self.take_over()
         self.load()
-        atexit.register(self.save)
+        atexit.register(self.close)
+
+    def take_over(self):
+        """An exclusive lock on the state, held until close() or the end of the process. On a deploy
+        gunicorn starts the new worker while the old one is still exiting and saving: waiting for the
+        old one's lock makes the new worker read that last save, where before it could read the
+        periodic one up to SAVE_EVERY seconds older and lose what came in between (5 November 2026)."""
+        try:
+            f = open(self.path4 + ".lock", "a")
+        except OSError as e:
+            logger.error("Device check: no lock on the state: %s", e)
+            return None
+        deadline = time.monotonic() + HANDOVER_S
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return f
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    logger.warning("Device check: the state is still held after %d s, read as it is", HANDOVER_S)
+                    return f
+                time.sleep(0.1)
+
+    def close(self):
+        """The last save, then the lock released: what a worker does on its way out."""
+        self.save()
+        if self.owner is not None:
+            self.owner.close()
+            self.owner = None
 
     # --- per packet (listener thread) ---------------------------------------
 
