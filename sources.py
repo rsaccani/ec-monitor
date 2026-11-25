@@ -2396,6 +2396,7 @@ class SourceTracker:
         self.encounters_cache = (0, None)
         self.regions_cache = (0, None)
         self.makers_cache = (0, None)
+        self._signatures = {}     # cache attribute -> what its tables looked like when last computed
         self.snapshot_cache = {}  # (month, endpoint) -> (time, JSON text)
         # Set by app.py to its JSON serialiser: the large statistics are then
         # cached as Frozen text. nightly.py leaves it unset and gets the objects.
@@ -3544,8 +3545,14 @@ class SourceTracker:
 
     # --- the nightly measures (nightly.py; METHOD.md section 10, PATTERNS.md) --
 
-    def _cached(self, name, attr, compute):
-        """The cache and lock pattern of the statistics above, for one more."""
+    def _cached(self, name, attr, compute, signature=None):
+        """The cache and lock pattern of the statistics above, for one more.
+
+        `signature(cur)` is a cheap query describing the tables `compute` reads. When it has not changed
+        since the last computation the cached value is kept, even when warm_loop forces a refresh: the
+        regions statistic read only tables the nightly writes, yet warm_loop ran its four DISTINCT counts
+        every eight minutes, a full MariaDB core for about two of them (25 November 2026).
+        """
         stamp, cached = getattr(self, attr)
         if cached is not None and not self.forcing() and time.time() - stamp < STATS_CACHE_SECONDS:
             return cached
@@ -3556,11 +3563,27 @@ class SourceTracker:
             conn = self.connect_db()
             try:
                 with conn.cursor() as cur:
+                    sig = signature(cur) if signature is not None else None
+                    if sig is not None and cached is not None and self._signatures.get(attr) == sig:
+                        setattr(self, attr, (time.time(), cached))
+                        return cached
                     out = self.keep(compute(cur))
             finally:
                 conn.close()
             setattr(self, attr, (time.time(), out))
+            self._signatures[attr] = sig
             return out
+
+    @staticmethod
+    def _nightly_signature(table):
+        """A signature for a table only the nightly (and archive_loop, which empties the cache) writes:
+        its newest day and row count, and the newest finished run. Each COUNT is a fraction of a second."""
+        def signature(cur):
+            cur.execute(f"SELECT MAX(day), COUNT(*) FROM {table}")
+            own = tuple(cur.fetchone())
+            cur.execute("SELECT MAX(finished_at), COUNT(*) FROM nightly_runs")
+            return own + tuple(cur.fetchone())
+        return signature
 
     def keep(self, out):
         """What a statistic's cache holds: its JSON text when app.py has set a serialiser."""
@@ -4694,7 +4717,7 @@ class SourceTracker:
                                for m in months], "sources": labels,
                     "category_names": {**{str(k): v for k, v in CATEGORY_NAMES.items()}, "255": "Unknown"},
                     "rows": rows}
-        return self._cached("regions", "regions_cache", compute)
+        return self._cached("regions", "regions_cache", compute, self._nightly_signature("daily_device_regions"))
 
     def makers_stats(self):
         """Devices per month, source, maker and firmware (METHOD.md 10.8), no address.
@@ -4730,7 +4753,7 @@ class SourceTracker:
                     "rows": [{"month": m, "source": s, "maker": mk, "firmware": fw, "hardware": hw, "category": cat,
                               "devices": n}
                              for (m, s, mk, fw, hw, cat), n in sorted(counts.items())]}
-        return self._cached("makers", "makers_cache", compute)
+        return self._cached("makers", "makers_cache", compute, self._nightly_signature("daily_device_makers"))
 
     def snapshot_body(self, month, endpoint):
         """One snapshot as the JSON text it was stored as, or None."""
